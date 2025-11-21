@@ -1,2 +1,18 @@
 data/
 
+*.bak
+*.log
+temp/
+*.tmp
+__pycache__
+.DS_Store
+.vscode/
+.idea/
+
+
+
+*.pyc
+*.jpg
+*.png
+*.zip
+*.tar.gz
