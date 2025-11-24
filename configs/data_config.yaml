@@ -1,12 +1,12 @@
 # 数据配置
 data:
   # 原始数据路径
-  raw_data_root: "data/raw"
+  raw_data_root: "data/mvtec_ad/raw"
   
   # 处理后的数据路径
-  patches_root: "data/patches"
-  metadata_root: "data/metadata"
-  embeddings_root: "data/embeddings"
+  patches_root: "data/mvtec_ad/patches"
+  metadata_root: "data/mvtec_ad/metadata"
+  embeddings_root: "data/mvtec_ad/embeddings"
   
   # 支持的工业场景（domain_id列表）
   domains:

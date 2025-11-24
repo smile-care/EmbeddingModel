@@ -230,7 +230,7 @@ def main():
                        default='data/mvtec_anomaly_detection',
                        help='MVTec AD数据集根目录')
     parser.add_argument('--output_root', type=str,
-                       default='data/raw',
+                       default='data/mvtec_ad/raw',
                        help='输出根目录')
     parser.add_argument('--include_good', action='store_true', default=True,
                        help='是否包含正常样本（good）')
