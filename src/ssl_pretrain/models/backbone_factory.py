@@ -157,16 +157,26 @@ class BackboneFactory:
         dummy_input = torch.randn(1, 3, image_size, image_size).to(device)
         
         with torch.no_grad():
-            features = backbone(dummy_input)
-            if isinstance(features, tuple):
-                features = features[0]
-            # 如果是4D tensor，进行全局平均池化
-            if features.dim() == 4:
-                features = nn.AdaptiveAvgPool2d(1)(features)
-                features = features.view(features.size(0), -1)
-            elif features.dim() == 3:
-                # ViT的输出可能是 (B, N, D)，取CLS token或平均池化
-                features = features.mean(dim=1) if features.size(1) > 1 else features[:, 0]
+            # 对于timm模型，使用forward_features方法
+            if hasattr(backbone, 'forward_features'):
+                features = backbone.forward_features(dummy_input)
+                # ViT输出: (B, N, D)，取CLS token
+                if features.dim() == 3:
+                    features = features[:, 0]  # 取CLS token
+                # ConvNeXt输出: (B, D, H, W)
+                elif features.dim() == 4:
+                    features = nn.AdaptiveAvgPool2d(1)(features)
+                    features = features.view(features.size(0), -1)
+            else:
+                # 对于其他模型（如ResNet Sequential）
+                features = backbone(dummy_input)
+                if isinstance(features, tuple):
+                    features = features[0]
+                if features.dim() == 4:
+                    features = nn.AdaptiveAvgPool2d(1)(features)
+                    features = features.view(features.size(0), -1)
+                elif features.dim() == 3:
+                    features = features.mean(dim=1) if features.size(1) > 1 else features[:, 0]
         
         return features.size(1)
 

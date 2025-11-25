@@ -9,6 +9,40 @@ from typing import List, Tuple, Optional
 import torch
 
 
+def denormalize_image(
+    tensor: torch.Tensor,
+    mean: List[float] = [0.485, 0.456, 0.406],
+    std: List[float] = [0.229, 0.224, 0.225]
+) -> torch.Tensor:
+    """
+    反归一化图像（从ImageNet归一化恢复到[0,1]范围）
+    
+    Args:
+        tensor: 归一化后的图像tensor (C, H, W) 或 (B, C, H, W)
+        mean: 归一化均值
+        std: 归一化标准差
+        
+    Returns:
+        反归一化后的tensor，值域在[0, 1]
+    """
+    mean = torch.tensor(mean).view(-1, 1, 1)
+    std = torch.tensor(std).view(-1, 1, 1)
+    
+    if tensor.dim() == 4:  # (B, C, H, W)
+        mean = mean.unsqueeze(0)
+        std = std.unsqueeze(0)
+    
+    if tensor.device.type == 'cuda':
+        mean = mean.to(tensor.device)
+        std = std.to(tensor.device)
+    
+    # 反归一化: (x * std) + mean
+    denorm = tensor * std + mean
+    # 裁剪到[0, 1]范围
+    denorm = torch.clamp(denorm, 0, 1)
+    return denorm
+
+
 def plot_loss_curve(
     train_losses: List[float],
     val_losses: Optional[List[float]] = None,
@@ -78,20 +112,36 @@ def visualize_reconstruction(
     reconstructed: torch.Tensor,
     masked: torch.Tensor,
     save_path: Optional[str] = None,
-    n_samples: int = 8
+    n_samples: int = 8,
+    denormalize: bool = True,
+    mean: List[float] = [0.485, 0.456, 0.406],
+    std: List[float] = [0.229, 0.224, 0.225]
 ):
     """
     可视化MAE重建结果
     
     Args:
-        original: 原始图像 (B, C, H, W)
-        reconstructed: 重建图像 (B, C, H, W)
-        masked: 带mask的图像 (B, C, H, W)
+        original: 原始图像 (B, C, H, W)，如果已归一化需要denormalize=True
+        reconstructed: 重建图像 (B, C, H, W)，通常是原始像素值[0,1]
+        masked: 带mask的图像 (B, C, H, W)，如果已归一化需要denormalize=True
         save_path: 保存路径
         n_samples: 显示的样本数
+        denormalize: 是否对原始和masked图像进行反归一化
+        mean: 归一化均值（如果denormalize=True）
+        std: 归一化标准差（如果denormalize=True）
     """
     n_samples = min(n_samples, original.size(0))
     fig, axes = plt.subplots(3, n_samples, figsize=(2*n_samples, 6))
+    
+    # 反归一化原始图像和masked图像（如果已归一化）
+    if denormalize:
+        original = denormalize_image(original, mean, std)
+        masked = denormalize_image(masked, mean, std)
+    
+    # 确保重建图像在[0, 1]范围内
+    # reconstructed = torch.clamp(reconstructed, 0, 1)
+    if denormalize:
+        reconstructed = denormalize_image(reconstructed, mean, std)
     
     for i in range(n_samples):
         # 原始图像

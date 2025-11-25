@@ -5,6 +5,7 @@ from typing import Tuple
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from .backbone_factory import BackboneFactory
 
@@ -56,24 +57,31 @@ class MAE(nn.Module):
         )
         
         # 对于ViT，需要特殊处理patch embedding
-        if backbone_type.startswith('vit'):
+        self.is_vit = backbone_type.startswith('vit')
+        if self.is_vit:
             # ViT已经包含patch embedding，直接使用
             self.encoder_dim = encoder_dim
         else:
-            # 对于CNN backbone，需要添加patch embedding
-            self.patch_embed = nn.Conv2d(
-                3, encoder_dim,
-                kernel_size=patch_size,
-                stride=patch_size
-            )
+            # 对于CNN backbone，需要将backbone输出的特征图转换为patches
+            # backbone输出是(B, C, H', W')，需要转换为(B, N, D)
+            # 首先获取backbone输出的空间尺寸
             self.encoder_dim = encoder_dim
+            # 计算backbone输出的空间尺寸
+            # 对于ResNet50/ConvNeXt，输入224x224，输出通常是7x7
+            # 但我们需要匹配num_patches，所以需要插值或投影
+            # 使用自适应池化将特征图调整到期望的patch数量
+            self.feature_pool = nn.AdaptiveAvgPool2d(
+                (image_size // patch_size, image_size // patch_size)
+            )
+            # 如果backbone输出维度与期望不匹配，添加投影层
+            # 这里先不添加，在forward中根据实际情况处理
         
         # Decoder
         self.decoder_embed = nn.Linear(encoder_dim, decoder_dim)
         self.mask_token = nn.Parameter(torch.zeros(1, 1, decoder_dim))
         
         self.decoder_pos_embed = nn.Parameter(
-            torch.zeros(1, self.num_patches + 1, decoder_dim)
+            torch.zeros(1, self.num_patches, decoder_dim)
         )
         self.decoder_pos_drop = nn.Dropout(0.1)
         
@@ -142,12 +150,7 @@ class MAE(nn.Module):
             (编码特征, mask, ids_restore)
         """
         # 提取特征
-        if hasattr(self, 'patch_embed'):
-            # CNN backbone
-            x = self.patch_embed(x)  # (B, D, H', W')
-            B, D, H, W = x.shape
-            x = x.flatten(2).transpose(1, 2)  # (B, N, D)
-        else:
+        if self.is_vit:
             # ViT backbone
             x = self.encoder.patch_embed(x)  # (B, N, D)
             if hasattr(self.encoder, 'cls_token'):
@@ -160,6 +163,24 @@ class MAE(nn.Module):
             # 移除CLS token（如果有）
             if x.size(1) == self.num_patches + 1:
                 x = x[:, 1:]
+        else:
+            # CNN backbone (ResNet50, ConvNeXt等)
+            # 先通过backbone提取特征
+            x = self.encoder(x)  # (B, C, H', W')
+            
+            # 如果输出是tuple，取第一个元素
+            if isinstance(x, tuple):
+                x = x[0]
+            
+            # 将特征图调整到期望的空间尺寸
+            # 使用自适应池化将特征图调整到(target_size, target_size)
+            # 其中target_size = image_size // patch_size，确保patch数量匹配
+            x = self.feature_pool(x)  # (B, C, target_size, target_size)
+            
+            # 将特征图转换为patches格式 (B, N, D)
+            # target_size^2 = num_patches，所以输出正好是(B, num_patches, C)
+            B, C, H, W = x.shape
+            x = x.flatten(2).transpose(1, 2)  # (B, H*W, C) = (B, num_patches, C)
         
         # 随机masking
         x_masked, mask, ids_restore = self.random_masking(x)
@@ -281,7 +302,14 @@ class MAE(nn.Module):
         loss = self.forward_loss(imgs, pred, mask)
         
         # 重建图像（用于可视化）
-        pred_img = self.unpatchify(pred)
+        # 注意：loss只对masked区域计算，所以重建图像应该：
+        # - 可见区域：使用原始图像的值
+        # - Masked区域：使用模型预测的值
+        target_patches = self.patchify(imgs)  # (B, N, patch_size^2 * 3)
+        # 对于可见patches使用原始值，对于masked patches使用预测值
+        # mask: 1表示masked, 0表示可见
+        recon_patches = target_patches * (1 - mask.unsqueeze(-1)) + pred * mask.unsqueeze(-1)
+        pred_img = self.unpatchify(recon_patches)
         
         return loss, pred_img, mask
 

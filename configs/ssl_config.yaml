@@ -2,7 +2,7 @@
 ssl:
   # 模型配置
   model:
-    backbone: "convnext_base"  # 可选: vit_base, resnet50, convnext_base
+    backbone: "vit_base"  # 可选: vit_base, resnet50, convnext_base
     backbone_pretrained: true  # 是否使用ImageNet预训练权重
     image_size: 224
     patch_size: 16  # ViT的patch size
@@ -13,8 +13,8 @@ ssl:
   
   # 数据配置
   data:
-    batch_size: 64
-    num_workers: 8
+    batch_size: 16
+    num_workers: 2
     pin_memory: true
     domain_balanced: true  # 是否使用domain平衡采样
   
@@ -37,10 +37,10 @@ ssl:
       contrast: 0.1
       saturation: 0.05
       hue: 0.02
-      enabled: true
+      enabled: false
     gaussian_noise:
       std: 0.01
-      enabled: true
+      enabled: false
     blur:
       enabled: false  # 工业图像通常不适用强blur
   

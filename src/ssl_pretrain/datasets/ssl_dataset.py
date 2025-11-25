@@ -58,17 +58,12 @@ class SSLDataset(Dataset):
         image_path = item['image_path']
         
         # 构建完整路径
-        if self.image_root and not Path(image_path).is_absolute():
-            image_path = self.image_root / image_path
-        else:
-            image_path = Path(image_path)
+        image_path = Path(image_path)
         
         # 加载图像
-        try:
-            image = Image.open(image_path).convert('RGB')
-        except Exception as e:
-            # 如果加载失败，返回黑色图像
-            image = Image.new('RGB', (224, 224), color=(0, 0, 0))
+        assert image_path.exists(), f"图像文件不存在: {image_path}"
+        image = Image.open(image_path).convert('RGB')
+        assert image is not None, f"无法打开图像文件: {image_path}"
         
         # 应用增强
         tensor = self.augmentation(image)

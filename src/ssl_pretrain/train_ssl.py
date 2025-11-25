@@ -1,6 +1,8 @@
 """
 MAE自监督预训练脚本
 """
+import os
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 import argparse
 from pathlib import Path
 
@@ -21,6 +23,44 @@ from ..utils.logging import setup_logger
 from ..utils.visualization import plot_loss_curve, visualize_reconstruction
 from .datasets.ssl_dataset import SSLDataset
 from .models.mae import MAE
+
+
+def _create_masked_visualization(
+    images: torch.Tensor,
+    masks: torch.Tensor,
+    patch_size: int = 16,
+    image_size: int = 224
+) -> torch.Tensor:
+    """
+    根据mask创建masked图像的可视化
+    
+    Args:
+        images: 原始图像 (B, C, H, W)
+        masks: mask (B, N)，1表示masked，0表示可见
+        patch_size: patch大小
+        image_size: 图像大小
+        
+    Returns:
+        masked图像 (B, C, H, W)，masked区域用黑色填充
+    """
+    B, C, H, W = images.shape
+    h_patches = w_patches = image_size // patch_size
+    
+    # 将mask从(B, N)转换为(B, h_patches, w_patches)
+    mask_2d = masks.view(B, h_patches, w_patches)
+    
+    # 扩展mask到patch大小：使用repeat_interleave更简单
+    # (B, h_patches, w_patches) -> (B, H, W)
+    mask_2d = mask_2d.unsqueeze(1)  # (B, 1, h_patches, w_patches)
+    # 在每个维度上重复patch_size次
+    mask_2d = mask_2d.repeat_interleave(patch_size, dim=2)  # (B, 1, H, w_patches)
+    mask_2d = mask_2d.repeat_interleave(patch_size, dim=3)  # (B, 1, H, W)
+    
+    # 创建masked图像：masked区域用黑色填充
+    masked_imgs = images.clone()
+    masked_imgs = masked_imgs * (1 - mask_2d)  # masked区域变为0（黑色）
+    
+    return masked_imgs
 
 
 def train_epoch(
@@ -95,14 +135,26 @@ def validate(
         recon = torch.cat(sample_preds, dim=0)
         masks = torch.cat(sample_masks, dim=0)
         
+        # 从模型中获取patch_size和image_size
+        if hasattr(model, 'patch_size') and hasattr(model, 'image_size'):
+            patch_size = model.patch_size
+            image_size = model.image_size
+        else:
+            # 默认值
+            patch_size = 16
+            image_size = 224
+        
         # 创建masked图像用于可视化
-        masked_imgs = orig.clone()
-        # 这里简化处理，实际应该根据mask恢复masked patches
+        # mask形状是(B, N)，需要转换为(B, C, H, W)的图像mask
+        masked_imgs = _create_masked_visualization(
+            orig, masks, patch_size=patch_size, image_size=image_size
+        )
         
         visualize_reconstruction(
             orig, recon, masked_imgs,
             save_path=str(save_dir / f"reconstruction_epoch_{epoch}.png"),
-            n_samples=len(sample_images)
+            n_samples=len(sample_images),
+            denormalize=True  # 启用反归一化，因为输入图像已归一化
         )
     
     return avg_loss
@@ -114,7 +166,7 @@ def main():
                        help='配置文件路径')
     parser.add_argument('--data_config', type=str, default='configs/data_config.yaml',
                        help='数据配置文件路径')
-    parser.add_argument('--resume', type=str, default=None,
+    parser.add_argument('--resume', type=str, default="checkpoints/ssl/checkpoint_epoch_80.pth",
                        help='恢复训练的checkpoint路径')
     args = parser.parse_args()
     
@@ -186,7 +238,7 @@ def main():
     if training_config['optimizer'] == 'adamw':
         optimizer = optim.AdamW(
             model.parameters(),
-            lr=training_config['learning_rate'],
+            lr=float(training_config['learning_rate']),
             weight_decay=training_config['weight_decay']
         )
     else:
