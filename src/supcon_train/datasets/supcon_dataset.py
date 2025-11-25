@@ -60,17 +60,12 @@ class SupConDataset(Dataset):
         patch_path = item['patch_path']
         
         # 构建完整路径
-        if self.patch_root and not Path(patch_path).is_absolute():
-            patch_path = self.patch_root / patch_path
-        else:
-            patch_path = Path(patch_path)
+        patch_path = Path(patch_path)
+        assert patch_path.exists(), f"图像路径不存在: {patch_path}"
         
         # 加载图像
-        try:
-            image = Image.open(patch_path).convert('RGB')
-        except Exception as e:
-            # 如果加载失败，返回黑色图像
-            image = Image.new('RGB', (224, 224), color=(0, 0, 0))
+        image = Image.open(patch_path).convert('RGB')
+        assert image is not None, f"无法加载图像: {patch_path}"
         
         # 应用双视图增强
         view1, view2 = self.augmentation(image)

@@ -97,7 +97,7 @@ class DatasetBuilder:
         Returns:
             输出文件路径
         """
-        metadata_path = self.metadata_root / patch_metadata_file
+        metadata_path = Path(patch_metadata_file)
         with open(metadata_path, 'r', encoding='utf-8') as f:
             patch_metadata = json.load(f)
         
@@ -155,7 +155,7 @@ class DatasetBuilder:
         Returns:
             输出文件路径
         """
-        metadata_path = self.metadata_root / dataset_file
+        metadata_path = Path(dataset_file)
         with open(metadata_path, 'r', encoding='utf-8') as f:
             dataset = json.load(f)
         

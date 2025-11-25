@@ -71,14 +71,16 @@ class BackboneFactory:
             model_name = 'vit_base_patch16_224'
         
         # 使用timm创建ViT
+        # 设置num_classes=0，这样timm不会创建分类头
         model = timm.create_model(
             model_name,
             pretrained=pretrained,
             img_size=image_size,
+            num_classes=0,  # 不创建分类头
             **kwargs
         )
         
-        # 移除分类头，只保留特征提取部分
+        # 确保没有分类头（双重保险）
         if hasattr(model, 'head'):
             del model.head
         if hasattr(model, 'head_dist'):
@@ -127,13 +129,15 @@ class BackboneFactory:
             model_name = 'convnext_base'
         
         # 使用timm创建ConvNeXt
+        # 设置num_classes=0，这样timm不会创建分类头
         model = timm.create_model(
             model_name,
             pretrained=pretrained,
+            num_classes=0,  # 不创建分类头
             **kwargs
         )
         
-        # 移除分类头
+        # 确保没有分类头（双重保险）
         if hasattr(model, 'head'):
             del model.head
         if hasattr(model, 'head_dist'):
@@ -157,26 +161,28 @@ class BackboneFactory:
         dummy_input = torch.randn(1, 3, image_size, image_size).to(device)
         
         with torch.no_grad():
-            # 对于timm模型，使用forward_features方法
+            # 统一特征提取方式，与SupCon模型中的forward方法保持一致
             if hasattr(backbone, 'forward_features'):
+                # timm模型（ViT, ConvNeXt）有forward_features方法
                 features = backbone.forward_features(dummy_input)
-                # ViT输出: (B, N, D)，取CLS token
-                if features.dim() == 3:
-                    features = features[:, 0]  # 取CLS token
-                # ConvNeXt输出: (B, D, H, W)
-                elif features.dim() == 4:
-                    features = nn.AdaptiveAvgPool2d(1)(features)
-                    features = features.view(features.size(0), -1)
             else:
-                # 对于其他模型（如ResNet Sequential）
+                # ResNet等Sequential模型直接调用
                 features = backbone(dummy_input)
-                if isinstance(features, tuple):
-                    features = features[0]
-                if features.dim() == 4:
-                    features = nn.AdaptiveAvgPool2d(1)(features)
-                    features = features.view(features.size(0), -1)
-                elif features.dim() == 3:
-                    features = features.mean(dim=1) if features.size(1) > 1 else features[:, 0]
+            
+            # 处理不同backbone的输出格式
+            if isinstance(features, tuple):
+                features = features[0]
+            
+            if features.dim() == 4:
+                # CNN输出（ResNet, ConvNeXt）：全局平均池化
+                features = nn.AdaptiveAvgPool2d(1)(features)
+                features = features.view(features.size(0), -1)
+            elif features.dim() == 3:
+                # ViT输出：(B, N, D)，取CLS token
+                if features.size(1) > 1:
+                    features = features[:, 0]  # 取CLS token
+                else:
+                    features = features[:, 0]
         
         return features.size(1)
 

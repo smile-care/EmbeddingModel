@@ -17,11 +17,11 @@ from src.utils.logging import setup_logger
 
 def main():
     parser = argparse.ArgumentParser(description='标签体检')
-    parser.add_argument('--embeddings', type=str, required=True,
+    parser.add_argument('--embeddings', type=str, default="data/mvtec_ad/embeddings/supcon_dataset.npz",
                        help='Embedding文件路径（.npy或.npz）')
-    parser.add_argument('--metadata', type=str, required=True,
+    parser.add_argument('--metadata', type=str, default="data/mvtec_ad/metadata/supcon_dataset.json",
                        help='patch元数据JSON文件路径')
-    parser.add_argument('--output_dir', type=str, required=True,
+    parser.add_argument('--output_dir', type=str, default="data/mvtec_ad/reports/supcon_dataset",
                        help='输出目录')
     parser.add_argument('--top_outliers_percent', type=float, default=5.0,
                        help='离群点百分比')

@@ -24,6 +24,11 @@ class KNNSearcher:
             use_gpu: 是否使用GPU
             metric: 距离度量 ('L2' 或 'IP' for inner product)
         """
+        # 确保embeddings是numpy数组，连续且为float32类型
+        if not isinstance(embeddings, np.ndarray):
+            embeddings = np.array(embeddings)
+        embeddings = np.ascontiguousarray(embeddings, dtype=np.float32)
+        
         self.embeddings = embeddings
         self.n_samples, self.dim = embeddings.shape
         
@@ -42,8 +47,8 @@ class KNNSearcher:
         else:
             self.index = index
         
-        # 添加向量到索引
-        self.index.add(embeddings.astype('float32'))
+        # 添加向量到索引（确保是连续的float32数组）
+        self.index.add(embeddings)
     
     def search(
         self,

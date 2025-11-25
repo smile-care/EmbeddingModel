@@ -4,7 +4,10 @@ SupCon监督对比学习训练脚本
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, BatchSampler, WeightedRandomSampler, Sampler
+from collections import defaultdict
+import numpy as np
+import random
 from pathlib import Path
 import argparse
 from tqdm import tqdm
@@ -20,6 +23,80 @@ from .datasets.supcon_dataset import SupConDataset
 from ..utils.config_loader import load_config
 from ..utils.logging import setup_logger
 from ..utils.visualization import plot_loss_curve
+
+
+class LabelBalancedBatchSampler(Sampler):
+    """
+    确保每个batch中每个类别都有多个样本的BatchSampler
+    这对于SupCon训练很重要，因为需要positive pairs
+    """
+    def __init__(self, dataset, batch_size, samples_per_class=2, drop_last=False):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.samples_per_class = samples_per_class
+        self.drop_last = drop_last
+        
+        # 按label组织样本索引
+        self.label_indices = defaultdict(list)
+        for idx, item in enumerate(dataset.patches):
+            label = item['label']
+            self.label_indices[label].append(idx)
+        
+        self.labels = list(self.label_indices.keys())
+        self.num_classes = len(self.labels)
+        
+        # 计算每个batch可以包含多少个类别
+        # 每个类别samples_per_class个样本
+        self.classes_per_batch = min(
+            self.num_classes,
+            batch_size // samples_per_class
+        )
+        
+        # 计算实际batch大小（可能小于配置的batch_size）
+        self.actual_batch_size = self.classes_per_batch * samples_per_class
+        
+    def __iter__(self):
+        # 为每个epoch生成batch
+        # 打乱每个类别的索引
+        for label in self.labels:
+            random.shuffle(self.label_indices[label])
+        
+        # 创建循环迭代器（当样本用完时重新开始）
+        label_iterators = {}
+        for label in self.labels:
+            label_iterators[label] = self._cycle_iterator(self.label_indices[label])
+        
+        # 生成多个batch
+        num_batches = len(self.dataset) // self.actual_batch_size
+        if not self.drop_last:
+            num_batches += 1
+        
+        for _ in range(num_batches):
+            batch_indices = []
+            selected_labels = random.sample(self.labels, min(self.classes_per_batch, len(self.labels)))
+            
+            for label in selected_labels:
+                # 为每个类别采样samples_per_class个样本
+                for _ in range(self.samples_per_class):
+                    idx = next(label_iterators[label])
+                    batch_indices.append(idx)
+            
+            # 打乱batch内的顺序
+            random.shuffle(batch_indices)
+            yield batch_indices
+    
+    def _cycle_iterator(self, items):
+        """创建一个循环迭代器"""
+        while True:
+            for item in items:
+                yield item
+    
+    def __len__(self):
+        if self.drop_last:
+            return len(self.dataset) // self.actual_batch_size
+        else:
+            return (len(self.dataset) + self.actual_batch_size - 1) // self.actual_batch_size
+
 
 
 def train_epoch(
@@ -48,8 +125,17 @@ def train_epoch(
         outputs = model(images, return_features=False)
         embeddings = outputs['embeddings']
         
+        # 检查embeddings是否包含NaN或Inf
+        if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
+            print(f"警告：Epoch {epoch}, Batch {num_batches}: embeddings包含NaN或Inf，跳过此batch")
+            continue
+        
         if use_classification_head:
             logits = outputs['logits']
+            # 检查logits
+            if torch.isnan(logits).any() or torch.isinf(logits).any():
+                print(f"警告：Epoch {epoch}, Batch {num_batches}: logits包含NaN或Inf，跳过此batch")
+                continue
             loss, supcon_loss, ce_loss = criterion(embeddings, logits, labels)
         else:
             # 只使用SupCon loss
@@ -59,9 +145,18 @@ def train_epoch(
             supcon_loss = loss.item()
             ce_loss = 0.0
         
+        # 检查loss是否为NaN或Inf
+        if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
+            print(f"警告：Epoch {epoch}, Batch {num_batches}: loss为NaN或Inf，跳过此batch")
+            continue
+        
         # 反向传播
         optimizer.zero_grad()
         loss.backward()
+        
+        # 梯度裁剪，防止梯度爆炸
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
         optimizer.step()
         
         total_loss += loss.item()
@@ -107,8 +202,17 @@ def validate(
             outputs = model(images, return_features=False)
             embeddings = outputs['embeddings']
             
+            # 检查embeddings是否包含NaN或Inf
+            if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
+                print(f"警告：验证时embeddings包含NaN或Inf，跳过此batch")
+                continue
+            
             if use_classification_head:
                 logits = outputs['logits']
+                # 检查logits
+                if torch.isnan(logits).any() or torch.isinf(logits).any():
+                    print(f"警告：验证时logits包含NaN或Inf，跳过此batch")
+                    continue
                 loss, supcon_loss, ce_loss = criterion(embeddings, logits, labels)
                 
                 # 计算准确率
@@ -121,6 +225,11 @@ def validate(
                 loss = supcon_criterion(embeddings, labels)
                 supcon_loss = loss.item()
                 ce_loss = 0.0
+            
+            # 检查loss是否为NaN或Inf
+            if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
+                print(f"警告：验证时loss为NaN或Inf，跳过此batch")
+                continue
             
             total_loss += loss.item()
             total_supcon_loss += supcon_loss if isinstance(supcon_loss, float) else supcon_loss.item()
@@ -189,13 +298,41 @@ def main():
     logger.info(f"类别数: {num_classes}")
     
     # 创建数据加载器
-    dataloader = DataLoader(
-        dataset,
-        batch_size=supcon_config['supcon']['data']['batch_size'],
-        shuffle=True,
-        num_workers=supcon_config['supcon']['data']['num_workers'],
-        pin_memory=supcon_config['supcon']['data']['pin_memory']
-    )
+    # 对于SupCon，需要确保每个batch中有相同标签的样本
+    batch_size = supcon_config['supcon']['data']['batch_size']
+    use_label_balanced = supcon_config['supcon']['data'].get('samples_per_class', 0) > 0
+    
+    if use_label_balanced:
+        # 使用label balanced batch sampler，确保每个batch中每个类别有多个样本
+        samples_per_class = supcon_config['supcon']['data']['samples_per_class']
+        logger.info(f"使用label balanced batch sampler，每个batch中每个类别至少{samples_per_class}个样本")
+        
+        # 创建LabelBalancedBatchSampler
+        batch_sampler = LabelBalancedBatchSampler(
+            dataset=dataset,
+            batch_size=batch_size,
+            samples_per_class=samples_per_class,
+            drop_last=False
+        )
+        
+        dataloader = DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=supcon_config['supcon']['data']['num_workers'],
+            pin_memory=supcon_config['supcon']['data']['pin_memory']
+        )
+        
+        logger.info(f"实际batch大小: {batch_sampler.actual_batch_size} (配置: {batch_size})")
+    else:
+        # 使用普通shuffle
+        logger.warning("未使用label balanced采样，某些batch可能没有positive pairs！")
+        dataloader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=supcon_config['supcon']['data']['num_workers'],
+            pin_memory=supcon_config['supcon']['data']['pin_memory']
+        )
     
     # 创建模型
     logger.info("创建模型...")
@@ -241,8 +378,8 @@ def main():
             other_params.append(param)
     
     optimizer = optim.AdamW([
-        {'params': backbone_params, 'lr': training_config['learning_rate'] * backbone_lr_ratio},
-        {'params': other_params, 'lr': training_config['learning_rate']}
+        {'params': backbone_params, 'lr': float(training_config['learning_rate']) * backbone_lr_ratio},
+        {'params': other_params, 'lr': float(training_config['learning_rate'])}
     ], weight_decay=training_config['weight_decay'])
     
     # 学习率调度器
@@ -264,7 +401,7 @@ def main():
     freeze_epochs = training_strategy.get('freeze_backbone_epochs', 0)
     
     # 恢复训练
-    start_epoch = 0
+    start_epoch = 1
     best_loss = float('inf')
     if args.resume:
         logger.info(f"从checkpoint恢复: {args.resume}")
@@ -272,7 +409,7 @@ def main():
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        start_epoch = checkpoint['epoch']
+        start_epoch = checkpoint['epoch'] + 1
         best_loss = checkpoint.get('best_loss', float('inf'))
     
     # 训练循环
@@ -280,7 +417,7 @@ def main():
     train_losses = []
     val_losses = []
     
-    for epoch in range(start_epoch, training_config['epochs']):
+    for epoch in range(start_epoch, training_config['epochs']+1):
         # 解冻backbone（如果需要）
         if epoch == freeze_epochs and freeze_epochs > 0:
             logger.info("解冻backbone参数...")

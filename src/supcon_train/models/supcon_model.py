@@ -43,6 +43,21 @@ class ProjectionHead(nn.Module):
         layers.append(nn.Linear(prev_dim, output_dim))
         
         self.projection = nn.Sequential(*layers)
+        
+        # 初始化权重
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """初始化权重"""
+        for m in self.projection.modules():
+            if isinstance(m, nn.Linear):
+                # 使用Xavier初始化
+                nn.init.xavier_uniform_(m.weight)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm1d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -121,24 +136,39 @@ class SupConModel(nn.Module):
             self.classification_head = None
     
     def _load_backbone_weights(self, checkpoint_path: str):
-        """加载backbone权重"""
+        """
+        加载backbone权重（从SSL训练的checkpoint中提取encoder部分）
+        
+        SSL checkpoint格式：
+        - 'model_state_dict': 包含完整的MAE模型权重
+          - 'encoder.xxx': backbone权重
+          - 'decoder.xxx': decoder权重（不需要）
+        """
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
         
         # 处理不同的checkpoint格式
-        if 'model' in checkpoint:
+        if 'model_state_dict' in checkpoint:
+            # SSL训练保存的标准格式
+            state_dict = checkpoint['model_state_dict']
+        elif 'model' in checkpoint:
             state_dict = checkpoint['model']
         elif 'state_dict' in checkpoint:
             state_dict = checkpoint['state_dict']
         else:
+            # 直接是state_dict
             state_dict = checkpoint
         
-        # 如果checkpoint包含encoder，提取encoder部分
+        # 从MAE模型中提取encoder（backbone）权重
         backbone_state_dict = {}
         for key, value in state_dict.items():
+            # SSL训练的MAE模型中，encoder权重以'encoder.'开头
             if key.startswith('encoder.'):
-                new_key = key.replace('encoder.', '')
+                # 移除'encoder.'前缀，得到backbone的权重键
+                new_key = key.replace('encoder.', '', 1)
                 backbone_state_dict[new_key] = value
-            elif not any(x in key for x in ['decoder', 'head', 'projection']):
+            # 如果权重键不包含decoder、head、projection等，可能是直接的backbone权重
+            elif not any(x in key for x in ['decoder', 'head', 'projection', 'mask_token', 'decoder_embed', 'decoder_pos_embed', 'decoder_blocks', 'decoder_norm', 'decoder_pred']):
+                # 可能是直接的backbone权重（兼容性处理）
                 backbone_state_dict[key] = value
         
         # 加载权重
@@ -146,10 +176,18 @@ class SupConModel(nn.Module):
             backbone_state_dict, strict=False
         )
         
+        # 打印加载信息
         if missing_keys:
-            print(f"警告：部分权重未加载: {missing_keys[:5]}...")
+            print(f"警告：部分backbone权重未加载 ({len(missing_keys)}个): {missing_keys[:5]}...")
         if unexpected_keys:
-            print(f"警告：部分权重未使用: {unexpected_keys[:5]}...")
+            print(f"警告：部分backbone权重未使用 ({len(unexpected_keys)}个): {unexpected_keys[:5]}...")
+        
+        # 检查是否成功加载了权重
+        if len(backbone_state_dict) == 0:
+            print(f"错误：未能从checkpoint中提取backbone权重！")
+            print(f"Checkpoint中的键: {list(state_dict.keys())[:10]}...")
+        else:
+            print(f"成功加载 {len(backbone_state_dict)} 个backbone权重参数")
     
     def forward(
         self,
@@ -166,25 +204,39 @@ class SupConModel(nn.Module):
         Returns:
             包含embedding和logits的字典
         """
-        # Backbone特征
-        features = self.backbone(x)
+        # Backbone特征提取
+        # 统一使用forward()方法，与SSL训练时保持一致
+        if hasattr(self.backbone, 'forward_features'):
+            # timm模型（ViT, ConvNeXt）有forward_features方法
+            features = self.backbone.forward_features(x)
+        else:
+            # ResNet等Sequential模型直接调用
+            features = self.backbone(x)
         
         # 处理不同backbone的输出格式
         if isinstance(features, tuple):
             features = features[0]
+        
         if features.dim() == 4:
-            # CNN输出：全局平均池化
+            # CNN输出（ResNet, ConvNeXt）：全局平均池化
             features = nn.AdaptiveAvgPool2d(1)(features)
             features = features.view(features.size(0), -1)
         elif features.dim() == 3:
-            # ViT输出：取CLS token或平均池化
+            # ViT输出：(B, N, D)，取CLS token或平均池化
             if features.size(1) > 1:
-                features = features.mean(dim=1)
+                # 有CLS token时，通常第一个是CLS token
+                features = features[:, 0]  # 取CLS token
             else:
                 features = features[:, 0]
         
         # Projection
         embeddings = self.projection_head(features)
+        
+        # 检查embeddings是否包含NaN或Inf
+        if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
+            # 如果包含NaN/Inf，使用零填充并打印警告
+            print("警告：Projection head输出包含NaN或Inf！")
+            embeddings = torch.nan_to_num(embeddings, nan=0.0, posinf=1.0, neginf=-1.0)
         
         result = {'embeddings': embeddings}
         

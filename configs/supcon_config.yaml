@@ -28,11 +28,11 @@ supcon:
   
   # 数据配置
   data:
-    batch_size: 64
-    num_workers: 8
+    batch_size: 32
+    num_workers: 2
     pin_memory: true
     # 采样策略：保证每个batch内每个label有多个样本
-    samples_per_class: 4  # 每个类别在每个batch中的样本数
+    samples_per_class: 2  # 每个类别在每个batch中的样本数
     domain_balanced: true  # 是否使用domain平衡采样
   
   # 数据增强（与SSL类似但可调整）

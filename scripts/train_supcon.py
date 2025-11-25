@@ -1,6 +1,8 @@
 """
 启动SupCon监督对比学习训练
 """
+import os
+os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 import sys
 from pathlib import Path
 

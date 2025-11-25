@@ -16,11 +16,11 @@ from src.utils.logging import setup_logger
 
 def main():
     parser = argparse.ArgumentParser(description='提取embedding')
-    parser.add_argument('--model', type=str, required=True,
+    parser.add_argument('--model', type=str, default="checkpoints/supcon/checkpoint_epoch_50.pth",
                        help='模型checkpoint路径')
-    parser.add_argument('--metadata', type=str, required=True,
+    parser.add_argument('--metadata', type=str, default="data/mvtec_ad/metadata/supcon_dataset.json",
                        help='patch元数据JSON文件路径')
-    parser.add_argument('--output', type=str, required=True,
+    parser.add_argument('--output', type=str, default="data/mvtec_ad/embeddings/supcon_dataset.npz",
                        help='输出文件路径')
     parser.add_argument('--batch_size', type=int, default=32,
                        help='batch大小')

@@ -166,7 +166,7 @@ def main():
                        help='配置文件路径')
     parser.add_argument('--data_config', type=str, default='configs/data_config.yaml',
                        help='数据配置文件路径')
-    parser.add_argument('--resume', type=str, default="checkpoints/ssl/checkpoint_epoch_80.pth",
+    parser.add_argument('--resume', type=str, default=None,
                        help='恢复训练的checkpoint路径')
     args = parser.parse_args()
     
@@ -263,7 +263,7 @@ def main():
         )
     
     # 恢复训练
-    start_epoch = 0
+    start_epoch = 1
     best_loss = float('inf')
     if args.resume:
         logger.info(f"从checkpoint恢复: {args.resume}")
@@ -271,7 +271,7 @@ def main():
         model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        start_epoch = checkpoint['epoch']
+        start_epoch = checkpoint['epoch'] + 1
         best_loss = checkpoint.get('best_loss', float('inf'))
     
     # 训练循环
@@ -279,7 +279,7 @@ def main():
     train_losses = []
     val_losses = []
     
-    for epoch in range(start_epoch, training_config['epochs']):
+    for epoch in range(start_epoch, training_config['epochs']+1):
         # 训练
         train_loss = train_epoch(model, dataloader, optimizer, device, epoch)
         train_losses.append(train_loss)

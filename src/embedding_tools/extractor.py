@@ -52,9 +52,26 @@ class EmbeddingExtractor:
         
         # 加载权重
         if 'model_state_dict' in checkpoint:
-            self.model.load_state_dict(checkpoint['model_state_dict'])
+            state_dict = checkpoint['model_state_dict']
         else:
-            self.model.load_state_dict(checkpoint)
+            state_dict = checkpoint
+        
+        # 过滤掉classification_head的权重（如果模型没有分类头）
+        # 因为提取embedding时不需要分类头
+        filtered_state_dict = {}
+        for key, value in state_dict.items():
+            if not key.startswith('classification_head.'):
+                filtered_state_dict[key] = value
+        
+        # 加载权重（使用strict=False以忽略不匹配的键）
+        missing_keys, unexpected_keys = self.model.load_state_dict(
+            filtered_state_dict, strict=False
+        )
+        
+        if missing_keys:
+            print(f"警告：部分权重未加载: {missing_keys[:5]}...")
+        if unexpected_keys:
+            print(f"警告：部分权重未使用: {unexpected_keys[:5]}...")
         
         self.model.eval()
     
@@ -184,6 +201,7 @@ class EmbeddingExtractor:
         # 保存
         if output_file:
             output_path = Path(output_file)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             if output_path.suffix == '.npz':
                 np.savez(
                     output_file,
