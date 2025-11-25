@@ -2,7 +2,7 @@
 ssl:
   # 模型配置
   model:
-    backbone: "vit_base"  # 可选: vit_base, resnet50, convnext_base
+    backbone: "convnext_base"  # 可选: vit_base, resnet50, convnext_base
     backbone_pretrained: true  # 是否使用ImageNet预训练权重
     image_size: 224
     patch_size: 16  # ViT的patch size

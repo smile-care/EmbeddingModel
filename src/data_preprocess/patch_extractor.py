@@ -17,7 +17,7 @@ class PatchExtractor:
         self,
         patch_size: int = 224,
         expand_ratio: float = 0.1,
-        min_size: int = 32
+        min_size: int = 8
     ):
         """
         初始化Patch提取器
@@ -107,12 +107,14 @@ class PatchExtractor:
         # 加载图像
         image = cv2.imread(str(image_path))
         if image is None:
+            assert False, f"Failed to load image: {image_path}"
             return None
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         
         # 加载mask
         mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
         if mask is None:
+            assert False, f"Failed to load mask: {mask_path}"
             return None
         
         # 确保mask和图像尺寸一致
@@ -130,13 +132,16 @@ class PatchExtractor:
         
         # 检查最小尺寸
         if (x_max - x_min) < self.min_size or (y_max - y_min) < self.min_size:
+            assert False, f"Patch size below minimum: {(x_max - x_min)}x{(y_max - y_min)}"
             return None
         
         # 裁剪patch
         patch = image[y_min:y_max, x_min:x_max]
+        patch_mask = mask[y_min:y_max, x_min:x_max]
         
         # Resize到目标尺寸
         patch = cv2.resize(patch, (self.patch_size, self.patch_size))
+        patch_mask = cv2.resize(patch_mask, (self.patch_size, self.patch_size))
         
         # 构建元数据
         metadata = {
@@ -145,7 +150,7 @@ class PatchExtractor:
             'patch_size': self.patch_size
         }
         
-        return patch, metadata
+        return patch, patch_mask, metadata
     
     def process_metadata(
         self,
@@ -215,12 +220,17 @@ class PatchExtractor:
                 failed_count += 1
                 continue
             
-            patch, patch_info = result
+            patch, patch_mask, patch_info = result
             
             # 保存patch图像
             patch_filename = f"{instance['instance_id']}.png"
-            patch_path = output_dir / patch_filename
+            patch_mask_filename = f"{instance['instance_id']}_mask.png"
+            patch_path = output_dir / "images" / patch_filename
+            patch_mask_path = output_dir / "masks" / patch_mask_filename
+            patch_path.parent.mkdir(parents=True, exist_ok=True)
+            patch_mask_path.parent.mkdir(parents=True, exist_ok=True)
             Image.fromarray(patch).save(patch_path)
+            Image.fromarray(patch_mask).save(patch_mask_path)
             
             # 添加到patch元数据
             # bbox中可能含有numpy.int64，这里显式转换
@@ -228,6 +238,7 @@ class PatchExtractor:
             patch_metadata['patches'].append({
                 'instance_id': instance['instance_id'],
                 'patch_path': str(patch_path),
+                'patch_mask_path': str(patch_mask_path),
                 'label': instance['label'],
                 'domain_id': instance['domain_id'],
                 'original_image_path': instance['image_path'],

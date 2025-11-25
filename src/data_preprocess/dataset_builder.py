@@ -35,7 +35,11 @@ class DatasetBuilder:
         Returns:
             输出文件路径
         """
-        metadata_path = self.metadata_root / metadata_file
+        try:
+            metadata_path = self.metadata_root / metadata_file
+            assert metadata_path.exists(), f"元数据文件不存在: {metadata_path}"
+        except:
+            metadata_path = Path(metadata_file)
         with open(metadata_path, 'r', encoding='utf-8') as f:
             metadata = json.load(f)
         

@@ -30,10 +30,10 @@ data:
   patch:
     size: 224  # patch大小 (224x224 或 256x256)
     expand_ratio: 0.1  # 扩边比例（相对于mask外接矩形）
-    min_size: 32  # 最小patch尺寸
+    min_size: 5  # 最小patch尺寸
   
   # 数据过滤配置
   filtering:
-    min_samples_per_class: 5  # 每个类别最少样本数
+    min_samples_per_class: 2  # 每个类别最少样本数
     max_samples_per_class: 10000  # 每个类别最多样本数（用于平衡）
 

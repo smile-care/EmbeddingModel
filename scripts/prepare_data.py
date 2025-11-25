@@ -21,7 +21,7 @@ def main():
     parser.add_argument('--data_config', type=str, default='configs/data_config.yaml',
                        help='数据配置文件路径')
     parser.add_argument('--step', type=str, choices=['metadata', 'patch', 'dataset', 'all'],
-                       default='patch', help='执行步骤')
+                       default='dataset', help='执行步骤')
     args = parser.parse_args()
     
     # 加载配置
