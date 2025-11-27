@@ -3,24 +3,25 @@
 """
 import argparse
 import sys
-import numpy as np
 from pathlib import Path
+
+import numpy as np
 
 # 添加src到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.embedding_tools.extractor import EmbeddingExtractor
+from src.embedding_tools.extractor import EmbeddingExtractor, MAEFeatureExtractor
 from src.utils.config_loader import load_config
 from src.utils.logging import setup_logger
 
 
 def main():
     parser = argparse.ArgumentParser(description='提取embedding')
-    parser.add_argument('--model', type=str, default="checkpoints/supcon/checkpoint_epoch_50.pth",
+    parser.add_argument('--model', type=str, default="checkpoints/supcon_trainval-3/best_model.pth",
                        help='模型checkpoint路径')
-    parser.add_argument('--metadata', type=str, default="data/mvtec_ad/metadata/supcon_dataset.json",
+    parser.add_argument('--metadata', type=str, default="data/mvtec_ad/metadata/supcon_dataset_val.json",
                        help='patch元数据JSON文件路径')
-    parser.add_argument('--output', type=str, default="data/mvtec_ad/embeddings/supcon_dataset.npz",
+    parser.add_argument('--output', type=str, default="data/mvtec_ad/embeddings/supcon_dataset_val-3.npz",
                        help='输出文件路径')
     parser.add_argument('--batch_size', type=int, default=32,
                        help='batch大小')

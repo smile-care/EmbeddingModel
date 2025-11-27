@@ -8,7 +8,7 @@ supcon:
     projection_head:
       hidden_dims: [256, 128]  # MLP隐藏层维度
       dropout: 0.1
-    use_classification_head: true  # 是否同时训练分类头（辅助CE loss）
+    use_classification_head: false  # 是否同时训练分类头（辅助CE loss）
     num_classes: null  # 自动从数据推断
   
   # 训练策略
@@ -28,6 +28,9 @@ supcon:
   
   # 数据配置
   data:
+    train_metadata: "data/mvtec_ad/metadata/supcon_dataset_train.json"  # 训练集metadata路径
+    val_metadata: "data/mvtec_ad/metadata/supcon_dataset_val.json"  # 验证集metadata路径
+    patch_root: "data/mvtec_ad/patches"  # patch数据根目录
     batch_size: 32
     num_workers: 2
     pin_memory: true
@@ -70,8 +73,8 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon"
-    log_dir: "logs/supcon"
+    checkpoint_dir: "checkpoints/supcon_trainval-3"
+    log_dir: "logs/supcon_trainval-3"
     use_wandb: true
     wandb_project: "industrial-supcon"
 

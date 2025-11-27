@@ -286,16 +286,38 @@ def main():
     
     # 创建数据集
     logger.info("加载数据集...")
-    supcon_metadata = data_config['data']['metadata_root'] + "/supcon_dataset.json"
-    dataset = SupConDataset(
-        metadata_file=supcon_metadata,
-        patch_root=data_config['data']['patches_root'],
+    
+    # 获取数据集路径（优先从supcon配置读取，否则使用data_config）
+    data_cfg = supcon_config['supcon']['data']
+    if 'train_metadata' in data_cfg and 'val_metadata' in data_cfg:
+        train_metadata = data_cfg['train_metadata']
+        val_metadata = data_cfg['val_metadata']
+        patch_root = data_cfg['patch_root']
+    else:
+        # 兼容旧配置：使用同一个数据集
+        train_metadata = data_config['data']['metadata_root'] + "/supcon_dataset.json"
+        val_metadata = train_metadata
+        patch_root = data_config['data']['patches_root']
+    
+    logger.info(f"训练集: {train_metadata}")
+    logger.info(f"验证集: {val_metadata}")
+    
+    train_dataset = SupConDataset(
+        metadata_file=train_metadata,
+        patch_root=patch_root,
         augmentation_config=supcon_config['supcon']['augmentation']
     )
     
+    val_dataset = SupConDataset(
+        metadata_file=val_metadata,
+        patch_root=patch_root,
+        augmentation_config=None  # 验证集不使用数据增强
+    )
+    
     # 获取类别数
-    num_classes = len(dataset.labels)
-    logger.info(f"类别数: {num_classes}")
+    num_classes = len(train_dataset.labels)
+    logger.info(f"训练集样本数: {len(train_dataset)}, 类别数: {num_classes}")
+    logger.info(f"验证集样本数: {len(val_dataset)}")
     
     # 创建数据加载器
     # 对于SupCon，需要确保每个batch中有相同标签的样本
@@ -307,32 +329,41 @@ def main():
         samples_per_class = supcon_config['supcon']['data']['samples_per_class']
         logger.info(f"使用label balanced batch sampler，每个batch中每个类别至少{samples_per_class}个样本")
         
-        # 创建LabelBalancedBatchSampler
-        batch_sampler = LabelBalancedBatchSampler(
-            dataset=dataset,
+        # 创建训练集LabelBalancedBatchSampler
+        train_batch_sampler = LabelBalancedBatchSampler(
+            dataset=train_dataset,
             batch_size=batch_size,
             samples_per_class=samples_per_class,
             drop_last=False
         )
         
-        dataloader = DataLoader(
-            dataset,
-            batch_sampler=batch_sampler,
+        train_dataloader = DataLoader(
+            train_dataset,
+            batch_sampler=train_batch_sampler,
             num_workers=supcon_config['supcon']['data']['num_workers'],
             pin_memory=supcon_config['supcon']['data']['pin_memory']
         )
         
-        logger.info(f"实际batch大小: {batch_sampler.actual_batch_size} (配置: {batch_size})")
+        logger.info(f"训练集实际batch大小: {train_batch_sampler.actual_batch_size} (配置: {batch_size})")
     else:
         # 使用普通shuffle
         logger.warning("未使用label balanced采样，某些batch可能没有positive pairs！")
-        dataloader = DataLoader(
-            dataset,
+        train_dataloader = DataLoader(
+            train_dataset,
             batch_size=batch_size,
             shuffle=True,
             num_workers=supcon_config['supcon']['data']['num_workers'],
             pin_memory=supcon_config['supcon']['data']['pin_memory']
         )
+    
+    # 验证集dataloader（不需要label balanced，使用普通顺序加载）
+    val_dataloader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=supcon_config['supcon']['data']['num_workers'],
+        pin_memory=supcon_config['supcon']['data']['pin_memory']
+    )
     
     # 创建模型
     logger.info("创建模型...")
@@ -425,7 +456,7 @@ def main():
         
         # 训练
         train_metrics = train_epoch(
-            model, dataloader, criterion, optimizer, device, epoch,
+            model, train_dataloader, criterion, optimizer, device, epoch,
             use_classification_head
         )
         train_losses.append(train_metrics['loss'])
@@ -435,7 +466,7 @@ def main():
         
         # 验证
         val_metrics = validate(
-            model, dataloader, criterion, device, use_classification_head
+            model, val_dataloader, criterion, device, use_classification_head
         )
         val_losses.append(val_metrics['loss'])
         

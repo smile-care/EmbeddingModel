@@ -18,7 +18,8 @@ from src.utils.logging import setup_logger
 def stratified_split(
     patches: List[Dict],
     train_ratio: float,
-    seed: int = 42
+    seed: int = 42,
+    logger=None
 ) -> Tuple[List[Dict], List[Dict]]:
     """
     按类别分层划分数据集
@@ -27,6 +28,7 @@ def stratified_split(
         patches: 所有patch的列表
         train_ratio: 训练集比例 (0-1)
         seed: 随机种子
+        logger: 日志记录器（可选）
         
     Returns:
         (train_patches, val_patches)
@@ -42,10 +44,39 @@ def stratified_split(
     train_patches = []
     val_patches = []
     
+    # 限制：训练集至少3个（超过2），验证集至少4个
+    min_train = 3  # 超过2，即至少3个
+    min_val = 4
+    
     # 对每个类别分别划分
     for label, label_patches in patches_by_label.items():
         random.shuffle(label_patches)
-        n_train = int(len(label_patches) * train_ratio)
+        n_total = len(label_patches)
+        n_train = int(n_total * train_ratio)
+        
+        # 先保证训练集超过2个（至少3个）
+        if n_train < min_train:
+            n_train = min_train
+        
+        # 在保证训练集超过2后，至少保证验证集有4个
+        if n_total - n_train < min_val:
+            # 如果验证集不足4个，调整训练集大小
+            n_train = n_total - min_val
+            # 如果调整后训练集不足3个，说明样本数不足7个，无法同时满足两个条件
+            if n_train < min_train:
+                # 优先保证训练集至少3个，验证集有多少算多少
+                n_train = min_train
+                n_val = n_total - n_train
+                if logger:
+                    logger.warning(
+                        f"类别 '{label}' 样本数不足 ({n_total}个)，无法同时满足"
+                        f"训练集>2和验证集>=4的要求。"
+                        f"实际划分: 训练集={n_train}, 验证集={n_val}"
+                    )
+            else:
+                # 调整成功，可以同时满足两个条件
+                pass
+        
         train_patches.extend(label_patches[:n_train])
         val_patches.extend(label_patches[n_train:])
     
@@ -123,7 +154,7 @@ def split_dataset(
     
     # 划分数据集
     if split_method == 'stratified':
-        train_patches, val_patches = stratified_split(patches, train_ratio, seed)
+        train_patches, val_patches = stratified_split(patches, train_ratio, seed, logger)
     elif split_method == 'random':
         train_patches, val_patches = random_split(patches, train_ratio, seed)
     else:

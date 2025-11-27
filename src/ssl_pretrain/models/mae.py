@@ -139,16 +139,8 @@ class MAE(nn.Module):
         
         return x_masked, mask, ids_restore
     
-    def forward_encoder(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """
-        Encoder前向传播
-        
-        Args:
-            x: 输入图像 (B, C, H, W)
-            
-        Returns:
-            (编码特征, mask, ids_restore)
-        """
+    
+    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
         # 提取特征
         if self.is_vit:
             # ViT backbone
@@ -181,6 +173,22 @@ class MAE(nn.Module):
             # target_size^2 = num_patches，所以输出正好是(B, num_patches, C)
             B, C, H, W = x.shape
             x = x.flatten(2).transpose(1, 2)  # (B, H*W, C) = (B, num_patches, C)
+        
+        return x
+    
+    
+    def forward_encoder(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Encoder前向传播
+        
+        Args:
+            x: 输入图像 (B, C, H, W)
+            
+        Returns:
+            (编码特征, mask, ids_restore)
+        """
+        # 提取特征
+        x = self.extract_features(x)  # (B, N, D)
         
         # 随机masking
         x_masked, mask, ids_restore = self.random_masking(x)
