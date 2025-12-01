@@ -1,28 +1,30 @@
 """
 SupCon监督对比学习训练脚本
 """
+import argparse
+import random
+from collections import defaultdict
+from pathlib import Path
+
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import DataLoader, BatchSampler, WeightedRandomSampler, Sampler
-from collections import defaultdict
-import numpy as np
-import random
-from pathlib import Path
-import argparse
+from torch.utils.data import BatchSampler, DataLoader, Sampler, WeightedRandomSampler
 from tqdm import tqdm
+
 try:
     import wandb
 except ImportError:
     wandb = None
 from typing import Optional
 
-from .models.supcon_model import SupConModel
-from .models.losses import CombinedLoss
-from .datasets.supcon_dataset import SupConDataset
 from ..utils.config_loader import load_config
 from ..utils.logging import setup_logger
 from ..utils.visualization import plot_loss_curve
+from .datasets.supcon_dataset import SupConDataset
+from .models.losses import CombinedLoss
+from .models.supcon_model import SupConModel
 
 
 class LabelBalancedBatchSampler(Sampler):
@@ -289,28 +291,47 @@ def main():
     
     # 获取数据集路径（优先从supcon配置读取，否则使用data_config）
     data_cfg = supcon_config['supcon']['data']
-    if 'train_metadata' in data_cfg and 'val_metadata' in data_cfg:
+    
+    # 支持多个数据集文件
+    if 'train_metadata_files' in data_cfg:
+        # 支持多个训练集文件
+        train_metadata = data_cfg['train_metadata_files']
+        if isinstance(train_metadata, str):
+            train_metadata = [train_metadata]
+        logger.info(f"训练集（多个文件）: {train_metadata}")
+    elif 'train_metadata' in data_cfg:
+        # 单个训练集文件
         train_metadata = data_cfg['train_metadata']
-        val_metadata = data_cfg['val_metadata']
-        patch_root = data_cfg['patch_root']
+        logger.info(f"训练集: {train_metadata}")
     else:
         # 兼容旧配置：使用同一个数据集
         train_metadata = data_config['data']['metadata_root'] + "/supcon_dataset.json"
-        val_metadata = train_metadata
-        patch_root = data_config['data']['patches_root']
+        logger.info(f"训练集（默认）: {train_metadata}")
     
-    logger.info(f"训练集: {train_metadata}")
-    logger.info(f"验证集: {val_metadata}")
+    if 'val_metadata_files' in data_cfg:
+        # 支持多个验证集文件
+        val_metadata = data_cfg['val_metadata_files']
+        if isinstance(val_metadata, str):
+            val_metadata = [val_metadata]
+        logger.info(f"验证集（多个文件）: {val_metadata}")
+    elif 'val_metadata' in data_cfg:
+        # 单个验证集文件
+        val_metadata = data_cfg['val_metadata']
+        logger.info(f"验证集: {val_metadata}")
+    else:
+        # 使用训练集作为验证集
+        val_metadata = train_metadata
+        logger.info(f"验证集（使用训练集）: {val_metadata}")
     
     train_dataset = SupConDataset(
         metadata_file=train_metadata,
-        patch_root=patch_root,
+        patch_root=None,  # 不再需要patch_root，因为现在使用绝对路径
         augmentation_config=supcon_config['supcon']['augmentation']
     )
     
     val_dataset = SupConDataset(
         metadata_file=val_metadata,
-        patch_root=patch_root,
+        patch_root=None,  # 不再需要patch_root，因为现在使用绝对路径
         augmentation_config=None  # 验证集不使用数据增强
     )
     

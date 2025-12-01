@@ -3,7 +3,7 @@
 """
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union, List
 from PIL import Image
 import torch
 from torch.utils.data import Dataset, WeightedRandomSampler
@@ -17,7 +17,7 @@ class SSLDataset(Dataset):
     
     def __init__(
         self,
-        metadata_file: str,
+        metadata_file: Union[str, List[str]],
         image_root: Optional[str] = None,
         augmentation_config: Optional[dict] = None,
         domain_balanced: bool = True
@@ -26,16 +26,32 @@ class SSLDataset(Dataset):
         初始化数据集
         
         Args:
-            metadata_file: 元数据JSON文件路径
-            image_root: 图像根目录（如果元数据中是相对路径）
+            metadata_file: 元数据JSON文件路径，可以是单个文件路径或文件路径列表（用于合并多个数据集）
+            image_root: 图像根目录（如果元数据中是相对路径，已废弃，因为现在使用绝对路径）
             augmentation_config: 数据增强配置
             domain_balanced: 是否使用domain平衡采样
         """
-        with open(metadata_file, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
+        # 支持单个文件或文件列表
+        if isinstance(metadata_file, str):
+            metadata_files = [metadata_file]
+        else:
+            metadata_files = metadata_file
+        
+        # 合并多个数据集
+        all_images = []
+        all_domains = set()
+        total_images = 0
+        
+        for meta_file in metadata_files:
+            with open(meta_file, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            
+            all_images.extend(metadata['images'])
+            all_domains.update(metadata.get('domains', []))
+            total_images += metadata.get('total_images', len(metadata['images']))
         
         self.image_root = Path(image_root) if image_root else None
-        self.images = metadata['images']
+        self.images = all_images
         self.domain_balanced = domain_balanced
         
         # 构建增强器

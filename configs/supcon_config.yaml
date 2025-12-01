@@ -1,12 +1,12 @@
-# 监督对比学习配置（SupCon）
+# 监督对比学习配置（SupCon）- 合并mvtec_ad和zhenyu_data数据
 supcon:
   # 模型配置
   model:
     backbone: "vit_base"  # 必须与SSL阶段一致
-    ssl_checkpoint: "checkpoints/ssl/best_model.pth"  # SSL阶段训练的模型路径
+    ssl_checkpoint: "" # "checkpoints/ssl_models/ssl_merged/best_model.pth"  # SSL阶段训练的模型路径
     embedding_dim: 128  # 最终embedding维度
     projection_head:
-      hidden_dims: [256, 128]  # MLP隐藏层维度
+      hidden_dims: [1024, 128]  # MLP隐藏层维度
       dropout: 0.1
     use_classification_head: false  # 是否同时训练分类头（辅助CE loss）
     num_classes: null  # 自动从数据推断
@@ -23,20 +23,25 @@ supcon:
       temperature: 0.07  # SupCon温度参数
       weight: 1.0
     cross_entropy:
-      weight: 0.5  # CE loss权重（如果启用）
+      weight: 0.3  # CE loss权重（如果启用）
       label_smoothing: 0.1
   
   # 数据配置
   data:
-    train_metadata: "data/mvtec_ad/metadata/supcon_dataset_train.json"  # 训练集metadata路径
-    val_metadata: "data/mvtec_ad/metadata/supcon_dataset_val.json"  # 验证集metadata路径
-    patch_root: "data/mvtec_ad/patches"  # patch数据根目录
+    # 合并多个训练集文件
+    train_metadata_files:
+      - "data/zhenyu_data/patches/supcon_labels/顶盖正面/metadata_train.json"
+      # - "data/zhenyu_data/metadata/supcon_dataset_filtered_train.json"  # zhenyu_data没有train/val分离，使用全部数据
+    # 合并多个验证集文件（如果zhenyu_data有验证集，可以添加）
+    val_metadata_files:
+      - "data/zhenyu_data/patches/supcon_labels/顶盖正面/metadata_val.json"
+      # - "data/zhenyu_data/metadata/supcon_dataset_filtered_val.json"
     batch_size: 32
     num_workers: 2
     pin_memory: true
     # 采样策略：保证每个batch内每个label有多个样本
-    samples_per_class: 2  # 每个类别在每个batch中的样本数
-    domain_balanced: true  # 是否使用domain平衡采样
+    samples_per_class: 5  # 每个类别在每个batch中的样本数
+    # domain_balanced: true  # 是否使用domain平衡采样
   
   # 数据增强（与SSL类似但可调整）
   augmentation:
@@ -50,7 +55,7 @@ supcon:
       prob: 0.3
       enabled: true
     rotation:
-      degrees: 10
+      degrees: 5
       enabled: true
     color_jitter:
       brightness: 0.1
@@ -68,13 +73,13 @@ supcon:
     weight_decay: 0.05
     optimizer: "adamw"
     lr_scheduler: "cosine"
-    save_interval: 5
-    eval_interval: 2
+    save_interval: 10
+    eval_interval: 5
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_trainval-3"
-    log_dir: "logs/supcon_trainval-3"
+    checkpoint_dir: "checkpoints/supcon_models/1201_ssl_nopretrained"
+    log_dir: "logs/supcon_models/1201_ssl_nopretrained"
     use_wandb: true
-    wandb_project: "industrial-supcon"
+    wandb_project: "industrial-supcon-1201-ssl-pretrained"
 

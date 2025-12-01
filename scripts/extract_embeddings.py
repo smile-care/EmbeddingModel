@@ -17,11 +17,13 @@ from src.utils.logging import setup_logger
 
 def main():
     parser = argparse.ArgumentParser(description='提取embedding')
-    parser.add_argument('--model', type=str, default="checkpoints/supcon_trainval-3/best_model.pth",
+    parser.add_argument('--model', type=str, default="checkpoints/supcon_models/1201_ssl_pretrained/checkpoint_epoch_50.pth",
                        help='模型checkpoint路径')
-    parser.add_argument('--metadata', type=str, default="data/mvtec_ad/metadata/supcon_dataset_val.json",
+    parser.add_argument('--extractor', type=str, default="EmbeddingExtractor",
+                          help='提取器类型， EmbeddingExtractor 或 MAEFeatureExtractor')
+    parser.add_argument('--metadata', type=str, default="data/zhenyu_data/patches/supcon_labels/顶盖正面/metadata_val.json",
                        help='patch元数据JSON文件路径')
-    parser.add_argument('--output', type=str, default="data/mvtec_ad/embeddings/supcon_dataset_val-3.npz",
+    parser.add_argument('--output', type=str, default="data/zhenyu_data/embeddings/supcon_labels/1201_ssl_pretrained.npz",
                        help='输出文件路径')
     parser.add_argument('--batch_size', type=int, default=32,
                        help='batch大小')
@@ -32,10 +34,16 @@ def main():
     logger = setup_logger('extract_embeddings')
     
     logger.info("加载模型...")
-    extractor = EmbeddingExtractor(
-        model_path=args.model,
-        config_path=args.config
-    )
+    if args.extractor == "EmbeddingExtractor":
+        extractor = EmbeddingExtractor(
+            model_path=args.model,
+            config_path=args.config
+        )
+    elif args.extractor == "MAEFeatureExtractor":
+        extractor = MAEFeatureExtractor(
+            model_path=args.model,
+            config_path=args.config
+        )
     
     logger.info("提取embedding...")
     embeddings_dict = extractor.extract_batch(

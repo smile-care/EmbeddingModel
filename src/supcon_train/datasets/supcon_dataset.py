@@ -3,7 +3,7 @@
 """
 import json
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union, List
 from PIL import Image
 import torch
 from torch.utils.data import Dataset
@@ -17,7 +17,7 @@ class SupConDataset(Dataset):
     
     def __init__(
         self,
-        metadata_file: str,
+        metadata_file: Union[str, List[str]],
         patch_root: Optional[str] = None,
         augmentation_config: Optional[dict] = None
     ):
@@ -25,17 +25,33 @@ class SupConDataset(Dataset):
         初始化数据集
         
         Args:
-            metadata_file: patch元数据JSON文件路径
-            patch_root: patch根目录（如果元数据中是相对路径）
+            metadata_file: patch元数据JSON文件路径，可以是单个文件路径或文件路径列表（用于合并多个数据集）
+            patch_root: patch根目录（如果元数据中是相对路径，已废弃，因为现在使用绝对路径）
             augmentation_config: 数据增强配置
         """
-        with open(metadata_file, 'r', encoding='utf-8') as f:
-            metadata = json.load(f)
+        # 支持单个文件或文件列表
+        if isinstance(metadata_file, str):
+            metadata_files = [metadata_file]
+        else:
+            metadata_files = metadata_file
+        
+        # 合并多个数据集
+        all_patches = []
+        all_domains = set()
+        total_patches = 0
+        
+        for meta_file in metadata_files:
+            with open(meta_file, 'r', encoding='utf-8') as f:
+                metadata = json.load(f)
+            
+            all_patches.extend(metadata['patches'])
+            all_domains.update(metadata.get('domains', []))
+            total_patches += metadata.get('total_patches', len(metadata['patches']))
         
         self.patch_root = Path(patch_root) if patch_root else None
-        self.patches = metadata['patches']
+        self.patches = all_patches
         
-        # 构建标签映射
+        # 构建标签映射（合并后的所有标签）
         self.labels = sorted(list(set(p['label'] for p in self.patches)))
         self.label_to_idx = {label: idx for idx, label in enumerate(self.labels)}
         self.idx_to_label = {idx: label for label, idx in self.label_to_idx.items()}

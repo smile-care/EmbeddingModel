@@ -5,11 +5,11 @@
 import argparse
 import json
 import random
-from pathlib import Path
+import sys
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List, Tuple
 
-import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.utils.logging import setup_logger
@@ -231,13 +231,13 @@ def main():
     parser.add_argument(
         '--input',
         type=str,
-        default='data/mvtec_ad/metadata/supcon_dataset.json',
+        default='data/zhenyu_data/patches/supcon_labels/顶盖正面/metadata.json',
         help='输入数据集JSON文件路径'
     )
     parser.add_argument(
         '--output_dir',
         type=str,
-        default='data/mvtec_ad/metadata',
+        default='data/zhenyu_data/patches/supcon_labels/顶盖正面',
         help='输出目录'
     )
     parser.add_argument(

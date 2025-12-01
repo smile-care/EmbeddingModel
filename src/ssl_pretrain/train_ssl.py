@@ -2,6 +2,7 @@
 MAE自监督预训练脚本
 """
 import os
+
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 import argparse
 from pathlib import Path
@@ -200,13 +201,28 @@ def main():
     
     # 创建数据集
     logger.info("加载数据集...")
-    ssl_metadata = data_config['data']['metadata_root'] + "/ssl_dataset.json"
+    
+    # 支持从配置中读取多个数据集文件，或使用默认路径
+    data_cfg = ssl_config['ssl']['data']
+    if 'metadata_files' in data_cfg:
+        # 支持多个数据集文件
+        metadata_files = data_cfg['metadata_files']
+        if isinstance(metadata_files, str):
+            metadata_files = [metadata_files]
+        logger.info(f"加载多个数据集: {metadata_files}")
+    else:
+        # 兼容旧配置：使用单个数据集文件
+        metadata_files = [data_config['data']['metadata_root'] + "/ssl_dataset.json"]
+        logger.info(f"加载单个数据集: {metadata_files[0]}")
+    
     dataset = SSLDataset(
-        metadata_file=ssl_metadata,
-        image_root=data_config['data']['raw_data_root'],
+        metadata_file=metadata_files,
+        image_root=None,  # 不再需要image_root，因为现在使用绝对路径
         augmentation_config=ssl_config['ssl']['augmentation'],
         domain_balanced=ssl_config['ssl']['data']['domain_balanced']
     )
+    
+    logger.info(f"数据集加载完成: 总样本数={len(dataset)}, domains={len(set(img['domain_id'] for img in dataset.images))}")
     
     # 创建数据加载器
     sampler = dataset.get_domain_balanced_sampler() if ssl_config['ssl']['data']['domain_balanced'] else None
@@ -289,7 +305,7 @@ def main():
         
         # 验证（如果有验证集）
         val_loss = train_loss  # 简化：使用训练loss
-        if epoch % training_config.get('eval_interval', 5) == 0:
+        if epoch % training_config.get('eval_interval', 10) == 0 or epoch == 1:
             val_loss = validate(
                 model, dataloader, device,
                 save_dir=checkpoint_dir,

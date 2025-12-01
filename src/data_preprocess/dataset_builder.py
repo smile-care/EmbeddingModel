@@ -139,7 +139,7 @@ class DatasetBuilder:
     def filter_dataset(
         self,
         dataset_file: str,
-        min_samples_per_class: int = 5,
+        min_samples_per_class: int = 2,
         max_samples_per_class: Optional[int] = None,
         output_file: Optional[str] = None
     ) -> str:

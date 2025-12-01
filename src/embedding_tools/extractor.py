@@ -186,11 +186,13 @@ class EmbeddingExtractor:
         embeddings_dict = {}
         all_embeddings = []
         all_instance_ids = []
+        all_labels = []
         
         with torch.no_grad():
             for batch in tqdm(dataloader, desc="提取embedding"):
                 images = batch['image'].to(self.device)
                 instance_ids = batch['instance_id']
+                labels = batch['label']
                 
                 outputs = self.model(images, return_features=False)
                 embeddings = outputs['embeddings'].cpu().numpy()
@@ -199,6 +201,7 @@ class EmbeddingExtractor:
                     embeddings_dict[instance_id] = embeddings[i]
                     all_embeddings.append(embeddings[i])
                     all_instance_ids.append(instance_id)
+                    all_labels.append(labels[i])
         
         # 保存
         if output_file:
@@ -208,7 +211,8 @@ class EmbeddingExtractor:
                 np.savez(
                     output_file,
                     embeddings=np.array(all_embeddings),
-                    instance_ids=np.array(all_instance_ids)
+                    instance_ids=np.array(all_instance_ids),
+                    labels=np.array(all_labels)
                 )
             else:
                 # 保存为字典格式
@@ -392,11 +396,13 @@ class MAEFeatureExtractor:
         embeddings_dict = {}
         all_embeddings = []
         all_instance_ids = []
+        all_labels = []
         
         with torch.no_grad():
             for batch in tqdm(dataloader, desc="提取MAE特征"):
                 images = batch['image'].to(self.device)
                 instance_ids = batch['instance_id']
+                labels = batch['label']
                 
                 # 提取encoder特征
                 features = self.model.extract_features(images)  # (B, N, D)
@@ -412,6 +418,7 @@ class MAEFeatureExtractor:
                     embeddings_dict[instance_id] = embeddings[i]
                     all_embeddings.append(embeddings[i])
                     all_instance_ids.append(instance_id)
+                    all_labels.append(labels[i])
         
         # 保存
         if output_file:
@@ -421,7 +428,8 @@ class MAEFeatureExtractor:
                 np.savez(
                     output_file,
                     embeddings=np.array(all_embeddings),
-                    instance_ids=np.array(all_instance_ids)
+                    instance_ids=np.array(all_instance_ids),
+                    labels=np.array(all_labels)
                 )
                 print(f"保存特征到: {output_file}")
                 print(f"特征形状: {np.array(all_embeddings).shape}")

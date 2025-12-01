@@ -1,9 +1,11 @@
 """
 SupCon模型：Backbone + Projection Head
 """
+from typing import Optional
+
 import torch
 import torch.nn as nn
-from typing import Optional
+
 from ...ssl_pretrain.models.backbone_factory import BackboneFactory
 
 
@@ -102,7 +104,7 @@ class SupConModel(nn.Module):
         # Backbone
         self.backbone = BackboneFactory.create_backbone(
             backbone_type,
-            pretrained=False,  # 不使用ImageNet预训练，使用SSL权重
+            pretrained=False if backbone_checkpoint else True,  # 不使用ImageNet预训练，使用SSL权重
             image_size=image_size
         )
         
