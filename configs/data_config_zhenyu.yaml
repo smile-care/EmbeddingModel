@@ -2,7 +2,10 @@
 # 用于设置不同缺陷类别之间的相似度关系
 
 
-root: "data/zhenyu_data/patches/supcon_data_cleaned"
+root: "data/datasets/zhenyu"
+data_split:
+  train: "train"
+  val: "val"
 
 categories: ["笔迹", "变形1", "变形2", "错装1", "错装2", "错装3", "断焊", "多装1", "多装2", "发亮", "飞边", 
             "焊包", "焊道划伤", "焊洞", "焊偏", "焊烟", "焊渣", "划伤1", "划伤2", "间隙大", "金属丝", "开裂", 

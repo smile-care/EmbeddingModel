@@ -24,7 +24,7 @@ supcon:
     save_interval: 10  # 每隔多少epoch保存一次模型
   
   training_strategy:
-    freeze_backbone_epochs: 500  # 冻结backbone的epoch数（0表示不冻结）
+    freeze_backbone_epochs: 10000  # 冻结backbone的epoch数（0表示不冻结）
   
   loss:
     type: "contrastive"  # "contrastive" 或 "target"
@@ -47,8 +47,8 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/debug"
-    log_dir: "logs/debug"
+    checkpoint_dir: "checkpoints/supcon_models/1217"
+    log_dir: "logs/supcon_logs/1217"
     use_wandb: true
-    wandb_project: "debug"
+    wandb_project: "supcon_1217"
 

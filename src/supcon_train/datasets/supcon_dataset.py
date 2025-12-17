@@ -166,6 +166,8 @@ class SupConDataset(Dataset):
             self.config = yaml.safe_load(f)
         
         self.root = Path(self.config['root'])
+        self.data_split = self.config.get('data_split', {'train': 'train', 'val': 'val'})
+        self.data_root = self.root / self.data_split[split]
         self.categories = self.config['categories']
         self.default_similarity = self.config.get('default_similarity', 0.0)
         self.custom_similarity = self.config.get('custom_similarity', [])
@@ -234,13 +236,13 @@ class SupConDataset(Dataset):
     
     def _load_samples(self) -> list:
         """加载数据样本列表"""
-        if not self.root.exists():
-            raise FileNotFoundError(f"数据根目录不存在: {self.root}")
+        if not self.data_root.exists():
+            raise FileNotFoundError(f"数据根目录不存在: {self.data_root}")
         
         samples = []
         
         # 遍历所有类别目录，使用rglob递归查找所有png文件
-        for file_path in self.root.rglob("*.png"):
+        for file_path in self.data_root.rglob("*.png"):
             # 跳过mask文件
             if "_mask.png" in file_path.name:
                 continue
