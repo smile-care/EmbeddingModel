@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
 准备监督对比学习数据集
-从数据目录扫描图片，根据配置文件生成包含相似度信息的JSON文件
 """
-import json
-import yaml
+import os
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional
-from collections import defaultdict
-import argparse
+from typing import Dict
+
+import numpy as np
+import yaml
+from tabulate import tabulate
 
 
 def load_similarity_config(config_path: Path) -> Dict:
@@ -17,276 +17,96 @@ def load_similarity_config(config_path: Path) -> Dict:
         config = yaml.safe_load(f)
     return config
 
-
-def get_category_name(data_root: Path, image_path: Path) -> str:
-    """
-    根据图片路径确定类别名
+class ZhenyuData:
+    """监督对比学习数据集准备类"""
     
-    规则：
-    1. 如果图片在子文件夹中（如 装反/装反1/xxx.png），返回子文件夹名（装反1）
-    2. 如果图片直接在顶级文件夹中（如 断焊/xxx.png），返回顶级文件夹名（断焊）
-    """
-    # 获取相对于数据根目录的路径
-    rel_path = image_path.relative_to(data_root)
-    parts = rel_path.parts
-    
-    if len(parts) >= 3:
-        # 有子文件夹：返回子文件夹名（如 "装反/装反1/xxx.png" -> "装反1"）
-        return parts[1]
-    elif len(parts) == 2:
-        # 直接在顶级文件夹中：返回顶级文件夹名（如 "断焊/xxx.png" -> "断焊"）
-        return parts[0]
-    else:
-        raise ValueError(f"无法确定类别名: {image_path}")
-
-
-def find_mask_path(image_path: Path) -> Optional[Path]:
-    """查找对应的mask文件"""
-    # mask文件名通常是：原文件名_mask.扩展名
-    stem = image_path.stem
-    suffix = image_path.suffix
-    
-    # 尝试几种可能的mask文件名格式
-    mask_candidates = [
-        image_path.parent / f"{stem}_mask{suffix}",
-        image_path.parent / f"{stem}_mask.png",
-        image_path.parent / f"{stem.replace('_0', '_0_mask')}{suffix}",
-    ]
-    
-    for mask_path in mask_candidates:
-        if mask_path.exists():
-            return mask_path
-    
-    return None
-
-
-def build_similarity_matrix(
-    categories: List[str],
-    default_similarity: float,
-    custom_similarity: List[Dict]
-) -> Dict[str, Dict[str, float]]:
-    """
-    构建类别之间的相似度矩阵
-    
-    Args:
-        categories: 所有类别列表
-        default_similarity: 默认相似度
-        custom_similarity: 自定义相似度规则列表
-    
-    Returns:
-        相似度矩阵字典，格式：{category1: {category2: similarity, ...}, ...}
-    """
-    # 初始化相似度矩阵
-    similarity_matrix = {}
-    for cat1 in categories:
-        similarity_matrix[cat1] = {}
-        for cat2 in categories:
-            if cat1 == cat2:
-                similarity_matrix[cat1][cat2] = 1.0  # 同一类别相似度为1
-            else:
-                similarity_matrix[cat1][cat2] = default_similarity
-    
-    # 应用自定义相似度规则
-    for rule in custom_similarity:
-        category_list = rule['list']
-        similarity = rule['similarity']
+    def __init__(
+        self, 
+        config_path: Path = Path('configs/data_config_zhenyu.yaml'),
+    ):
+        """
+        初始化数据集准备器
         
-        # 对于列表中的每一对类别，设置相似度
-        for i, cat1 in enumerate(category_list):
-            for cat2 in category_list[i+1:]:
-                if cat1 in similarity_matrix and cat2 in similarity_matrix[cat1]:
-                    similarity_matrix[cat1][cat2] = similarity
-                    similarity_matrix[cat2][cat1] = similarity  # 对称矩阵
-    
-    return similarity_matrix
-
-
-def scan_dataset(data_root: Path, image_extensions: Tuple[str, ...] = ('.png', '.jpg', '.jpeg')) -> List[Dict]:
-    """
-    扫描数据集目录，收集所有图片信息
-    
-    Returns:
-        图片信息列表，每个元素包含：
-        - image_path: 图片路径（绝对路径）
-        - mask_path: mask路径（如果有，绝对路径）
-        - category: 类别名
-        - relative_image_path: 相对路径（用于JSON）
-        - relative_mask_path: mask相对路径（如果有）
-    """
-    instances = []
-    data_root = Path(data_root).resolve()
-    
-    # 扫描所有图片文件（排除mask文件）
-    for image_path in data_root.rglob('*'):
-        if image_path.is_file() and image_path.suffix.lower() in image_extensions:
-            # 跳过mask文件
-            if 'mask' in image_path.name.lower():
-                continue
-            
-            # 确定类别名
-            try:
-                category = get_category_name(data_root, image_path)
-            except ValueError as e:
-                print(f"警告: {e}")
-                continue
-            
-            # 查找mask文件
-            mask_path = find_mask_path(image_path)
-            
-            # 构建相对路径
-            rel_image_path = str(image_path.relative_to(data_root))
-            rel_mask_path = str(mask_path.relative_to(data_root)) if mask_path else None
-            
-            instances.append({
-                'image_path': str(image_path),
-                'mask_path': str(mask_path) if mask_path else None,
-                'category': category,
-                'relative_image_path': rel_image_path,
-                'relative_mask_path': rel_mask_path
-            })
-    
-    return instances
-
-
-def main():
-    parser = argparse.ArgumentParser(description='准备监督对比学习数据集JSON文件')
-    parser.add_argument(
-        '--data_root',
-        type=str,
-        default='/home/unitx/workspace_custom/EmbeddingModel/data/zhenyu_data/patches/supcon_data_clean',
-        help='数据根目录路径'
-    )
-    parser.add_argument(
-        '--config',
-        type=str,
-        default=None,
-        help='相似度配置文件路径（默认：data_root/similarity_config.yaml）'
-    )
-    parser.add_argument(
-        '--output',
-        type=str,
-        default=None,
-        help='输出JSON文件路径（默认：data_root/dataset_metadata.json）'
-    )
-    parser.add_argument(
-        '--use_relative_paths',
-        action='store_true',
-        help='在JSON中使用相对路径而不是绝对路径'
-    )
-    
-    args = parser.parse_args()
-    
-    data_root = Path(args.data_root).resolve()
-    if not data_root.exists():
-        raise ValueError(f"数据根目录不存在: {data_root}")
-    
-    # 配置文件路径
-    if args.config:
-        config_path = Path(args.config).resolve()
-    else:
-        config_path = data_root / 'similarity_config.yaml'
-    
-    if not config_path.exists():
-        raise ValueError(f"配置文件不存在: {config_path}")
-    
-    # 输出文件路径
-    if args.output:
-        output_path = Path(args.output)
-    else:
-        output_path = data_root / 'dataset_metadata.json'
-    
-    print(f"数据根目录: {data_root}")
-    print(f"配置文件: {config_path}")
-    print(f"输出文件: {output_path}")
-    
-    # 加载配置文件
-    print("\n加载相似度配置...")
-    config = load_similarity_config(config_path)
-    categories = config.get('categories', [])
-    default_similarity = config.get('default_similarity', 0.0)
-    custom_similarity = config.get('custom_similarity', [])
-    
-    print(f"  类别数量: {len(categories)}")
-    print(f"  默认相似度: {default_similarity}")
-    print(f"  自定义规则数: {len(custom_similarity)}")
-    
-    # 扫描数据集
-    print("\n扫描数据集...")
-    instances = scan_dataset(data_root)
-    print(f"  找到 {len(instances)} 张图片")
-    
-    # 统计类别分布
-    category_counts = defaultdict(int)
-    for inst in instances:
-        category_counts[inst['category']] += 1
-    
-    print(f"\n类别分布:")
-    for cat, count in sorted(category_counts.items()):
-        print(f"  {cat}: {count} 张")
-    
-    # 检查配置文件中的类别是否都在数据中出现
-    config_categories_set = set(categories)
-    actual_categories_set = set(category_counts.keys())
-    
-    missing_in_data = config_categories_set - actual_categories_set
-    missing_in_config = actual_categories_set - config_categories_set
-    
-    if missing_in_data:
-        print(f"\n警告: 配置文件中定义但数据中不存在的类别: {missing_in_data}")
-    if missing_in_config:
-        print(f"\n警告: 数据中存在但配置文件中未定义的类别: {missing_in_config}")
-    
-    # 构建相似度矩阵
-    print("\n构建相似度矩阵...")
-    similarity_matrix = build_similarity_matrix(
-        categories,
-        default_similarity,
-        custom_similarity
-    )
-    
-    # 准备输出数据
-    output_data = {
-        'data_root': str(data_root),
-        'total_instances': len(instances),
-        'categories': sorted(list(actual_categories_set)),
-        'category_counts': dict(category_counts),
-        'similarity_config': {
-            'default_similarity': default_similarity,
-            'custom_similarity_rules': custom_similarity
-        },
-        'similarity_matrix': similarity_matrix,
-        'instances': []
-    }
-    
-    # 处理实例数据
-    print("\n处理实例数据...")
-    for inst in instances:
-        instance_data = {
-            'category': inst['category']
-        }
+        Args:
+            config_path: data配置文件路径
+        """
+        self.config = load_similarity_config(config_path)
         
-        if args.use_relative_paths:
-            instance_data['image_path'] = inst['relative_image_path']
-            if inst['relative_mask_path']:
-                instance_data['mask_path'] = inst['relative_mask_path']
-        else:
-            instance_data['image_path'] = inst['image_path']
-            if inst['mask_path']:
-                instance_data['mask_path'] = inst['mask_path']
+        self.root = Path(self.config['root'])
+        self.categories = self.config['categories']
+        self.default_similarity = self.config.get('default_similarity', 0.0)
+        self.custom_similarity = self.config.get('custom_similarity', [])
         
-        output_data['instances'].append(instance_data)
+        self.check_data()
+        
+        self.cat2idx = {cat: idx for idx, cat in enumerate(self.categories)}
+        self.idx2cat = {idx: cat for cat, idx in self.cat2idx.items()}
+        
+        # 根据配置生成相似度矩阵
+        self.similarity_matrix = self.build_similarity_matrix()
     
-    # 保存JSON文件
-    print(f"\n保存JSON文件到: {output_path}")
-    with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(output_data, f, ensure_ascii=False, indent=2)
+    def check_data(self):
+        """检查数据完整性"""
+        if not self.root.exists():
+            raise FileNotFoundError(f"数据根目录不存在: {self.root}")
+        
+        image_count = 0
+        for root, dirs, files in self.root.walk():
+            for file in files:
+                if file.lower().endswith('.png') and "_mask.png" not in file:
+                    file_path = Path(root) / file
+                    mask_path = file_path.with_name(file_path.stem + "_mask.png")
+                    if not mask_path.exists():
+                        raise FileNotFoundError(f"缺失掩码文件: {mask_path}")
+                    
+                    label = file_path.parent.name
+                    if label not in self.categories:
+                        raise ValueError(f"未知类别: {label}")
+                    
+                    image_count += 1
+        
+        print(f"数据检查完成: 共找到 {image_count} 张图片")
     
-    print(f"\n完成！")
-    print(f"  总实例数: {len(instances)}")
-    print(f"  类别数: {len(actual_categories_set)}")
-    print(f"  有mask的图片: {sum(1 for inst in instances if inst['mask_path'])}")
-    print(f"  输出文件: {output_path}")
-
+    def build_similarity_matrix(self) -> np.ndarray:
+        """构建类别相似度矩阵"""
+        num_categories = len(self.categories)
+        similarity_matrix = np.full((num_categories, num_categories), self.default_similarity, dtype=float)
+        
+        # 设置对角线为1.0
+        np.fill_diagonal(similarity_matrix, 1.0)
+        
+        # 应用自定义相似度
+        for item in self.custom_similarity:
+            categories_list = item['list']
+            sim = item['similarity']
+            # 为列表中的所有类别对设置相似度
+            for i, cat1 in enumerate(categories_list):
+                for cat2 in categories_list[i+1:]:
+                    if cat1 not in self.cat2idx or cat2 not in self.cat2idx:
+                        print(f"警告: 跳过未知类别 {cat1} 或 {cat2}")
+                        continue
+                    idx1 = self.cat2idx[cat1]
+                    idx2 = self.cat2idx[cat2]
+                    similarity_matrix[idx1, idx2] = sim
+                    similarity_matrix[idx2, idx1] = sim  # 对称矩阵
+        
+        return similarity_matrix
+        
 
 if __name__ == '__main__':
-    main()
+    data = ZhenyuData()
+    print(f"\n类别数量: {len(data.categories)}")
+    print(f"相似度矩阵形状: {data.similarity_matrix.shape}")
+    
+    # 以表格形式显示相似度矩阵 (前10个类别)
+    n_show = min(10, len(data.categories))
+    print(f"\n相似度矩阵 (前{n_show}个类别):")
+    
+    # 准备表格数据
+    headers = [data.idx2cat[i] for i in range(n_show)]
+    table_data = []
+    for i in range(n_show):
+        row = [data.idx2cat[i]] + [f"{data.similarity_matrix[i, j]:.2f}" for j in range(n_show)]
+        table_data.append(row)
+    
+    print(tabulate(table_data, headers=['类别'] + headers, tablefmt='grid'))

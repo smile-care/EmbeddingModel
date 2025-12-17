@@ -1,85 +1,54 @@
-# 监督对比学习配置（SupCon）- 合并mvtec_ad和zhenyu_data数据
+# 监督对比学习配置（SupCon）
 supcon:
-  # 模型配置
   model:
-    backbone: "vit_base"  # 必须与SSL阶段一致
-    ssl_checkpoint: "" # "checkpoints/ssl_models/ssl_merged/best_model.pth"  # SSL阶段训练的模型路径
-    embedding_dim: 128  # 最终embedding维度
+    model_name: "facebook/dinov3-convnext-small-pretrain-lvd1689m"
+    embedding_dim: 128
     projection_head:
-      hidden_dims: [1024, 128]  # MLP隐藏层维度
-      dropout: 0.1
-    use_classification_head: false  # 是否同时训练分类头（辅助CE loss）
-    num_classes: null  # 自动从数据推断
+      hidden_dims: [256, 128]
+    use_layers: [1, 2, 3, 4]  # 使用哪些层的特征
+    fpn_out_channels: 256
+    fusion_dim: 512
   
-  # 训练策略
-  training_strategy:
-    freeze_backbone_epochs: 5  # 前N个epoch冻结backbone
-    freeze_backbone_layers: "all"  # 冻结哪些层: "all", "partial", "none"
-    unfreeze_gradually: true  # 是否逐步解冻
-  
-  # Loss配置
-  loss:
-    supcon:
-      temperature: 0.07  # SupCon温度参数
-      weight: 1.0
-    cross_entropy:
-      weight: 0.3  # CE loss权重（如果启用）
-      label_smoothing: 0.1
-  
-  # 数据配置
   data:
-    # 合并多个训练集文件
-    train_metadata_files:
-      - "data/zhenyu_data/patches/supcon_labels/顶盖正面/metadata_train.json"
-      # - "data/zhenyu_data/metadata/supcon_dataset_filtered_train.json"  # zhenyu_data没有train/val分离，使用全部数据
-    # 合并多个验证集文件（如果zhenyu_data有验证集，可以添加）
-    val_metadata_files:
-      - "data/zhenyu_data/patches/supcon_labels/顶盖正面/metadata_val.json"
-      # - "data/zhenyu_data/metadata/supcon_dataset_filtered_val.json"
-    batch_size: 32
-    num_workers: 2
+    batch_size: 128
+    samples_per_class: 0  # 每个batch中每个类别的样本数
+    num_workers: 4
     pin_memory: true
-    # 采样策略：保证每个batch内每个label有多个样本
-    samples_per_class: 5  # 每个类别在每个batch中的样本数
-    # domain_balanced: true  # 是否使用domain平衡采样
   
-  # 数据增强（与SSL类似但可调整）
-  augmentation:
-    random_crop:
-      scale: [0.6, 1.0]
-      enabled: true
-    horizontal_flip:
-      prob: 0.5
-      enabled: true
-    vertical_flip:
-      prob: 0.3
-      enabled: true
-    rotation:
-      degrees: 5
-      enabled: true
-    color_jitter:
-      brightness: 0.1
-      contrast: 0.1
-      saturation: 0.05
-      hue: 0.02
-      enabled: true
-  
-  # 训练配置
   training:
-    epochs: 50
-    warmup_epochs: 5
-    learning_rate: 1e-3  # 初始学习率
-    backbone_lr_ratio: 0.1  # backbone学习率相对于projection head的比例
+    epochs: 100
+    learning_rate: 1e-4
     weight_decay: 0.05
-    optimizer: "adamw"
+    backbone_lr_ratio: 0.1  # backbone学习率比例
     lr_scheduler: "cosine"
-    save_interval: 10
-    eval_interval: 5
+    save_interval: 10  # 每隔多少epoch保存一次模型
+  
+  training_strategy:
+    freeze_backbone_epochs: 500  # 冻结backbone的epoch数（0表示不冻结）
+  
+  loss:
+    type: "contrastive"  # "contrastive" 或 "target"
+    # contrastive: 标准对比loss，使用相似度作为权重
+    # target: MSE loss，使用相似度作为目标值
+    supcon:
+      weight: 1.0
+      temperature: 0.07
+  
+  augmentation:
+    image_size: 224
+    random_crop:
+      enabled: true
+      scale: [0.6, 1.0]
+    horizontal_flip:
+      enabled: true
+      prob: 0.5
+    color_jitter:
+      enabled: true
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/1201_ssl_nopretrained"
-    log_dir: "logs/supcon_models/1201_ssl_nopretrained"
+    checkpoint_dir: "checkpoints/debug"
+    log_dir: "logs/debug"
     use_wandb: true
-    wandb_project: "industrial-supcon-1201-ssl-pretrained"
+    wandb_project: "debug"
 

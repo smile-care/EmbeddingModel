@@ -1,60 +1,184 @@
 """
 监督对比学习数据集
+基于data_config_zhenyu.yaml配置，支持mask信息
 """
-import json
+import os
 from pathlib import Path
-from typing import Optional, Union, List
-from PIL import Image
-import torch
-from torch.utils.data import Dataset
-from collections import defaultdict
+from typing import Dict, Optional, Tuple
+
 import numpy as np
-from ...ssl_pretrain.augmentations.industrial_aug import TwoViewAugmentation
+import torch
+import torch.nn.functional as F
+import yaml
+from PIL import Image
+from torch.utils.data import Dataset
+from torchvision import transforms
+
+
+class TwoViewAugmentation:
+    """双视图数据增强（同时处理图像和mask）"""
+    
+    def __init__(self, config: Optional[Dict] = None):
+        """
+        初始化数据增强器
+        
+        Args:
+            config: 增强配置字典
+        """
+        if config is None:
+            config = {
+                'image_size': 224,
+                'random_crop': {'enabled': True, 'scale': [0.6, 1.0]},
+                'horizontal_flip': {'enabled': True, 'prob': 0.5},
+                'color_jitter': {'enabled': True}
+            }
+        
+        self.image_size = config.get('image_size', 224)
+        
+        # 构建增强pipeline
+        self.transform1 = self._build_transform(config, view=1)
+        self.transform2 = self._build_transform(config, view=2)
+        
+        # 图像归一化
+        self.normalize = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225]
+        )
+    
+    def _build_transform(self, config: Dict, view: int) -> transforms.Compose:
+        """构建变换pipeline"""
+        transform_list = []
+        
+        # 随机裁剪
+        if config.get('random_crop', {}).get('enabled', True):
+            scale = config.get('random_crop', {}).get('scale', [0.6, 1.0])
+            transform_list.append(
+                transforms.RandomResizedCrop(
+                    self.image_size,
+                    scale=scale,
+                    interpolation=transforms.InterpolationMode.BILINEAR
+                )
+            )
+        else:
+            transform_list.append(
+                transforms.Resize((self.image_size, self.image_size))
+            )
+        
+        # 水平翻转
+        if config.get('horizontal_flip', {}).get('enabled', True):
+            prob = config.get('horizontal_flip', {}).get('prob', 0.5)
+            transform_list.append(transforms.RandomHorizontalFlip(p=prob))
+        
+        # 颜色抖动
+        if config.get('color_jitter', {}).get('enabled', False):
+            transform_list.append(transforms.ColorJitter(
+                brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1
+            ))
+        
+        # 转为tensor
+        transform_list.append(transforms.ToTensor())
+        
+        return transforms.Compose(transform_list)
+    
+    def __call__(self, image: Image.Image, mask: Image.Image) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        应用双视图增强
+        
+        Args:
+            image: PIL图像
+            mask: PIL mask图像
+            
+        Returns:
+            (view1_image, view1_mask, view2_image, view2_mask)
+        """
+        # 对图像应用不同的增强
+        view1_image = self.transform1(image)
+        view2_image = self.transform2(image)
+        
+        # 对mask应用相同的空间变换（但不应用颜色变换）
+        # 需要手动应用空间变换以保持与图像一致
+        view1_mask = self._apply_spatial_transform(mask, self.transform1, view1_image.shape)
+        view2_mask = self._apply_spatial_transform(mask, self.transform2, view2_image.shape)
+        
+        # 归一化图像
+        view1_image = self.normalize(view1_image)
+        view2_image = self.normalize(view2_image)
+        
+        return view1_image, view1_mask, view2_image, view2_mask
+    
+    def _apply_spatial_transform(self, mask: Image.Image, transform: transforms.Compose, target_shape: tuple) -> torch.Tensor:
+        """对mask应用空间变换（跳过颜色变换）"""
+        # 提取空间变换
+        spatial_transforms = []
+        for t in transform.transforms:
+            if isinstance(t, (transforms.RandomResizedCrop, transforms.Resize, 
+                           transforms.RandomHorizontalFlip)):
+                spatial_transforms.append(t)
+            elif isinstance(t, transforms.ToTensor):
+                # 跳过ToTensor，我们后面手动处理
+                break
+        
+        # 应用空间变换
+        for t in spatial_transforms:
+            mask = t(mask)
+        
+        # 转为tensor
+        mask_tensor = transforms.ToTensor()(mask)
+        
+        # 确保mask与图像尺寸一致（处理可能的尺寸不匹配）
+        if mask_tensor.shape[1:] != target_shape[1:]:
+            # Resize mask到目标尺寸
+            mask_tensor = F.interpolate(
+                mask_tensor.unsqueeze(0),
+                size=target_shape[1:],
+                mode='nearest'
+            ).squeeze(0)
+        
+        # 如果mask是单通道，确保是二值mask
+        if mask_tensor.shape[0] == 1:
+            mask_tensor = (mask_tensor > 0.5).float()
+        else:
+            # 多通道mask，取第一个通道
+            mask_tensor = (mask_tensor[0:1] > 0.5).float()
+        
+        return mask_tensor
 
 
 class SupConDataset(Dataset):
-    """监督对比学习数据集"""
+    """监督对比学习数据集（基于data_config_zhenyu.yaml）"""
     
     def __init__(
         self,
-        metadata_file: Union[str, List[str]],
-        patch_root: Optional[str] = None,
+        data_config_path: str = 'configs/data_config_zhenyu.yaml',
+        split: str = 'train',  # 'train' or 'val'
         augmentation_config: Optional[dict] = None
     ):
         """
         初始化数据集
         
         Args:
-            metadata_file: patch元数据JSON文件路径，可以是单个文件路径或文件路径列表（用于合并多个数据集）
-            patch_root: patch根目录（如果元数据中是相对路径，已废弃，因为现在使用绝对路径）
+            data_config_path: 数据配置文件路径
+            split: 数据集划分（'train' 或 'val'）
             augmentation_config: 数据增强配置
         """
-        # 支持单个文件或文件列表
-        if isinstance(metadata_file, str):
-            metadata_files = [metadata_file]
-        else:
-            metadata_files = metadata_file
+        # 加载配置
+        with open(data_config_path, 'r', encoding='utf-8') as f:
+            self.config = yaml.safe_load(f)
         
-        # 合并多个数据集
-        all_patches = []
-        all_domains = set()
-        total_patches = 0
+        self.root = Path(self.config['root'])
+        self.categories = self.config['categories']
+        self.default_similarity = self.config.get('default_similarity', 0.0)
+        self.custom_similarity = self.config.get('custom_similarity', [])
         
-        for meta_file in metadata_files:
-            with open(meta_file, 'r', encoding='utf-8') as f:
-                metadata = json.load(f)
-            
-            all_patches.extend(metadata['patches'])
-            all_domains.update(metadata.get('domains', []))
-            total_patches += metadata.get('total_patches', len(metadata['patches']))
+        # 构建类别映射
+        self.cat2idx = {cat: idx for idx, cat in enumerate(self.categories)}
+        self.idx2cat = {idx: cat for cat, idx in self.cat2idx.items()}
         
-        self.patch_root = Path(patch_root) if patch_root else None
-        self.patches = all_patches
+        # 构建相似度矩阵
+        self.similarity_matrix = self._build_similarity_matrix()
         
-        # 构建标签映射（合并后的所有标签）
-        self.labels = sorted(list(set(p['label'] for p in self.patches)))
-        self.label_to_idx = {label: idx for idx, label in enumerate(self.labels)}
-        self.idx_to_label = {idx: label for label, idx in self.label_to_idx.items()}
+        # 加载数据列表
+        self.samples = self._load_samples()
         
         # 构建增强器
         if augmentation_config:
@@ -66,104 +190,115 @@ class SupConDataset(Dataset):
                 'random_crop': {'enabled': True, 'scale': [0.6, 1.0]},
                 'horizontal_flip': {'enabled': True, 'prob': 0.5},
                 'color_jitter': {'enabled': True}
+            }) if split == 'train' else None
+        
+        # 验证集不使用增强，只做resize和归一化
+        if split == 'val' and self.augmentation is None:
+            self.val_transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406],
+                    std=[0.229, 0.224, 0.225]
+                )
+            ])
+            self.val_mask_transform = transforms.Compose([
+                transforms.Resize((224, 224)),
+                transforms.ToTensor()
+            ])
+    
+    def _build_similarity_matrix(self) -> np.ndarray:
+        """构建类别相似度矩阵"""
+        num_categories = len(self.categories)
+        similarity_matrix = np.full((num_categories, num_categories), self.default_similarity, dtype=float)
+        
+        # 设置对角线为1.0
+        np.fill_diagonal(similarity_matrix, 1.0)
+        
+        # 应用自定义相似度
+        for item in self.custom_similarity:
+            categories_list = item['list']
+            sim = item['similarity']
+            # 为列表中的所有类别对设置相似度
+            for i, cat1 in enumerate(categories_list):
+                for cat2 in categories_list[i+1:]:
+                    if cat1 not in self.cat2idx or cat2 not in self.cat2idx:
+                        print(f"警告: 跳过未知类别 {cat1} 或 {cat2}")
+                        continue
+                    idx1 = self.cat2idx[cat1]
+                    idx2 = self.cat2idx[cat2]
+                    similarity_matrix[idx1, idx2] = sim
+                    similarity_matrix[idx2, idx1] = sim  # 对称矩阵
+        
+        return similarity_matrix
+    
+    def _load_samples(self) -> list:
+        """加载数据样本列表"""
+        if not self.root.exists():
+            raise FileNotFoundError(f"数据根目录不存在: {self.root}")
+        
+        samples = []
+        
+        # 遍历所有类别目录，使用rglob递归查找所有png文件
+        for file_path in self.root.rglob("*.png"):
+            # 跳过mask文件
+            if "_mask.png" in file_path.name:
+                continue
+            
+            # 检查对应的mask文件是否存在
+            mask_path = file_path.with_name(file_path.stem + "_mask.png")
+            if not mask_path.exists():
+                print(f"警告: 缺失掩码文件: {mask_path}，跳过该样本")
+                continue
+            
+            # 获取类别（父目录名）
+            category = file_path.parent.name
+            if category not in self.categories:
+                print(f"警告: 未知类别: {category}，跳过该样本")
+                continue
+            
+            samples.append({
+                'image_path': str(file_path),
+                'mask_path': str(mask_path),
+                'label': category,
+                'label_idx': self.cat2idx[category]
             })
+        
+        print(f"加载了 {len(samples)} 个样本，共 {len(self.categories)} 个类别")
+        return samples
     
     def __len__(self):
-        return len(self.patches)
+        return len(self.samples)
     
     def __getitem__(self, idx):
-        item = self.patches[idx]
-        patch_path = item['patch_path']
+        sample = self.samples[idx]
         
-        # 构建完整路径
-        patch_path = Path(patch_path)
-        assert patch_path.exists(), f"图像路径不存在: {patch_path}"
+        # 加载图像和mask
+        image = Image.open(sample['image_path']).convert('RGB')
+        mask = Image.open(sample['mask_path']).convert('L')  # 灰度图
         
-        # 加载图像
-        image = Image.open(patch_path).convert('RGB')
-        assert image is not None, f"无法加载图像: {patch_path}"
-        
-        # 应用双视图增强
-        view1, view2 = self.augmentation(image)
-        
-        # 标签
-        label = item['label']
-        label_idx = self.label_to_idx[label]
+        # 应用增强
+        if self.augmentation is not None:
+            view1_image, view1_mask, view2_image, view2_mask = self.augmentation(image, mask)
+        else:
+            # 验证集：只做resize和归一化
+            view1_image = self.val_transform(image)
+            view1_mask = self.val_mask_transform(mask)
+            view1_mask = (view1_mask > 0.5).float()  # 二值化
+            view2_image = view1_image.clone()
+            view2_mask = view1_mask.clone()
         
         return {
-            'view1': view1,
-            'view2': view2,
-            'label': label_idx,
-            'label_name': label,
-            'domain_id': item['domain_id'],
-            'instance_id': item['instance_id']
+            'view1_image': view1_image,
+            'view1_mask': view1_mask,
+            'view2_image': view2_image,
+            'view2_mask': view2_mask,
+            'label': sample['label_idx'],
+            'label_name': sample['label'],
+            'image_path': sample['image_path'],
+            'mask_path': sample['mask_path'],
         }
     
-    def get_label_balanced_sampler(
-        self,
-        batch_size: int,
-        samples_per_class: int = 4
-    ):
-        """
-        获取label平衡采样器（保证每个batch内每个label有多个样本）
-        
-        Args:
-            batch_size: batch大小
-            samples_per_class: 每个类别在每个batch中的样本数
-            
-        Returns:
-            自定义采样器（需要配合BatchSampler使用）
-        """
-        # 按label组织样本索引
-        label_indices = defaultdict(list)
-        for idx, item in enumerate(self.patches):
-            label = item['label']
-            label_indices[label].append(idx)
-        
-        # 构建采样索引列表
-        all_indices = []
-        labels_list = list(label_indices.keys())
-        
-        # 计算需要多少个batch
-        n_batches = len(self.patches) // batch_size + 1
-        
-        for _ in range(n_batches):
-            batch_indices = []
-            
-            # 为每个label采样samples_per_class个样本
-            for label in labels_list:
-                indices = label_indices[label]
-                if len(indices) >= samples_per_class:
-                    selected = np.random.choice(
-                        indices, samples_per_class, replace=False
-                    ).tolist()
-                else:
-                    # 如果样本数不足，使用有放回采样
-                    selected = np.random.choice(
-                        indices, samples_per_class, replace=True
-                    ).tolist()
-                batch_indices.extend(selected)
-            
-            # 如果batch还没满，随机补充
-            if len(batch_indices) < batch_size:
-                remaining = batch_size - len(batch_indices)
-                all_remaining_indices = [
-                    idx for idx in range(len(self.patches))
-                    if idx not in batch_indices
-                ]
-                if len(all_remaining_indices) >= remaining:
-                    additional = np.random.choice(
-                        all_remaining_indices, remaining, replace=False
-                    ).tolist()
-                else:
-                    additional = np.random.choice(
-                        range(len(self.patches)), remaining, replace=True
-                    ).tolist()
-                batch_indices.extend(additional)
-            
-            # 打乱
-            np.random.shuffle(batch_indices)
-            all_indices.extend(batch_indices[:batch_size])
-        
-        return all_indices
-
+    def get_similarity_matrix(self) -> np.ndarray:
+        """获取相似度矩阵"""
+        return self.similarity_matrix.copy()
