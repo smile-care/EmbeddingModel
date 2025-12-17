@@ -11,7 +11,6 @@ supcon:
   
   data:
     batch_size: 128
-    samples_per_class: 0  # 每个batch中每个类别的样本数
     num_workers: 4
     pin_memory: true
   

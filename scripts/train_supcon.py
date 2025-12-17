@@ -30,96 +30,11 @@ from src.supcon_train.datasets.supcon_dataset import SupConDataset
 from src.supcon_train.models.losses import SimilarityTargetLoss, SupervisedContrastiveLoss
 from src.supcon_train.models.supcon_model import SupConModel
 from src.utils.config_loader import load_config
+from src.utils.metrics import similarity_distribution_stats
 from src.utils.logging import setup_logger
 from src.utils.visualization import plot_loss_curve
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
-
-
-class LabelBalancedBatchSampler(Sampler):
-    """
-    确保每个batch中每个类别都有多个样本的BatchSampler
-    这对于SupCon训练很重要，因为需要positive pairs
-    """
-    def __init__(self, dataset, batch_size, samples_per_class=2, drop_last=False):
-        self.dataset = dataset
-        self.batch_size = batch_size
-        self.samples_per_class = samples_per_class
-        self.drop_last = drop_last
-        
-        # 按label组织样本索引
-        self.label_indices = defaultdict(list)
-        for idx in range(len(dataset)):
-            sample = dataset[idx]
-            label_idx = sample['label']
-            self.label_indices[label_idx].append(idx)
-        
-        self.labels = list(self.label_indices.keys())
-        self.num_classes = len(self.labels)
-        
-        # 检查每个类别的样本数是否足够
-        min_samples = min(len(indices) for indices in self.label_indices.values())
-        if min_samples < samples_per_class:
-            print(f"警告: 某些类别样本数不足。最少样本数: {min_samples}, 需要: {samples_per_class}")
-            print(f"将samples_per_class调整为: {min_samples}")
-            self.samples_per_class = min_samples
-        
-        # 计算每个batch可以包含多少个类别
-        # 每个类别samples_per_class个样本
-        self.classes_per_batch = min(
-            self.num_classes,
-            batch_size // self.samples_per_class
-        )
-        
-        if self.classes_per_batch == 0:
-            raise ValueError(
-                f"batch_size ({batch_size}) 太小，无法容纳至少一个类别的 {self.samples_per_class} 个样本"
-            )
-        
-        # 计算实际batch大小（可能小于配置的batch_size）
-        self.actual_batch_size = self.classes_per_batch * self.samples_per_class
-    
-    def __iter__(self):
-        # 为每个epoch生成batch
-        # 打乱每个类别的索引
-        for label in self.labels:
-            random.shuffle(self.label_indices[label])
-        
-        # 创建循环迭代器（当样本用完时重新开始）
-        label_iterators = {}
-        for label in self.labels:
-            label_iterators[label] = self._cycle_iterator(self.label_indices[label])
-        
-        # 生成多个batch
-        num_batches = len(self.dataset) // self.actual_batch_size
-        if not self.drop_last:
-            num_batches += 1
-        
-        for _ in range(num_batches):
-            batch_indices = []
-            selected_labels = random.sample(self.labels, min(self.classes_per_batch, len(self.labels)))
-            
-            for label in selected_labels:
-                # 为每个类别采样samples_per_class个样本
-                for _ in range(self.samples_per_class):
-                    idx = next(label_iterators[label])
-                    batch_indices.append(idx)
-            
-            # 打乱batch内的顺序
-            random.shuffle(batch_indices)
-            yield batch_indices
-    
-    def _cycle_iterator(self, items):
-        """创建一个循环迭代器"""
-        while True:
-            for item in items:
-                yield item
-    
-    def __len__(self):
-        if self.drop_last:
-            return len(self.dataset) // self.actual_batch_size
-        else:
-            return (len(self.dataset) + self.actual_batch_size - 1) // self.actual_batch_size
 
 
 def train_epoch(
@@ -221,7 +136,14 @@ def validate(
     criterion: nn.Module,
     device: torch.device,
 ) -> dict:
-    """验证"""
+    """
+    验证函数，使用相似度分布分析作为评估指标
+    
+    评估指标（基于整个验证集计算，而非batch平均）：
+    - PosSim: 正样本平均相似度（越大越好，通常趋近1）
+    - NegSim: 负样本平均相似度（越小越好，接近0或负值）
+    - Margin: 正负样本间隔（越大越好，表示判别性越强）
+    """
     model.eval()
     total_loss = 0.0
     total_supcon_loss = 0.0
@@ -230,9 +152,9 @@ def validate(
     nan_embedding_count = 0
     nan_loss_count = 0
     
-    # 用于计算同类别样本对的平均相似度
-    total_similarity = 0.0
-    total_pairs = 0
+    # 收集所有验证集的embeddings和labels（用于全局相似度分布分析）
+    all_embeddings = []
+    all_labels = []
     
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Validating"):
@@ -245,7 +167,7 @@ def validate(
             outputs1 = model(view1_images, view1_masks, return_features=False)
             embeddings1 = outputs1['embeddings']
             
-            # 归一化embeddings
+            # 归一化embeddings（L2归一化）
             embeddings1 = F.normalize(embeddings1, dim=1, p=2, eps=1e-8)
             
             # 检查embeddings是否包含NaN或Inf
@@ -267,17 +189,9 @@ def validate(
                     print(f"警告：验证时loss为NaN或Inf，跳过此batch")
                 continue
             
-            # 计算同类别样本对的平均相似度（作为评估指标）
-            batch_size = embeddings1.shape[0]
-            similarity_matrix = torch.matmul(embeddings1, embeddings1.T)  # (B, B)
-            labels_expanded = labels.unsqueeze(1)  # (B, 1)
-            same_label_mask = torch.eq(labels_expanded, labels_expanded.T).float()  # (B, B)
-            same_label_mask = same_label_mask - torch.eye(batch_size, device=device)  # 排除对角线
-            
-            if same_label_mask.sum() > 0:
-                positive_similarities = similarity_matrix * same_label_mask
-                total_similarity += positive_similarities.sum().item()
-                total_pairs += same_label_mask.sum().item()
+            # 收集embeddings和labels（用于全局相似度分布分析）
+            all_embeddings.append(embeddings1.cpu())  # 移到CPU以节省GPU内存
+            all_labels.append(labels.cpu())
             
             total_loss += loss.item()
             total_supcon_loss += supcon_loss if isinstance(supcon_loss, float) else supcon_loss.item()
@@ -287,12 +201,32 @@ def validate(
     if skipped_batches > 0:
         print(f"验证统计: 跳过{skipped_batches}个batch (NaN embedding: {nan_embedding_count}, NaN loss: {nan_loss_count})")
     
-    avg_similarity = total_similarity / total_pairs if total_pairs > 0 else 0.0
+    # 基于整个验证集计算相似度分布统计（核心评估指标）
+    if len(all_embeddings) > 0:
+        # 拼接所有embeddings和labels
+        all_embeddings_tensor = torch.cat(all_embeddings, dim=0)  # (N, D)
+        all_labels_tensor = torch.cat(all_labels, dim=0)  # (N,)
+        
+        # 将tensor移回device进行计算
+        all_embeddings_tensor = all_embeddings_tensor.to(device)
+        all_labels_tensor = all_labels_tensor.to(device)
+        
+        # 计算全局相似度分布统计（考虑所有样本对，包括跨batch的）
+        sim_stats = similarity_distribution_stats(all_embeddings_tensor, all_labels_tensor)
+        pos_sim = sim_stats['pos_sim']
+        neg_sim = sim_stats['neg_sim']
+        margin = sim_stats['margin']
+    else:
+        pos_sim = 0.0
+        neg_sim = 0.0
+        margin = 0.0
     
     return {
         'loss': total_loss / num_batches if num_batches > 0 else 0.0,
         'supcon_loss': total_supcon_loss / num_batches if num_batches > 0 else 0.0,
-        'avg_positive_similarity': avg_similarity,
+        'pos_sim': pos_sim,  # 正样本平均相似度（基于整个验证集）
+        'neg_sim': neg_sim,  # 负样本平均相似度（基于整个验证集）
+        'margin': margin,    # 正负样本间隔（基于整个验证集，核心指标）
         'skipped_batches': skipped_batches,
     }
 
@@ -355,38 +289,15 @@ def main():
     
     # 创建数据加载器
     batch_size = supcon_config['supcon']['data']['batch_size']
-    use_label_balanced = supcon_config['supcon']['data'].get('samples_per_class', 0) > 0
     
-    if use_label_balanced:
-        # 使用label balanced batch sampler
-        samples_per_class = supcon_config['supcon']['data']['samples_per_class']
-        logger.info(f"使用label balanced batch sampler，每个batch中每个类别至少{samples_per_class}个样本")
-        
-        train_batch_sampler = LabelBalancedBatchSampler(
-            dataset=train_dataset,
-            batch_size=batch_size,
-            samples_per_class=samples_per_class,
-            drop_last=False
-        )
-        
-        train_dataloader = DataLoader(
-            train_dataset,
-            batch_sampler=train_batch_sampler,
-            num_workers=supcon_config['supcon']['data']['num_workers'],
-            pin_memory=supcon_config['supcon']['data']['pin_memory']
-        )
-        
-        logger.info(f"训练集实际batch大小: {train_batch_sampler.actual_batch_size} (配置: {batch_size})")
-    else:
-        # 使用普通shuffle
-        logger.warning("未使用label balanced采样，某些batch可能没有positive pairs！")
-        train_dataloader = DataLoader(
-            train_dataset,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=supcon_config['supcon']['data']['num_workers'],
-            pin_memory=supcon_config['supcon']['data']['pin_memory']
-        )
+    # 使用普通shuffle
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=supcon_config['supcon']['data']['num_workers'],
+        pin_memory=supcon_config['supcon']['data']['pin_memory']
+    )
     
     # 创建验证集（如果启用验证）
     val_dataset = None
@@ -514,7 +425,7 @@ def main():
         # 更新学习率
         scheduler.step()
          
-        # 记录日志
+        # 记录日志（使用相似度分布分析指标）
         log_msg = (
             f"Epoch {epoch}: "
             f"train_loss={train_metrics['loss']:.4f}, "
@@ -522,12 +433,15 @@ def main():
         )
         if val_metrics is not None:
             log_msg += (
-                f", val_loss={val_metrics['loss']:.4f}, "
-                f"val_avg_sim={val_metrics.get('avg_positive_similarity', 0.0):.4f}"
+                f", val_loss={val_metrics['loss']:.4f}\n"
+                f"  Similarity Distribution: "
+                f"PosSim={val_metrics.get('pos_sim', 0.0):.4f}, "
+                f"NegSim={val_metrics.get('neg_sim', 0.0):.4f}, "
+                f"Margin={val_metrics.get('margin', 0.0):.4f}"
             )
         logger.info(log_msg)
         
-        # Wandb记录
+        # Wandb记录（使用相似度分布分析指标）
         if supcon_config['supcon']['output'].get('use_wandb', False) and wandb is not None:
             log_dict = {
                 'epoch': epoch,
@@ -539,7 +453,10 @@ def main():
                 log_dict.update({
                     'val_loss': val_metrics['loss'],
                     'val_supcon_loss': val_metrics['supcon_loss'],
-                    'val_avg_positive_similarity': val_metrics.get('avg_positive_similarity', 0.0)
+                    # 相似度分布分析指标（论文级）
+                    'val_pos_sim': val_metrics.get('pos_sim', 0.0),  # 正样本平均相似度
+                    'val_neg_sim': val_metrics.get('neg_sim', 0.0),  # 负样本平均相似度
+                    'val_margin': val_metrics.get('margin', 0.0),    # 正负样本间隔（核心指标）
                 })
             wandb.log(log_dict)
         
