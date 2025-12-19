@@ -15,32 +15,30 @@ categories: ["笔迹", "变形1", "变形2", "错装1", "错装2", "错装3", "�
 
 default_similarity: 0.0
 
-custom_similarity:
- - list: ["变形1", "变形2"]
-   similarity: 0.4
- - list: ["多装1", "多装2"]
-   similarity: 0.4
- - list: ["飞边", "金属丝"]
-   similarity: 0.4
- - list: ["断焊", "焊道划伤"]
-   similarity: 0.6
- - list: ["焊洞", "焊烟", "焊渣"]
-   similarity: 0.4
- - list: ["划伤1", "划伤2"]
-   similarity: 0.6
- - list: ["金属丝", "毛刺"]
-   similarity: 0.6
- - list: ["磨花1", "磨花2"]
-   similarity: 0.4
- - list: ["手指印", "污渍", "氧化"]
-   similarity: 0.8
- - list: ["异物1-人造", "异物3-杂物、灰尘、黑线"]
-   similarity: 0.4
- - list: ["异物2-黑点", "异物3-杂物、灰尘、黑线"]
-   similarity: 0.4
- - list: ["异物1-人造", "异物遮蔽"]
-   similarity: 0.4
- - list: ["溢胶", "破损"]
-   similarity: 0.4
- - list: ["R角凸起", "碰伤"]
-   similarity: 0.4
+# custom_similarity:
+#  - list: ["变形1", "变形2"]
+#    similarity: 0.4
+#  - list: ["多装1", "多装2"]
+#    similarity: 0.4
+#  - list: ["飞边", "金属丝"]
+#    similarity: 0.6
+#  - list: ["断焊", "焊道划伤"]
+#    similarity: 0.6
+#  - list: ["划伤1", "划伤2"]
+#    similarity: 0.6
+#  - list: ["金属丝", "毛刺"]
+#    similarity: 0.6
+#  - list: ["磨花1", "磨花2"]
+#    similarity: 0.4
+#  - list: ["手指印", "污渍", "氧化"]
+#    similarity: 0.6
+#  - list: ["异物1-人造", "异物3-杂物、灰尘、黑线"]
+#    similarity: 0.2
+#  - list: ["异物2-黑点", "异物3-杂物、灰尘、黑线"]
+#    similarity: 0.2
+#  - list: ["异物1-人造", "异物遮蔽"]
+#    similarity: 0.2
+#  - list: ["溢胶", "破损"]
+#    similarity: 0.4
+#  - list: ["R角凸起", "碰伤"]
+#    similarity: 0.2

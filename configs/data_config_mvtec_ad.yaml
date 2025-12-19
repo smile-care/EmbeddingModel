@@ -1,0 +1,34 @@
+# 对比学习相似度配置文件
+# 用于设置不同缺陷类别之间的相似度关系
+# MVTec AD 数据集配置
+
+root: "data/datasets/mvtec_ad"
+data_split:
+  train: "train"
+  val: "val"
+
+categories: ["bottle_broken_large", "bottle_broken_small", "bottle_contamination", 
+            "cable_bent_wire", "cable_cable_swap", "cable_combined", "cable_cut_inner_insulation", 
+            "cable_cut_outer_insulation", "cable_missing_cable", "cable_missing_wire", "cable_poke_insulation",
+            "capsule_crack", "capsule_faulty_imprint", "capsule_poke", "capsule_scratch", "capsule_squeeze",
+            "carpet_color", "carpet_cut", "carpet_hole", "carpet_metal_contamination", "carpet_thread",
+            "grid_bent", "grid_broken", "grid_glue", "grid_metal_contamination", "grid_thread",
+            "hazelnut_crack", "hazelnut_cut", "hazelnut_hole", "hazelnut_print",
+            "leather_color", "leather_cut", "leather_fold", "leather_glue", "leather_poke",
+            "metal_nut_bent", "metal_nut_color", "metal_nut_flip", "metal_nut_scratch",
+            "pill_color", "pill_combined", "pill_contamination", "pill_crack", "pill_faulty_imprint", 
+            "pill_pill_type", "pill_scratch",
+            "screw_manipulated_front", "screw_scratch_head", "screw_scratch_neck", "screw_thread_side", "screw_thread_top",
+            "tile_crack", "tile_glue_strip", "tile_gray_stroke", "tile_oil", "tile_rough",
+            "toothbrush_defective",
+            "transistor_bent_lead", "transistor_cut_lead", "transistor_damaged_case", "transistor_misplaced",
+            "wood_color", "wood_combined", "wood_hole", "wood_liquid", "wood_scratch",
+            "zipper_broken_teeth", "zipper_combined", "zipper_fabric_border", "zipper_fabric_interior", 
+            "zipper_rough", "zipper_split_teeth", "zipper_squeezed_teeth"]
+
+default_similarity: 0.0
+
+custom_similarity:
+ # Bottle 相关
+ - list: ["bottle_broken_large", "bottle_broken_small"]
+   similarity: 0.2

@@ -14,7 +14,7 @@ import torch
 import torch.nn.functional as F
 import torchvision.transforms as transforms
 from PIL import Image
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 # 添加src到路径
@@ -24,6 +24,124 @@ from src.supcon_train.datasets.supcon_dataset import SupConDataset
 from src.supcon_train.models.supcon_model import SupConModel
 from src.utils.config_loader import load_config
 from src.utils.logging import setup_logger
+
+
+class FolderDataset(Dataset):
+    """从文件夹路径直接加载数据的简单数据集类"""
+    
+    def __init__(
+        self,
+        folder_path: str,
+        image_size: int = 224
+    ):
+        """
+        初始化数据集
+        
+        Args:
+            folder_path: 文件夹路径
+            image_size: 图像尺寸
+        """
+        self.folder_path = Path(folder_path)
+        if not self.folder_path.exists():
+            raise FileNotFoundError(f"文件夹不存在: {self.folder_path}")
+        
+        self.image_size = image_size
+        
+        # 加载样本列表
+        self.samples = self._load_samples()
+        
+        # 验证集变换（提取时不需要增强）
+        self.val_transform = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406],
+                std=[0.229, 0.224, 0.225]
+            )
+        ])
+        self.val_mask_transform = transforms.Compose([
+            transforms.Resize((image_size, image_size)),
+            transforms.ToTensor()
+        ])
+    
+    def _load_samples(self) -> list:
+        """加载数据样本列表"""
+        samples = []
+        
+        # 支持的图像格式
+        image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif'}
+        
+        # 递归查找所有图像文件
+        for file_path in self.folder_path.rglob("*"):
+            if file_path.suffix.lower() not in image_extensions:
+                continue
+            
+            # 跳过mask文件
+            if "_mask" in file_path.stem.lower() or file_path.name.lower().endswith("_mask.png"):
+                continue
+            
+            # 尝试查找对应的mask文件
+            # 支持多种命名方式：{name}_mask.png, {name}.mask.png, mask/{name}.png
+            mask_path = None
+            possible_mask_paths = [
+                file_path.with_name(file_path.stem + "_mask" + file_path.suffix),
+                file_path.with_name(file_path.stem + "_mask.png"),
+                file_path.with_suffix(".mask.png"),
+                file_path.parent / "mask" / file_path.name,
+            ]
+            
+            for mp in possible_mask_paths:
+                if mp.exists():
+                    mask_path = mp
+                    break
+            
+            # 使用每张图片的直接父文件夹名作为label_name
+            label_name = file_path.parent.name
+            
+            assert mask_path is not None and mask_path.exists(), f"缺失掩码文件: {mask_path}"
+            samples.append({
+                'image_path': str(file_path),
+                'mask_path': str(mask_path),
+                'label': label_name
+            })
+        
+        if len(samples) == 0:
+            raise ValueError(f"在文件夹 {self.folder_path} 中未找到任何图像文件")
+        
+        return samples
+    
+    def __len__(self):
+        return len(self.samples)
+    
+    def __getitem__(self, idx):
+        sample = self.samples[idx]
+        
+        # 加载图像
+        image = Image.open(sample['image_path']).convert('RGB')
+        view1_image = self.val_transform(image)
+        view2_image = view1_image.clone()
+        
+        # 加载mask
+        if sample['mask_path'] and Path(sample['mask_path']).exists():
+            mask = Image.open(sample['mask_path']).convert('L')
+            view1_mask = self.val_mask_transform(mask)
+            view1_mask = (view1_mask > 0.5).float()  # 二值化
+        else:
+            # 如果没有mask，使用全1的mask
+            view1_mask = torch.ones(1, self.image_size, self.image_size)
+        
+        view2_mask = view1_mask.clone()
+        
+        return {
+            'view1_image': view1_image,
+            'view1_mask': view1_mask,
+            'view2_image': view2_image,
+            'view2_mask': view2_mask,
+            'label': 0,  # 单一类别，使用0作为标签索引
+            'label_name': sample['label'],
+            'image_path': sample['image_path'],
+            'mask_path': sample['mask_path'] or '',
+        }
 
 
 class SupConEmbeddingExtractor:
@@ -158,7 +276,7 @@ class SupConEmbeddingExtractor:
         批量提取所有实例的embedding（使用与训练脚本相同的数据加载模式）
         
         Args:
-            data_config_path: 数据配置文件路径（data_config_zhenyu.yaml）
+            data_config_path: 数据配置文件路径（data_config_zhenyu.yaml）或文件夹路径
             output_file: 输出文件路径（.npy或.npz）
             batch_size: batch大小
             split: 数据集划分（'train' 或 'val'）
@@ -166,13 +284,33 @@ class SupConEmbeddingExtractor:
         Returns:
             {sample_idx: embedding} 字典，其中sample_idx是样本在数据集中的索引
         """
-        # 使用与训练脚本相同的数据集类
-        # 注意：提取时不需要数据增强，所以augmentation_config=None
-        dataset = SupConDataset(
-            data_config_path=data_config_path,
-            split="val",
-            augmentation_config=None  # 提取时不使用增强
-        )
+        # 检测输入是文件夹路径还是YAML配置文件
+        data_path = Path(data_config_path)
+        if data_path.is_dir():
+            # 文件夹路径：使用FolderDataset
+            # 每张图片使用其直接父文件夹名作为label_name
+            dataset = FolderDataset(
+                folder_path=str(data_path),
+                image_size=self.image_size
+            )
+            print(f"使用文件夹模式: {data_path}")
+            # 统计所有不同的label_name
+            unique_labels = set(sample['label'] for sample in dataset.samples)
+            print(f"  找到 {len(dataset)} 个样本")
+            print(f"  包含 {len(unique_labels)} 个不同的标签: {sorted(unique_labels)}")
+        elif data_path.suffix in ['.yaml', '.yml']:
+            # YAML配置文件：使用SupConDataset
+            dataset = SupConDataset(
+                data_config_path=data_config_path,
+                split="val",
+                augmentation_config=None  # 提取时不使用增强
+            )
+            print(f"使用YAML配置模式: {data_config_path}")
+        else:
+            raise ValueError(
+                f"输入路径既不是文件夹也不是YAML文件: {data_config_path}\n"
+                f"请提供文件夹路径或.yaml/.yml配置文件路径"
+            )
         
         dataloader = DataLoader(
             dataset,
@@ -247,15 +385,16 @@ class SupConEmbeddingExtractor:
 
 def main():
     parser = argparse.ArgumentParser(description='提取SupCon模型embedding（使用与训练脚本相同的数据加载模式）')
-    parser.add_argument('--model', type=str, default="checkpoints/debug/best_model.pth",
+    parser.add_argument('--model', type=str, default="checkpoints/supcon_models/1219-1/current_model.pth",
                        help='模型checkpoint路径')
-    parser.add_argument('--data_config', type=str, default='configs/data_config_zhenyu.yaml',
-                       help='数据配置文件路径（data_config_zhenyu.yaml）')
-    parser.add_argument('--output', type=str, default="checkpoints/debug/supcon_embeddings.npz",
+    parser.add_argument('--data_config', type=str, default='data/datasets/zhenyu/train',
+                       help='数据配置文件路径（.yaml/.yml）或文件夹路径。\
+                       如果提供文件夹路径，将自动搜索其中的图像和对应的mask，父文件夹名作为label_name')
+    parser.add_argument('--output', type=str, default="checkpoints/supcon_models/1219-1/supcon_embeddings_zhenyu_train.npz",
                        help='输出文件路径（.npz或.npy）')
     parser.add_argument('--config', type=str, default="configs/supcon_config.yaml",
                        help='训练配置文件路径（可选，如果checkpoint中没有配置）')
-    parser.add_argument('--batch_size', type=int, default=32,
+    parser.add_argument('--batch_size', type=int, default=128,
                        help='batch大小')
     args = parser.parse_args()
     

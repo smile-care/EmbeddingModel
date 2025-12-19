@@ -26,12 +26,12 @@ except ImportError:
 # 添加src到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.supcon_train.datasets.supcon_dataset import SupConDataset
+from src.supcon_train.datasets.supcon_dataset import MultiConfigDataset, SupConDataset
 from src.supcon_train.models.losses import SimilarityTargetLoss, SupervisedContrastiveLoss
 from src.supcon_train.models.supcon_model import SupConModel
 from src.utils.config_loader import load_config
-from src.utils.metrics import similarity_distribution_stats
 from src.utils.logging import setup_logger
+from src.utils.metrics import similarity_distribution_stats, cosine_similarity_stats, knn_evaluation
 from src.utils.visualization import plot_loss_curve
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
@@ -201,7 +201,7 @@ def validate(
     if skipped_batches > 0:
         print(f"验证统计: 跳过{skipped_batches}个batch (NaN embedding: {nan_embedding_count}, NaN loss: {nan_loss_count})")
     
-    # 基于整个验证集计算相似度分布统计（核心评估指标）
+        # 基于整个验证集计算相似度分布统计（核心评估指标）
     if len(all_embeddings) > 0:
         # 拼接所有embeddings和labels
         all_embeddings_tensor = torch.cat(all_embeddings, dim=0)  # (N, D)
@@ -211,32 +211,55 @@ def validate(
         all_embeddings_tensor = all_embeddings_tensor.to(device)
         all_labels_tensor = all_labels_tensor.to(device)
         
-        # 计算全局相似度分布统计（考虑所有样本对，包括跨batch的）
+        # 1. 计算相似度分布统计（Margin指标）
         sim_stats = similarity_distribution_stats(all_embeddings_tensor, all_labels_tensor)
-        pos_sim = sim_stats['pos_sim']
-        neg_sim = sim_stats['neg_sim']
+        margin_pos_sim = sim_stats['pos_sim']
+        margin_neg_sim = sim_stats['neg_sim']
         margin = sim_stats['margin']
+        
+        # 2. 计算余弦相似度统计
+        cosine_stats = cosine_similarity_stats(all_embeddings_tensor, all_labels_tensor)
+        cosine_pos_sim = cosine_stats['pos_sim']
+        cosine_neg_sim = cosine_stats['neg_sim']
+        
+        # 3. 计算kNN评估指标
+        knn_stats = knn_evaluation(all_embeddings_tensor, all_labels_tensor, k=10)
+        knn_accuracy = knn_stats.get('knn_accuracy', 0.0)
     else:
-        pos_sim = 0.0
-        neg_sim = 0.0
+        margin_pos_sim = 0.0
+        margin_neg_sim = 0.0
         margin = 0.0
+        cosine_pos_sim = 0.0
+        cosine_neg_sim = 0.0
+        knn_accuracy = 0.0
     
     return {
         'loss': total_loss / num_batches if num_batches > 0 else 0.0,
         'supcon_loss': total_supcon_loss / num_batches if num_batches > 0 else 0.0,
-        'pos_sim': pos_sim,  # 正样本平均相似度（基于整个验证集）
-        'neg_sim': neg_sim,  # 负样本平均相似度（基于整个验证集）
-        'margin': margin,    # 正负样本间隔（基于整个验证集，核心指标）
+        # 相似度分布统计（Margin指标）
+        'margin_pos_sim': margin_pos_sim,
+        'margin_neg_sim': margin_neg_sim,
+        'margin': margin,
+        # 余弦相似度统计（独立指标）
+        'cosine_pos_sim': cosine_pos_sim,
+        'cosine_neg_sim': cosine_neg_sim,
+        # kNN评估指标（独立指标）
+        'knn_accuracy': knn_accuracy,
         'skipped_batches': skipped_batches,
     }
+
 
 
 def main():
     parser = argparse.ArgumentParser(description='SupCon监督对比学习训练')
     parser.add_argument('--config', type=str, default='configs/supcon_config.yaml',
                        help='训练配置文件路径')
-    parser.add_argument('--data_config', type=str, default='configs/data_config_zhenyu.yaml',
-                       help='数据配置文件路径（data_config_zhenyu.yaml）')
+    parser.add_argument('--data_config', type=str, nargs='+', 
+                       default=[
+                           'configs/data_config_zhenyu.yaml',
+                        #    'configs/data_config_mvtec_ad.yaml'
+                        ],
+                       help='数据配置文件路径（可以指定多个，用空格分隔）')
     parser.add_argument('--use_eval', action='store_true', default=True, help='是否进行验证')
     parser.add_argument('--no_eval', dest='use_eval', action='store_false', help='禁用验证')
     parser.add_argument('--resume', type=str, default=None,
@@ -245,7 +268,7 @@ def main():
     
     # 加载配置
     supcon_config = load_config(args.config)
-    data_config_path = args.data_config
+    data_config_paths = args.data_config
     
     # 设置日志
     logger = setup_logger(
@@ -273,17 +296,31 @@ def main():
     
     # 创建数据集
     logger.info("加载数据集...")
+    logger.info(f"数据配置文件: {data_config_paths}")
     
-    train_dataset = SupConDataset(
-        data_config_path=data_config_path,
-        split='train',
-        augmentation_config=supcon_config['supcon']['augmentation']
-    )
+    # 如果只有一个配置文件，直接使用 SupConDataset；否则使用 MultiConfigDataset
+    if len(data_config_paths) == 1:
+        train_dataset = SupConDataset(
+            data_config_path=data_config_paths[0],
+            split='train',
+            augmentation_config=supcon_config['supcon']['augmentation']
+        )
+        num_classes = len(train_dataset.categories)
+        similarity_matrix = train_dataset.get_similarity_matrix()
+        default_similarity = train_dataset.default_similarity
+    else:
+        train_dataset = MultiConfigDataset(
+            data_config_paths=data_config_paths,
+            split='train',
+            augmentation_config=supcon_config['supcon']['augmentation']
+        )
+        num_classes = len(train_dataset.categories)
+        similarity_matrix = train_dataset.get_similarity_matrix()
+        default_similarity = train_dataset.default_similarity
+        logger.info(f"合并了 {len(data_config_paths)} 个数据配置文件")
+        for i, config_path in enumerate(data_config_paths):
+            logger.info(f"  配置 {i+1}: {config_path} ({len(train_dataset.datasets[i])} 个样本)")
     
-    # 获取类别数、相似度矩阵和默认相似度
-    num_classes = len(train_dataset.categories)
-    similarity_matrix = train_dataset.get_similarity_matrix()
-    default_similarity = train_dataset.default_similarity
     logger.info(f"训练集样本数: {len(train_dataset)}, 类别数: {num_classes}")
     logger.info(f"默认相似度阈值: {default_similarity}")
     
@@ -303,11 +340,18 @@ def main():
     val_dataset = None
     val_dataloader = None
     if args.use_eval:
-        val_dataset = SupConDataset(
-            data_config_path=data_config_path,
-            split='val',
-            augmentation_config=None  # 验证集不使用增强
-        )
+        if len(data_config_paths) == 1:
+            val_dataset = SupConDataset(
+                data_config_path=data_config_paths[0],
+                split='val',
+                augmentation_config=None  # 验证集不使用增强
+            )
+        else:
+            val_dataset = MultiConfigDataset(
+                data_config_paths=data_config_paths,
+                split='val',
+                augmentation_config=None  # 验证集不使用增强
+            )
         val_dataloader = DataLoader(
             val_dataset,
             batch_size=batch_size,
@@ -389,7 +433,7 @@ def main():
     
     # 恢复训练
     start_epoch = 1
-    best_loss = float('inf')
+    best_margin = float('inf')
     if args.resume:
         logger.info(f"从checkpoint恢复: {args.resume}")
         checkpoint = torch.load(args.resume, map_location=device)
@@ -397,7 +441,7 @@ def main():
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
-        best_loss = checkpoint.get('best_loss', float('inf'))
+        best_margin = checkpoint.get('best_margin', float('inf'))
     
     # 训练循环
     logger.info("开始训练...")
@@ -434,10 +478,14 @@ def main():
         if val_metrics is not None:
             log_msg += (
                 f", val_loss={val_metrics['loss']:.4f}\n"
-                f"  Similarity Distribution: "
-                f"PosSim={val_metrics.get('pos_sim', 0.0):.4f}, "
-                f"NegSim={val_metrics.get('neg_sim', 0.0):.4f}, "
-                f"Margin={val_metrics.get('margin', 0.0):.4f}"
+                f"  Margin Stats: "
+                f"PosSim={val_metrics.get('margin_pos_sim', 0.0):.4f}, "
+                f"NegSim={val_metrics.get('margin_neg_sim', 0.0):.4f}, "
+                f"Margin={val_metrics.get('margin', 0.0):.4f}\n"
+                f"  Cosine Similarity: "
+                f"PosSim={val_metrics.get('cosine_pos_sim', 0.0):.4f}, "
+                f"NegSim={val_metrics.get('cosine_neg_sim', 0.0):.4f}\n"
+                f"  kNN Accuracy: {val_metrics.get('knn_accuracy', 0.0):.4f}"
             )
         logger.info(log_msg)
         
@@ -453,10 +501,15 @@ def main():
                 log_dict.update({
                     'val_loss': val_metrics['loss'],
                     'val_supcon_loss': val_metrics['supcon_loss'],
-                    # 相似度分布分析指标（论文级）
-                    'val_pos_sim': val_metrics.get('pos_sim', 0.0),  # 正样本平均相似度
-                    'val_neg_sim': val_metrics.get('neg_sim', 0.0),  # 负样本平均相似度
-                    'val_margin': val_metrics.get('margin', 0.0),    # 正负样本间隔（核心指标）
+                    # 相似度分布统计（Margin指标）
+                    'val_margin_pos_sim': val_metrics.get('margin_pos_sim', 0.0),
+                    'val_margin_neg_sim': val_metrics.get('margin_neg_sim', 0.0),
+                    'val_margin': val_metrics.get('margin', 0.0),
+                    # 余弦相似度统计（独立指标）
+                    'val_cosine_pos_sim': val_metrics.get('cosine_pos_sim', 0.0),
+                    'val_cosine_neg_sim': val_metrics.get('cosine_neg_sim', 0.0),
+                    # kNN评估指标（独立指标）
+                    'val_knn_accuracy': val_metrics.get('knn_accuracy', 0.0),
                 })
             wandb.log(log_dict)
         
@@ -468,7 +521,7 @@ def main():
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': train_metrics['loss'],
-                'best_loss': best_loss,
+                'best_margin': best_margin,
                 'config': supcon_config
             }
             if val_metrics is not None:
@@ -478,23 +531,37 @@ def main():
                 checkpoint_dir / f"checkpoint_epoch_{epoch}.pth"
             )
         
-        # 保存最佳模型（基于验证loss，如果没有验证则基于训练loss）
-        current_loss = val_metrics['loss'] if val_metrics is not None else train_metrics['loss']
-        if current_loss < best_loss:
-            best_loss = current_loss
+        # 保存最佳模型（基于验证val_margin，如果没有验证则基于训练loss）
+        current_margin = val_metrics.get('margin', val_metrics['loss']) if val_metrics is not None else train_metrics['loss']
+        if current_margin < best_margin:
+            best_margin = current_margin
             torch.save(
                 {
                     'epoch': epoch,
                     'model_state_dict': model.state_dict(),
-                    'best_loss': best_loss,
+                    'best_margin': best_margin,
                     'config': supcon_config,
                     'num_classes': num_classes
                 },
                 checkpoint_dir / "best_model.pth"
             )
-            loss_type = "val_loss" if val_metrics is not None else "train_loss"
-            logger.info(f"保存最佳模型 ({loss_type}={best_loss:.4f})")
-    
+            loss_type = "val_margin" if  val_metrics is not None else "train_loss"
+            logger.info(f"保存最佳模型 ({loss_type}={best_margin:.4f})")
+
+        # 保存当前模型（覆盖）
+        torch.save(
+            {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+                'train_loss': train_metrics['loss'],
+                'best_margin': best_margin,
+                'config': supcon_config
+            },
+            checkpoint_dir / "current_model.pth"
+        )
+        
     # 绘制损失曲线
     plot_loss_curve(
         train_losses,

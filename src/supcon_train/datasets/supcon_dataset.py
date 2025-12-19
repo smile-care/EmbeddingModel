@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 import yaml
 from PIL import Image
-from torch.utils.data import Dataset
+from torch.utils.data import Dataset, ConcatDataset
 from torchvision import transforms
 
 
@@ -266,7 +266,6 @@ class SupConDataset(Dataset):
                 'label_idx': self.cat2idx[category]
             })
         
-        print(f"加载了 {len(samples)} 个样本，共 {len(self.categories)} 个类别")
         return samples
     
     def __len__(self):
@@ -300,6 +299,140 @@ class SupConDataset(Dataset):
             'image_path': sample['image_path'],
             'mask_path': sample['mask_path'],
         }
+    
+    def get_similarity_matrix(self) -> np.ndarray:
+        """获取相似度矩阵"""
+        return self.similarity_matrix.copy()
+
+
+class MultiConfigDataset(Dataset):
+    """合并多个数据配置的数据集包装类"""
+    
+    def __init__(
+        self,
+        data_config_paths: list,
+        split: str = 'train',
+        augmentation_config: Optional[dict] = None
+    ):
+        """
+        初始化多配置数据集
+        
+        Args:
+            data_config_paths: 数据配置文件路径列表
+            split: 数据集划分（'train' 或 'val'）
+            augmentation_config: 数据增强配置
+        """
+        self.data_config_paths = data_config_paths
+        self.split = split
+        
+        # 为每个配置创建数据集
+        self.datasets = []
+        all_categories = []
+        all_custom_similarity = []
+        default_similarity = 0.0
+        
+        for config_path in data_config_paths:
+            dataset = SupConDataset(
+                data_config_path=config_path,
+                split=split,
+                augmentation_config=augmentation_config
+            )
+            self.datasets.append(dataset)
+            
+            # 收集所有类别（去重）
+            for cat in dataset.categories:
+                if cat not in all_categories:
+                    all_categories.append(cat)
+            
+            # 收集自定义相似度
+            all_custom_similarity.extend(dataset.custom_similarity)
+            
+            # 使用第一个数据集的默认相似度
+            if len(self.datasets) == 1:
+                default_similarity = dataset.default_similarity
+        
+        # 合并后的类别列表
+        self.categories = all_categories
+        self.default_similarity = default_similarity
+        self.custom_similarity = all_custom_similarity
+        
+        # 构建合并后的类别映射
+        self.cat2idx = {cat: idx for idx, cat in enumerate(self.categories)}
+        self.idx2cat = {idx: cat for cat, idx in self.cat2idx.items()}
+        
+        # 为每个数据集重新映射类别索引
+        self.dataset_label_mappings = []
+        for dataset in self.datasets:
+            label_mapping = {}
+            for old_idx, cat in dataset.idx2cat.items():
+                new_idx = self.cat2idx[cat]
+                label_mapping[old_idx] = new_idx
+            self.dataset_label_mappings.append(label_mapping)
+        
+        # 构建合并后的相似度矩阵
+        self.similarity_matrix = self._build_merged_similarity_matrix()
+        
+        # 使用 ConcatDataset 合并数据集
+        self.concat_dataset = ConcatDataset(self.datasets)
+    
+    def _build_merged_similarity_matrix(self) -> np.ndarray:
+        """构建合并后的相似度矩阵"""
+        num_categories = len(self.categories)
+        similarity_matrix = np.full((num_categories, num_categories), self.default_similarity, dtype=float)
+        
+        # 设置对角线为1.0
+        np.fill_diagonal(similarity_matrix, 1.0)
+        
+        # 应用自定义相似度
+        for item in self.custom_similarity:
+            categories_list = item['list']
+            sim = item['similarity']
+            # 为列表中的所有类别对设置相似度
+            for i, cat1 in enumerate(categories_list):
+                for cat2 in categories_list[i+1:]:
+                    if cat1 not in self.cat2idx or cat2 not in self.cat2idx:
+                        continue
+                    idx1 = self.cat2idx[cat1]
+                    idx2 = self.cat2idx[cat2]
+                    similarity_matrix[idx1, idx2] = sim
+                    similarity_matrix[idx2, idx1] = sim  # 对称矩阵
+        
+        return similarity_matrix
+    
+    def __len__(self):
+        return len(self.concat_dataset)
+    
+    def __getitem__(self, idx):
+        # ConcatDataset 会自动处理索引映射
+        # 我们需要找到这个索引对应的数据集
+        if idx < 0:
+            if -idx > len(self):
+                raise ValueError("索引超出范围")
+            idx = len(self) + idx
+        
+        dataset_idx = 0
+        cumulative_size = 0
+        for i, dataset in enumerate(self.datasets):
+            if idx < cumulative_size + len(dataset):
+                dataset_idx = i
+                local_idx = idx - cumulative_size
+                break
+            cumulative_size += len(dataset)
+        else:
+            raise IndexError(f"索引 {idx} 超出范围")
+        
+        # 从对应的数据集获取样本
+        sample = self.datasets[dataset_idx][local_idx]
+        
+        # 重新映射类别索引
+        old_label_idx = sample['label']
+        new_label_idx = self.dataset_label_mappings[dataset_idx][old_label_idx]
+        
+        # 创建新的样本，使用新的类别索引
+        new_sample = sample.copy()
+        new_sample['label'] = new_label_idx
+        
+        return new_sample
     
     def get_similarity_matrix(self) -> np.ndarray:
         """获取相似度矩阵"""
