@@ -20,7 +20,7 @@ supcon:
     pin_memory: true
   
   training:
-    epochs: 10
+    epochs: 20
     learning_rate: 1e-4
     weight_decay: 0.05
     backbone_lr_ratio: 0.1  # backbone学习率比例
@@ -51,8 +51,8 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/1219-1"
-    log_dir: "logs/supcon_logs/1219-1"
+    checkpoint_dir: "checkpoints/supcon_models/1223-1"
+    log_dir: "logs/supcon_logs/1223-1"
     use_wandb: true
-    wandb_project: "supcon_1219"
+    wandb_project: "supcon_1223"
 

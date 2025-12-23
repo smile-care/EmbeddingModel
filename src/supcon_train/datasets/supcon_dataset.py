@@ -11,7 +11,7 @@ import torch
 import torch.nn.functional as F
 import yaml
 from PIL import Image
-from torch.utils.data import Dataset, ConcatDataset
+from torch.utils.data import ConcatDataset, Dataset
 from torchvision import transforms
 
 
@@ -166,21 +166,17 @@ class SupConDataset(Dataset):
             self.config = yaml.safe_load(f)
         
         self.root = Path(self.config['root'])
-        self.data_split = self.config.get('data_split', {'train': 'train', 'val': 'val'})
-        self.data_root = self.root / self.data_split[split]
-        self.categories = self.config['categories']
-        self.default_similarity = self.config.get('default_similarity', 0.0)
-        self.custom_similarity = self.config.get('custom_similarity', [])
-        
-        # 构建类别映射
-        self.cat2idx = {cat: idx for idx, cat in enumerate(self.categories)}
-        self.idx2cat = {idx: cat for cat, idx in self.cat2idx.items()}
-        
-        # 构建相似度矩阵
-        self.similarity_matrix = self._build_similarity_matrix()
+        self.split = split
         
         # 加载数据列表
         self.samples = self._load_samples()
+        
+        # 读取类别相似度配置
+        self.default_similarity = self.config.get('default_similarity', 0.0)
+        self.custom_similarity = self.config.get('custom_similarity', [])
+        
+        # 构建相似度矩阵
+        self.similarity_matrix = self._build_similarity_matrix()
         
         # 构建增强器
         if augmentation_config:
@@ -236,13 +232,19 @@ class SupConDataset(Dataset):
     
     def _load_samples(self) -> list:
         """加载数据样本列表"""
-        if not self.data_root.exists():
-            raise FileNotFoundError(f"数据根目录不存在: {self.data_root}")
+        if not self.root.exists():
+            raise FileNotFoundError(f"数据根目录不存在: {self.root}")
+        
+        data_split = self.config.get('data_split', {'train': 'train', 'val': 'val'})
         
         samples = []
+        categories = set()
         
         # 遍历所有类别目录，使用rglob递归查找所有png文件
-        for file_path in self.data_root.rglob("*.png"):
+        for file_path in self.root.rglob("*.png"):
+            # 仅处理当前划分的数据
+            if data_split.get(self.split, self.split) != file_path.parent.parent.name:
+                continue
             # 跳过mask文件
             if "_mask.png" in file_path.name:
                 continue
@@ -255,16 +257,22 @@ class SupConDataset(Dataset):
             
             # 获取类别（父目录名）
             category = file_path.parent.name
-            if category not in self.categories:
-                print(f"警告: 未知类别: {category}，跳过该样本")
-                continue
+            categories.add(category)
             
             samples.append({
                 'image_path': str(file_path),
                 'mask_path': str(mask_path),
                 'label': category,
-                'label_idx': self.cat2idx[category]
+                'label_idx': None,  # 占位符，稍后映射
             })
+        
+        # 构建类别映射
+        self.categories = sorted(list(categories))
+        self.cat2idx = {cat: idx for idx, cat in enumerate(self.categories)}
+        self.idx2cat = {idx: cat for cat, idx in self.cat2idx.items()}
+        # 映射类别索引
+        for sample in samples:
+            sample['label_idx'] = self.cat2idx[sample['label']]
         
         return samples
     

@@ -1,13 +1,13 @@
 """
 按类别划分训练集和验证集
 从 patches 目录读取数据，按类别（子文件夹）划分，验证集比例 0.2
-将数据复制到 mvtec_ad/train 和 mvtec_ad/val 下
 """
 import argparse
 import random
 import shutil
 from collections import defaultdict
 from pathlib import Path
+
 from tqdm import tqdm
 
 
@@ -27,36 +27,31 @@ def collect_samples(patches_dir: Path):
     image_extensions = {'.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.tif'}
     
     # 遍历所有类别文件夹（如 cable, metal_nut 等）
-    for category_dir in patches_dir.iterdir():
-        if not category_dir.is_dir():
+    for label_dir in patches_dir.iterdir():
+        if not label_dir.is_dir():
             continue
+
+        label_name = label_dir.name
         
-        # 遍历类别文件夹下的所有子文件夹（label_name，如 cable_bent_wire）
-        for label_dir in category_dir.iterdir():
-            if not label_dir.is_dir():
+        # 查找所有图像文件
+        for image_path in label_dir.rglob("*"):
+            if image_path.suffix.lower() not in image_extensions:
                 continue
             
-            label_name = label_dir.name
+            # 跳过mask文件
+            if "_mask" in image_path.stem.lower() or image_path.name.lower().endswith("_mask.png"):
+                continue
             
-            # 查找所有图像文件
-            for image_path in label_dir.rglob("*"):
-                if image_path.suffix.lower() not in image_extensions:
-                    continue
-                
-                # 跳过mask文件
-                if "_mask" in image_path.stem.lower() or image_path.name.lower().endswith("_mask.png"):
-                    continue
-                
-                # 查找对应的mask文件
-                mask_path = image_path.with_name(image_path.stem + "_mask" + image_path.suffix)
+            # 查找对应的mask文件
+            mask_path = image_path.with_name(image_path.stem + "_mask" + image_path.suffix)
+            if not mask_path.exists():
+                # 尝试其他命名方式
+                mask_path = image_path.with_name(image_path.stem + "_mask.png")
                 if not mask_path.exists():
-                    # 尝试其他命名方式
-                    mask_path = image_path.with_name(image_path.stem + "_mask.png")
-                    if not mask_path.exists():
-                        print(f"警告: 缺失掩码文件: {image_path}，跳过该样本")
-                        continue
-                
-                samples_dict[label_name].append((image_path, mask_path))
+                    print(f"警告: 缺失掩码文件: {image_path}，跳过该样本")
+                    continue
+            
+            samples_dict[label_name].append((image_path, mask_path))
     
     return samples_dict
 
@@ -84,12 +79,16 @@ def split_samples(samples_dict: dict, val_ratio: float = 0.2, seed: int = 42):
         shuffled_samples = samples.copy()
         random.shuffle(shuffled_samples)
         
-        # 计算验证集数量
-        num_val = max(1, int(len(shuffled_samples) * val_ratio))
-        
-        # 划分
-        val_samples[label_name] = shuffled_samples[:num_val]
-        train_samples[label_name] = shuffled_samples[num_val:]
+        if len(shuffled_samples) > 5:
+            # 计算验证集数量
+            num_val = max(1, int(len(shuffled_samples) * val_ratio))
+            
+            # 划分
+            val_samples[label_name] = shuffled_samples[:num_val]
+            train_samples[label_name] = shuffled_samples[num_val:]
+        else:
+            # 样本数较少，全部放入训练集
+            train_samples[label_name] = shuffled_samples
         
         print(f"{label_name}: 总数={len(samples)}, 训练集={len(train_samples[label_name])}, 验证集={len(val_samples[label_name])}")
     
@@ -131,10 +130,10 @@ def copy_samples(samples_dict: dict, output_dir: Path, split_name: str):
 def main():
     parser = argparse.ArgumentParser(description='按类别划分训练集和验证集')
     parser.add_argument('--patches_dir', type=str, 
-                       default='data/datasets/mvtec_ad/patches',
+                       default='data/datasets/zhenyu/1219-4.x/train',
                        help='patches 目录路径')
     parser.add_argument('--output_dir', type=str,
-                       default='data/datasets/mvtec_ad',
+                       default='data/datasets/zhenyu/1219-4.x/split_data',
                        help='输出根目录（将在此目录下创建 train 和 val 文件夹）')
     parser.add_argument('--val_ratio', type=float, default=0.2,
                        help='验证集比例（默认 0.2）')
@@ -165,6 +164,7 @@ def main():
     total_samples = sum(len(samples) for samples in samples_dict.values())
     print(f"总样本数: {total_samples}")
     print("-" * 50)
+    
     
     # 划分训练集和验证集
     print("划分训练集和验证集...")

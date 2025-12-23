@@ -83,7 +83,7 @@ class FeatureFusion(nn.Module):
             
             # 确保mask值在[0, 1]范围内，作为热力图权重
             # 使用bilinear插值可以得到平滑的权重过渡，即使特征图很小也能保持相对准确
-            mask_weights = torch.clamp(mask_resized, 0.0, 1.0)  # (B, 1, H, W)
+            mask_weights = torch.clamp(mask_resized, 0.1, 1.0)  # (B, 1, H, W)
             
             # 使用mask进行加权平均池化，而不是简单的逐元素相乘
             # 这样可以更好地处理mask区域，即使mask在resize后不够精确

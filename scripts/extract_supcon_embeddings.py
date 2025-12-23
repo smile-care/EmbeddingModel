@@ -385,12 +385,12 @@ class SupConEmbeddingExtractor:
 
 def main():
     parser = argparse.ArgumentParser(description='提取SupCon模型embedding（使用与训练脚本相同的数据加载模式）')
-    parser.add_argument('--model', type=str, default="checkpoints/supcon_models/1219-1/current_model.pth",
+    parser.add_argument('--model', type=str, default="checkpoints/supcon_models/1223-1/checkpoint_epoch_20.pth",
                        help='模型checkpoint路径')
-    parser.add_argument('--data_config', type=str, default='data/datasets/zhenyu/train',
+    parser.add_argument('--data_config', type=str, default='data/datasets/zhenyu/1219-4.x/val',
                        help='数据配置文件路径（.yaml/.yml）或文件夹路径。\
                        如果提供文件夹路径，将自动搜索其中的图像和对应的mask，父文件夹名作为label_name')
-    parser.add_argument('--output', type=str, default="checkpoints/supcon_models/1219-1/supcon_embeddings_zhenyu_train.npz",
+    parser.add_argument('--output', type=str, default="checkpoints/supcon_models/1223-1/extract_embeddings/4.x_val.npz",
                        help='输出文件路径（.npz或.npy）')
     parser.add_argument('--config', type=str, default="configs/supcon_config.yaml",
                        help='训练配置文件路径（可选，如果checkpoint中没有配置）')

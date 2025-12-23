@@ -31,7 +31,7 @@ from src.supcon_train.models.losses import SimilarityTargetLoss, SupervisedContr
 from src.supcon_train.models.supcon_model import SupConModel
 from src.utils.config_loader import load_config
 from src.utils.logging import setup_logger
-from src.utils.metrics import similarity_distribution_stats, cosine_similarity_stats, knn_evaluation
+from src.utils.metrics import knn_evaluation, similarity_distribution_stats
 from src.utils.visualization import plot_loss_curve
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
@@ -48,7 +48,6 @@ def train_epoch(
     """训练一个epoch"""
     model.train()
     total_loss = 0.0
-    total_supcon_loss = 0.0
     num_batches = 0
     skipped_batches = 0
     nan_embedding_count = 0
@@ -91,7 +90,6 @@ def train_epoch(
         # - 同一个样本的view1和view2（相同label）会被视为positive pair，它们的embedding会被拉近
         # - 不同样本之间根据相似度矩阵判断是否为positive pair
         loss = criterion(embeddings, labels_duplicated)
-        supcon_loss = loss.item()
         
         # 检查loss是否为NaN或Inf
         if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
@@ -111,12 +109,10 @@ def train_epoch(
         optimizer.step()
         
         total_loss += loss.item()
-        total_supcon_loss += supcon_loss if isinstance(supcon_loss, float) else supcon_loss.item()
         num_batches += 1
         
         pbar.set_postfix({
             'loss': loss.item(),
-            'supcon': supcon_loss if isinstance(supcon_loss, float) else supcon_loss.item(),
         })
     
     # 打印统计信息
@@ -125,7 +121,6 @@ def train_epoch(
     
     return {
         'loss': total_loss / num_batches if num_batches > 0 else 0.0,
-        'supcon_loss': total_supcon_loss / num_batches if num_batches > 0 else 0.0,
         'skipped_batches': skipped_batches,
     }
 
@@ -146,7 +141,6 @@ def validate(
     """
     model.eval()
     total_loss = 0.0
-    total_supcon_loss = 0.0
     num_batches = 0
     skipped_batches = 0
     nan_embedding_count = 0
@@ -179,7 +173,6 @@ def validate(
                 continue
             
             loss = criterion(embeddings1, labels)
-            supcon_loss = loss.item()
             
             # 检查loss是否为NaN或Inf
             if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
@@ -194,7 +187,6 @@ def validate(
             all_labels.append(labels.cpu())
             
             total_loss += loss.item()
-            total_supcon_loss += supcon_loss if isinstance(supcon_loss, float) else supcon_loss.item()
             num_batches += 1
     
     # 打印统计信息
@@ -217,32 +209,21 @@ def validate(
         margin_neg_sim = sim_stats['neg_sim']
         margin = sim_stats['margin']
         
-        # 2. 计算余弦相似度统计
-        cosine_stats = cosine_similarity_stats(all_embeddings_tensor, all_labels_tensor)
-        cosine_pos_sim = cosine_stats['pos_sim']
-        cosine_neg_sim = cosine_stats['neg_sim']
-        
-        # 3. 计算kNN评估指标
+        # 2. 计算kNN评估指标
         knn_stats = knn_evaluation(all_embeddings_tensor, all_labels_tensor, k=10)
         knn_accuracy = knn_stats.get('knn_accuracy', 0.0)
     else:
         margin_pos_sim = 0.0
         margin_neg_sim = 0.0
         margin = 0.0
-        cosine_pos_sim = 0.0
-        cosine_neg_sim = 0.0
         knn_accuracy = 0.0
     
     return {
         'loss': total_loss / num_batches if num_batches > 0 else 0.0,
-        'supcon_loss': total_supcon_loss / num_batches if num_batches > 0 else 0.0,
         # 相似度分布统计（Margin指标）
         'margin_pos_sim': margin_pos_sim,
         'margin_neg_sim': margin_neg_sim,
         'margin': margin,
-        # 余弦相似度统计（独立指标）
-        'cosine_pos_sim': cosine_pos_sim,
-        'cosine_neg_sim': cosine_neg_sim,
         # kNN评估指标（独立指标）
         'knn_accuracy': knn_accuracy,
         'skipped_batches': skipped_batches,
@@ -482,9 +463,6 @@ def main():
                 f"PosSim={val_metrics.get('margin_pos_sim', 0.0):.4f}, "
                 f"NegSim={val_metrics.get('margin_neg_sim', 0.0):.4f}, "
                 f"Margin={val_metrics.get('margin', 0.0):.4f}\n"
-                f"  Cosine Similarity: "
-                f"PosSim={val_metrics.get('cosine_pos_sim', 0.0):.4f}, "
-                f"NegSim={val_metrics.get('cosine_neg_sim', 0.0):.4f}\n"
                 f"  kNN Accuracy: {val_metrics.get('knn_accuracy', 0.0):.4f}"
             )
         logger.info(log_msg)
@@ -494,20 +472,15 @@ def main():
             log_dict = {
                 'epoch': epoch,
                 'train_loss': train_metrics['loss'],
-                'train_supcon_loss': train_metrics['supcon_loss'],
                 'learning_rate': scheduler.get_last_lr()[0]
             }
             if val_metrics is not None:
                 log_dict.update({
                     'val_loss': val_metrics['loss'],
-                    'val_supcon_loss': val_metrics['supcon_loss'],
                     # 相似度分布统计（Margin指标）
                     'val_margin_pos_sim': val_metrics.get('margin_pos_sim', 0.0),
                     'val_margin_neg_sim': val_metrics.get('margin_neg_sim', 0.0),
                     'val_margin': val_metrics.get('margin', 0.0),
-                    # 余弦相似度统计（独立指标）
-                    'val_cosine_pos_sim': val_metrics.get('cosine_pos_sim', 0.0),
-                    'val_cosine_neg_sim': val_metrics.get('cosine_neg_sim', 0.0),
                     # kNN评估指标（独立指标）
                     'val_knn_accuracy': val_metrics.get('knn_accuracy', 0.0),
                 })
@@ -518,8 +491,6 @@ def main():
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': train_metrics['loss'],
                 'best_margin': best_margin,
                 'config': supcon_config
@@ -530,23 +501,6 @@ def main():
                 checkpoint,
                 checkpoint_dir / f"checkpoint_epoch_{epoch}.pth"
             )
-        
-        # 保存最佳模型（基于验证val_margin，如果没有验证则基于训练loss）
-        current_margin = val_metrics.get('margin', val_metrics['loss']) if val_metrics is not None else train_metrics['loss']
-        if current_margin < best_margin:
-            best_margin = current_margin
-            torch.save(
-                {
-                    'epoch': epoch,
-                    'model_state_dict': model.state_dict(),
-                    'best_margin': best_margin,
-                    'config': supcon_config,
-                    'num_classes': num_classes
-                },
-                checkpoint_dir / "best_model.pth"
-            )
-            loss_type = "val_margin" if  val_metrics is not None else "train_loss"
-            logger.info(f"保存最佳模型 ({loss_type}={best_margin:.4f})")
 
         # 保存当前模型（覆盖）
         torch.save(
