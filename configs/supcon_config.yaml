@@ -10,12 +10,13 @@ supcon:
     embedding_dim: 128
     projection_head:
       hidden_dims: [256, 128]
-    use_layers: [1, 2, 3, 4]  # 使用哪些层的特征
+    use_layers: [0, 1, 2]  # 4x, 8x, 16x 下采样层的输出特征
     fpn_out_channels: 256
     fusion_dim: 512
   
   data:
-    batch_size: 128
+    image_size: 448
+    batch_size: 32
     num_workers: 4
     pin_memory: true
   
@@ -38,21 +39,10 @@ supcon:
       weight: 1.0
       temperature: 0.07
   
-  augmentation:
-    image_size: 224
-    random_crop:
-      enabled: true
-      scale: [0.7, 1.0]
-    horizontal_flip:
-      enabled: true
-      prob: 0.5
-    color_jitter:
-      enabled: true
-  
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/1223-1"
-    log_dir: "logs/supcon_logs/1223-1"
+    checkpoint_dir: "checkpoints/supcon_models/1224-1"
+    log_dir: "logs/supcon_logs/1224-1"
     use_wandb: true
-    wandb_project: "supcon_1223"
+    wandb_project: "supcon_1224"
 

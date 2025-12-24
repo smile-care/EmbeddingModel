@@ -471,9 +471,9 @@ def process_folder(
 def main():
     parser = argparse.ArgumentParser(description='从图像和JSON标注文件提取patch')
     parser.add_argument('--input_dir', type=str, 
-                       default="/home/unitx/workspace_custom/data/震裕/4.x/v6光源/exported_data/628K_CCD1_R角压印",
+                       default="/home/unitx/workspace_custom/data/震裕/4.x/60194/4xdata/60194-CCD1-负极",
                        help='输入文件夹路径（包含图像和JSON文件）')
-    parser.add_argument('--output_dir', type=str, default="data/zhenyu_data/1219-4.x/v6_light", help='输出目录')
+    parser.add_argument('--output_dir', type=str, default="/home/unitx/workspace_custom/EmbeddingModel/data/zhenyu_data/60194/60194-CCD1-负极", help='输出目录')
     parser.add_argument('--expand_ratio', type=float, default=1.0, help='扩边比例（用于大尺寸缺陷）')
     parser.add_argument('--min_size', type=int, default=8, help='最小patch尺寸')
     parser.add_argument('--crop_sizes', type=int, nargs='+', default=[96, 160, 224],

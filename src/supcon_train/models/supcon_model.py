@@ -18,9 +18,9 @@ class SupConModel(nn.Module):
         model_name: str = "facebook/dinov3-convnext-small-pretrain-lvd1689m",
         embedding_dim: int = 128,
         projection_hidden_dims: List[int] = [256, 128],
-        image_size: int = 224,
+        image_size: int = 448,
         freeze_backbone: bool = False,
-        use_layers: Optional[List[int]] = [1, 2, 3, 4],  # 使用哪些层的特征，如[1, 2, 3, 4]
+        use_layers: Optional[List[int]] = [0, 1, 2],  # 使用FPN的哪些层的特征(FPN共有4层，索引0-3, 4x, 8x, 16x, 32x)
         fpn_out_channels = 256,  # FPN输出通道数
         fusion_dim: int = 512  # 特征融合后的维度
     ):
@@ -33,7 +33,7 @@ class SupConModel(nn.Module):
             projection_hidden_dims: projection head隐藏层维度
             image_size: 输入图像大小
             freeze_backbone: 是否冻结backbone
-            use_layers: 使用哪些层的特征（None表示使用所有层）
+            use_layers: 使用FPN的哪些层的特征（None表示使用所有层）
             fusion_dim: 特征融合后的维度
         """
         super().__init__()
@@ -58,39 +58,25 @@ class SupConModel(nn.Module):
                 else:
                     feature_dims.append(feat.shape[-1])
         
-        # 选择使用的层
-        if use_layers is None:
-            use_layers = list(range(len(feature_dims)))
-        
-        # 验证索引有效性
-        max_idx = len(feature_dims) - 1
-        invalid_indices = [idx for idx in use_layers if idx < 0 or idx > max_idx]
-        if invalid_indices:
-            raise ValueError(
-                f"use_layers包含无效索引: {invalid_indices}。"
-                f"backbone输出{len(feature_dims)}层（索引范围: 0-{max_idx}），"
-                f"但配置中使用了: {use_layers}"
-            )
-        
         self.use_layers = use_layers
-        selected_dims = [feature_dims[i] for i in use_layers]
         
         # FPN特征金字塔网络
         # 标准FPN/PNFPN统一所有特征图的通道数为256
         self.fpn = PathAggregationFPN(
-            in_channels_list=selected_dims,
+            in_channels_list=feature_dims,
             out_channels=fpn_out_channels,  # 统一通道数为256
-            num_outs=len(selected_dims),  # 输出与输入相同数量的特征图
+            num_outs=len(feature_dims),  # 输出与输入相同数量的特征图
             start_level=use_layers[0],
             add_extra_convs=False
         )
         
         # 特征融合模块
         # FPN输出统一通道数，FeatureFusion接收统一通道数的特征
-        fpn_output_dims = [fpn_out_channels] * len(selected_dims)
+        fpn_output_dims = [fpn_out_channels] * len(use_layers)
         self.feature_fusion = FeatureFusion(
             feature_dims=fpn_output_dims,  # 使用FPN的统一通道数
-            output_dim=fusion_dim
+            output_dim=fusion_dim,
+            use_layers=use_layers
         )
         
         # Projection Head
@@ -120,14 +106,11 @@ class SupConModel(nn.Module):
             包含embedding和logits的字典
         """
         # Backbone特征提取（获取所有层）
-        all_features = self.backbone(x, output_hidden_states=True)
-        
-        # 选择使用的层
-        selected_features = tuple(all_features[i] for i in self.use_layers)
+        features = self.backbone(x, output_hidden_states=True)
         
         # FPN特征金字塔网络：优化多尺度特征图
         # FPN统一所有特征图的通道数，通过自顶向下和自底向上路径融合多尺度信息
-        fpn_features = self.fpn(selected_features)
+        fpn_features = self.fpn(features)
         
         # 特征融合（应用mask筛选）
         fused_features = self.feature_fusion(fpn_features, mask)

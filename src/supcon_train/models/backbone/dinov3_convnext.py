@@ -53,7 +53,7 @@ class DINOv3ConvNext(nn.Module):
         """
         hidden_states = pixel_values
 
-        all_hidden_states = [hidden_states] if output_hidden_states else []
+        all_hidden_states = []
 
         for stage in self.stages:
             hidden_states = stage(hidden_states)

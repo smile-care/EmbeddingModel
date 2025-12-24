@@ -1,6 +1,5 @@
 """
 SupCon监督对比学习训练脚本
-基于data_config_zhenyu.yaml配置，支持mask和自定义相似度矩阵
 """
 import argparse
 import os
@@ -279,12 +278,13 @@ def main():
     logger.info("加载数据集...")
     logger.info(f"数据配置文件: {data_config_paths}")
     
+    image_size = supcon_config['supcon']['data'].get('image_size', 224)
     # 如果只有一个配置文件，直接使用 SupConDataset；否则使用 MultiConfigDataset
     if len(data_config_paths) == 1:
         train_dataset = SupConDataset(
             data_config_path=data_config_paths[0],
             split='train',
-            augmentation_config=supcon_config['supcon']['augmentation']
+            image_size=image_size
         )
         num_classes = len(train_dataset.categories)
         similarity_matrix = train_dataset.get_similarity_matrix()
@@ -293,7 +293,7 @@ def main():
         train_dataset = MultiConfigDataset(
             data_config_paths=data_config_paths,
             split='train',
-            augmentation_config=supcon_config['supcon']['augmentation']
+            image_size=image_size
         )
         num_classes = len(train_dataset.categories)
         similarity_matrix = train_dataset.get_similarity_matrix()
@@ -304,6 +304,7 @@ def main():
     
     logger.info(f"训练集样本数: {len(train_dataset)}, 类别数: {num_classes}")
     logger.info(f"默认相似度阈值: {default_similarity}")
+    logger.info(f"缺陷类别: {train_dataset.categories}")
     
     # 创建数据加载器
     batch_size = supcon_config['supcon']['data']['batch_size']
@@ -325,13 +326,13 @@ def main():
             val_dataset = SupConDataset(
                 data_config_path=data_config_paths[0],
                 split='val',
-                augmentation_config=None  # 验证集不使用增强
+                image_size=image_size
             )
         else:
             val_dataset = MultiConfigDataset(
                 data_config_paths=data_config_paths,
                 split='val',
-                augmentation_config=None  # 验证集不使用增强
+                image_size=image_size
             )
         val_dataloader = DataLoader(
             val_dataset,
@@ -349,7 +350,7 @@ def main():
         model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
         embedding_dim=model_config['embedding_dim'],
         projection_hidden_dims=model_config['projection_head']['hidden_dims'],
-        image_size=224,
+        image_size=image_size,
         freeze_backbone=supcon_config['supcon']['training_strategy'].get('freeze_backbone_epochs', 0) > 0,
         use_layers=model_config.get('use_layers', None),
         fusion_dim=model_config.get('fusion_dim', 512)

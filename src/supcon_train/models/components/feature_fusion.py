@@ -14,7 +14,8 @@ class FeatureFusion(nn.Module):
     def __init__(
         self,
         feature_dims: List[int],
-        output_dim: int = 512
+        output_dim: int = 512,
+        use_layers: List[int] = [0, 1, 2]
     ):
         """
         初始化特征融合模块
@@ -22,11 +23,13 @@ class FeatureFusion(nn.Module):
         Args:
             feature_dims: 各层特征的维度列表
             output_dim: 输出特征维度
+            use_layers: 使用哪些层的特征进行融合
         """
         super().__init__()
         
         self.feature_dims = feature_dims
         self.num_layers = len(feature_dims)
+        self.use_layers = use_layers
         
         # 为每层特征创建投影层
         # 注意：这里不使用AdaptiveAvgPool2d，而是在forward中使用mask加权池化
@@ -75,18 +78,14 @@ class FeatureFusion(nn.Module):
         projected_features = []
         
         for i, feat in enumerate(features):
-            # Resize mask到特征图尺寸（使用bilinear插值得到平滑的热力图权重）
+            if i not in self.use_layers:
+                continue
+            # Resize mask到特征图尺寸
             B, C, H, W = feat.shape
-            mask_resized = F.interpolate(
-                mask, size=(H, W), mode='bilinear', align_corners=False
-            )
+            mask_resized = F.interpolate(mask, size=(H, W), mode='nearest')  # (B, 1, H, W)
             
-            # 确保mask值在[0, 1]范围内，作为热力图权重
-            # 使用bilinear插值可以得到平滑的权重过渡，即使特征图很小也能保持相对准确
             mask_weights = torch.clamp(mask_resized, 0.1, 1.0)  # (B, 1, H, W)
             
-            # 使用mask进行加权平均池化，而不是简单的逐元素相乘
-            # 这样可以更好地处理mask区域，即使mask在resize后不够精确
             # 方法：对每个通道，使用mask权重进行加权平均
             weighted_feat = feat * mask_weights  # (B, C, H, W)
             

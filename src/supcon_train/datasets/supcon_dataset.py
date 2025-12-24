@@ -13,26 +13,20 @@ import yaml
 from PIL import Image
 from torch.utils.data import ConcatDataset, Dataset
 from torchvision import transforms
+from torchvision.transforms import functional as TF
+import random
 
 
 class TwoViewAugmentation:
     """双视图数据增强（同时处理图像和mask）"""
     
-    def __init__(self, config: Optional[Dict] = None):
+    def __init__(self, config: Optional[Dict]):
         """
         初始化数据增强器
         
         Args:
             config: 增强配置字典
         """
-        if config is None:
-            config = {
-                'image_size': 224,
-                'random_crop': {'enabled': True, 'scale': [0.6, 1.0]},
-                'horizontal_flip': {'enabled': True, 'prob': 0.5},
-                'color_jitter': {'enabled': True}
-            }
-        
         self.image_size = config.get('image_size', 224)
         
         # 构建增强pipeline
@@ -49,18 +43,7 @@ class TwoViewAugmentation:
         """构建变换pipeline"""
         transform_list = []
         
-        # 随机裁剪
-        if config.get('random_crop', {}).get('enabled', True):
-            scale = config.get('random_crop', {}).get('scale', [0.6, 1.0])
-            transform_list.append(
-                transforms.RandomResizedCrop(
-                    self.image_size,
-                    scale=scale,
-                    interpolation=transforms.InterpolationMode.BILINEAR
-                )
-            )
-        else:
-            transform_list.append(
+        transform_list.append(
                 transforms.Resize((self.image_size, self.image_size))
             )
         
@@ -68,6 +51,23 @@ class TwoViewAugmentation:
         if config.get('horizontal_flip', {}).get('enabled', True):
             prob = config.get('horizontal_flip', {}).get('prob', 0.5)
             transform_list.append(transforms.RandomHorizontalFlip(p=prob))
+        
+        # 仿射变换（包含旋转、平移、剪切、缩放）
+        if config.get('affine', {}).get('enabled', False):
+            affine_config = config.get('affine', {})
+            degrees = affine_config.get('degrees', 0)
+            translate = affine_config.get('translate', (0.2, 0.2))  # (tx, ty) 平移比例
+            scale = affine_config.get('scale', (0.8, 1.2))  # 缩放范围
+            shear = affine_config.get('shear', 15)  # 剪切角度
+            # fill: 填充值，默认0（黑色）。对于RGB图像可以是单个值或(R,G,B)元组
+            fill = affine_config.get('fill', 0)
+            transform_list.append(transforms.RandomAffine(
+                degrees=degrees,
+                translate=translate,
+                scale=scale,
+                shear=shear,
+                fill=fill
+            ))
         
         # 颜色抖动
         if config.get('color_jitter', {}).get('enabled', False):
@@ -91,14 +91,11 @@ class TwoViewAugmentation:
         Returns:
             (view1_image, view1_mask, view2_image, view2_mask)
         """
-        # 对图像应用不同的增强
-        view1_image = self.transform1(image)
-        view2_image = self.transform2(image)
+        # 对view1应用增强（确保image和mask使用相同的随机参数）
+        view1_image, view1_mask = self._apply_augmentation_with_mask(image, mask, self.transform1)
         
-        # 对mask应用相同的空间变换（但不应用颜色变换）
-        # 需要手动应用空间变换以保持与图像一致
-        view1_mask = self._apply_spatial_transform(mask, self.transform1, view1_image.shape)
-        view2_mask = self._apply_spatial_transform(mask, self.transform2, view2_image.shape)
+        # 对view2应用增强（确保image和mask使用相同的随机参数）
+        view2_image, view2_mask = self._apply_augmentation_with_mask(image, mask, self.transform2)
         
         # 归一化图像
         view1_image = self.normalize(view1_image)
@@ -106,42 +103,58 @@ class TwoViewAugmentation:
         
         return view1_image, view1_mask, view2_image, view2_mask
     
-    def _apply_spatial_transform(self, mask: Image.Image, transform: transforms.Compose, target_shape: tuple) -> torch.Tensor:
-        """对mask应用空间变换（跳过颜色变换）"""
-        # 提取空间变换
-        spatial_transforms = []
-        for t in transform.transforms:
-            if isinstance(t, (transforms.RandomResizedCrop, transforms.Resize, 
-                           transforms.RandomHorizontalFlip)):
-                spatial_transforms.append(t)
-            elif isinstance(t, transforms.ToTensor):
-                # 跳过ToTensor，我们后面手动处理
-                break
+    def _apply_augmentation_with_mask(self, image: Image.Image, mask: Image.Image, transform: transforms.Compose) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        对image和mask应用相同的空间变换，确保随机参数一致
         
-        # 应用空间变换
-        for t in spatial_transforms:
-            mask = t(mask)
+        Returns:
+            (transformed_image_tensor, transformed_mask_tensor)
+        """
+        # 保存随机状态，确保image和mask使用相同的随机参数
+        random_state = random.getstate()
+        torch_state = torch.get_rng_state()
+        
+        # 应用变换到图像（包含所有变换，包括颜色变换）
+        transformed_image = image
+        for t in transform.transforms:
+            if isinstance(t, transforms.ToTensor):
+                break
+            transformed_image = t(transformed_image)
+        
+        # 恢复随机状态，确保mask使用相同的随机参数
+        random.setstate(random_state)
+        torch.set_rng_state(torch_state)
+        
+        # 对mask应用相同的空间变换（跳过颜色变换）
+        transformed_mask = mask
+        for t in transform.transforms:
+            if isinstance(t, transforms.ToTensor):
+                break
+            # 跳过颜色变换
+            if isinstance(t, transforms.ColorJitter):
+                continue
+            transformed_mask = t(transformed_mask)
         
         # 转为tensor
-        mask_tensor = transforms.ToTensor()(mask)
+        image_tensor = transforms.ToTensor()(transformed_image)
+        mask_tensor = transforms.ToTensor()(transformed_mask)
         
-        # 确保mask与图像尺寸一致（处理可能的尺寸不匹配）
-        if mask_tensor.shape[1:] != target_shape[1:]:
-            # Resize mask到目标尺寸
+        # 确保mask与图像尺寸一致
+        if mask_tensor.shape[1:] != image_tensor.shape[1:]:
             mask_tensor = F.interpolate(
                 mask_tensor.unsqueeze(0),
-                size=target_shape[1:],
+                size=image_tensor.shape[1:],
                 mode='nearest'
             ).squeeze(0)
         
-        # 如果mask是单通道，确保是二值mask
+        # 确保mask是二值的
         if mask_tensor.shape[0] == 1:
             mask_tensor = (mask_tensor > 0.5).float()
         else:
-            # 多通道mask，取第一个通道
             mask_tensor = (mask_tensor[0:1] > 0.5).float()
         
-        return mask_tensor
+        return image_tensor, mask_tensor
+    
 
 
 class SupConDataset(Dataset):
@@ -151,7 +164,7 @@ class SupConDataset(Dataset):
         self,
         data_config_path: str = 'configs/data_config_zhenyu.yaml',
         split: str = 'train',  # 'train' or 'val'
-        augmentation_config: Optional[dict] = None
+        image_size: int = 224
     ):
         """
         初始化数据集
@@ -159,7 +172,7 @@ class SupConDataset(Dataset):
         Args:
             data_config_path: 数据配置文件路径
             split: 数据集划分（'train' 或 'val'）
-            augmentation_config: 数据增强配置
+            image_size: 输入图像大小
         """
         # 加载配置
         with open(data_config_path, 'r', encoding='utf-8') as f:
@@ -167,6 +180,7 @@ class SupConDataset(Dataset):
         
         self.root = Path(self.config['root'])
         self.split = split
+        self.image_size = image_size
         
         # 加载数据列表
         self.samples = self._load_samples()
@@ -179,21 +193,24 @@ class SupConDataset(Dataset):
         self.similarity_matrix = self._build_similarity_matrix()
         
         # 构建增强器
-        if augmentation_config:
-            self.augmentation = TwoViewAugmentation(augmentation_config)
-        else:
-            # 默认增强
-            self.augmentation = TwoViewAugmentation({
-                'image_size': 224,
-                'random_crop': {'enabled': True, 'scale': [0.6, 1.0]},
+        self.augmentation = TwoViewAugmentation({
+                'image_size': self.image_size,
                 'horizontal_flip': {'enabled': True, 'prob': 0.5},
+                'affine': {
+                    'enabled': True,
+                    'degrees': 15,  # 旋转角度范围
+                    'translate': (0.2, 0.2),  # 平移比例 (tx, ty)
+                    'scale': (0.8, 1.2),  # 缩放范围
+                    'shear': 20,  # 剪切角度
+                    'fill': 0  # 填充值：0=黑色填充（默认）
+                },
                 'color_jitter': {'enabled': True}
             }) if split == 'train' else None
         
         # 验证集不使用增强，只做resize和归一化
         if split == 'val' and self.augmentation is None:
             self.val_transform = transforms.Compose([
-                transforms.Resize((224, 224)),
+                transforms.Resize((self.image_size, self.image_size)),
                 transforms.ToTensor(),
                 transforms.Normalize(
                     mean=[0.485, 0.456, 0.406],
@@ -201,7 +218,7 @@ class SupConDataset(Dataset):
                 )
             ])
             self.val_mask_transform = transforms.Compose([
-                transforms.Resize((224, 224)),
+                transforms.Resize((self.image_size, self.image_size)),
                 transforms.ToTensor()
             ])
     
@@ -320,7 +337,7 @@ class MultiConfigDataset(Dataset):
         self,
         data_config_paths: list,
         split: str = 'train',
-        augmentation_config: Optional[dict] = None
+        image_size: int = 224,
     ):
         """
         初始化多配置数据集
@@ -328,7 +345,7 @@ class MultiConfigDataset(Dataset):
         Args:
             data_config_paths: 数据配置文件路径列表
             split: 数据集划分（'train' 或 'val'）
-            augmentation_config: 数据增强配置
+            image_size: 输入图像大小
         """
         self.data_config_paths = data_config_paths
         self.split = split
@@ -343,7 +360,7 @@ class MultiConfigDataset(Dataset):
             dataset = SupConDataset(
                 data_config_path=config_path,
                 split=split,
-                augmentation_config=augmentation_config
+                image_size=image_size,
             )
             self.datasets.append(dataset)
             
