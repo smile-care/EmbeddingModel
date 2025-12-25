@@ -29,13 +29,16 @@ if __name__ == "__main__":
     config_path = 'configs/supcon_config.yaml'
     data_config_path = "configs/data_config_zhenyu.yaml"
     
+    # 是否显示原始二值mask（False则显示软膨胀后的mask）
+    SHOW_BINARY_MASK = True  # 设置为True查看原始二值mask
+    
     supcon_config = load_config(config_path)
     
     image_size = supcon_config['supcon']['data'].get('image_size', 224)
     
     dataset = SupConDataset(
             data_config_path=data_config_path,
-            split='train',
+            split='val',
             image_size=image_size
         )
     
@@ -61,6 +64,11 @@ if __name__ == "__main__":
         # 处理mask
         mask1 = view1_mask[0].cpu().numpy() if view1_mask.dim() == 3 else view1_mask.cpu().numpy()
         mask2 = view2_mask[0].cpu().numpy() if view2_mask.dim() == 3 else view2_mask.cpu().numpy()
+        
+        # 如果设置了显示原始二值mask，则将软膨胀的mask转换回二值
+        if SHOW_BINARY_MASK:
+            mask1 = (mask1 == 1.0).astype(np.float32)
+            mask2 = (mask2 == 1.0).astype(np.float32)
         
         if 0:
             # 创建单个样本的可视化
@@ -121,41 +129,43 @@ if __name__ == "__main__":
             if mask1_32x.ndim == 3:
                 mask1_32x = mask1_32x[0]
             
-            fig, axes = plt.subplots(5, 2, figsize=(12, 20))
+            # 如果设置了显示原始二值mask，则将软膨胀的mask转换回二值
+            if SHOW_BINARY_MASK:
+                mask1_4x = (mask1_4x == 1.0).astype(np.float32)
+                mask1_8x = (mask1_8x == 1.0).astype(np.float32)
+                mask1_16x = (mask1_16x == 1.0).astype(np.float32)
+                mask1_32x = (mask1_32x == 1.0).astype(np.float32)
+            
+            fig, axes = plt.subplots(5, 2, figsize=(12, 20), constrained_layout=True)
             axes = axes.flatten()  # 将2D数组展平为1D，方便索引
             
             # View1图像及其多尺度mask
             axes[0].imshow(np.clip(img1, 0, 1))
             axes[0].set_title(f'View1 Image - {label_name}')
-            axes[0].axis('off')
             axes[1].imshow(mask1, cmap='gray', vmin=0, vmax=1)
             axes[1].set_title('View1 Mask')
             axes[1].axis('off')
             
             axes[2].imshow(np.clip(img1_4x, 0, 1))
             axes[2].set_title('View1 Image 4x')
-            axes[2].axis('off')
             axes[3].imshow(mask1_4x, cmap='gray', vmin=0, vmax=1)
             axes[3].set_title('View1 Mask 4x')
             axes[3].axis('off')
             
             axes[4].imshow(np.clip(img1_8x, 0, 1))
             axes[4].set_title('View1 Image 8x')
-            axes[4].axis('off')
             axes[5].imshow(mask1_8x, cmap='gray', vmin=0, vmax=1)
             axes[5].set_title('View1 Mask 8x')
             axes[5].axis('off')
             
             axes[6].imshow(np.clip(img1_16x, 0, 1))
             axes[6].set_title('View1 Image 16x')
-            axes[6].axis('off')
             axes[7].imshow(mask1_16x, cmap='gray', vmin=0, vmax=1)
             axes[7].set_title('View1 Mask 16x')
             axes[7].axis('off')
             
             axes[8].imshow(np.clip(img1_32x, 0, 1))
             axes[8].set_title('View1 Image 32x')
-            axes[8].axis('off')
             axes[9].imshow(mask1_32x, cmap='gray', vmin=0, vmax=1)
             axes[9].set_title('View1 Mask 32x')
             axes[9].axis('off')

@@ -84,7 +84,7 @@ class FeatureFusion(nn.Module):
             B, C, H, W = feat.shape
             mask_resized = F.interpolate(mask, size=(H, W), mode='nearest')  # (B, 1, H, W)
             
-            mask_weights = torch.clamp(mask_resized, 0.1, 1.0)  # (B, 1, H, W)
+            mask_weights = torch.clamp(mask_resized, 0.02, 1.0)  # (B, 1, H, W)
             
             # 方法：对每个通道，使用mask权重进行加权平均
             weighted_feat = feat * mask_weights  # (B, C, H, W)

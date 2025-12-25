@@ -103,7 +103,7 @@ def train_epoch(
         loss.backward()
         
         # 梯度裁剪，防止梯度爆炸
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
         
         optimizer.step()
         
@@ -192,7 +192,7 @@ def validate(
     if skipped_batches > 0:
         print(f"验证统计: 跳过{skipped_batches}个batch (NaN embedding: {nan_embedding_count}, NaN loss: {nan_loss_count})")
     
-        # 基于整个验证集计算相似度分布统计（核心评估指标）
+    # 基于整个验证集计算相似度分布统计（核心评估指标）
     if len(all_embeddings) > 0:
         # 拼接所有embeddings和labels
         all_embeddings_tensor = torch.cat(all_embeddings, dim=0)  # (N, D)
@@ -227,7 +227,6 @@ def validate(
         'knn_accuracy': knn_accuracy,
         'skipped_batches': skipped_batches,
     }
-
 
 
 def main():

@@ -3,6 +3,7 @@
 基于data_config_zhenyu.yaml配置，支持mask信息
 """
 import os
+import random
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 
@@ -11,10 +12,97 @@ import torch
 import torch.nn.functional as F
 import yaml
 from PIL import Image
+from scipy import ndimage
 from torch.utils.data import ConcatDataset, Dataset
 from torchvision import transforms
 from torchvision.transforms import functional as TF
-import random
+
+
+class MaskSoftDilation:
+    """Mask软膨胀处理类"""
+    
+    def __init__(self, config: Optional[Dict] = None):
+        """
+        初始化mask软膨胀处理器
+        
+        Args:
+            config: 配置字典，包含：
+                - enabled: 是否启用（默认True）
+        """
+        if config is None:
+            config = {}
+        self.enabled = config.get('enabled', True)
+    
+    def __call__(self, mask_tensor: torch.Tensor) -> torch.Tensor:
+        """
+        对mask应用软膨胀
+        
+        Args:
+            mask_tensor: mask张量 (1, H, W) 或 (C, H, W)，值在[0, 1]之间
+            
+        Returns:
+            软膨胀后的mask张量，形状与输入相同
+        """
+        if not self.enabled:
+            return mask_tensor
+        
+        # 确保mask是单通道的
+        if mask_tensor.shape[0] > 1:
+            mask_tensor = mask_tensor[0:1]
+        
+        # 转换为numpy进行处理
+        mask_np = mask_tensor.squeeze(0).cpu().numpy()  # (H, W)
+        H, W = mask_np.shape
+        
+        # 二值化mask（前景为1，背景为0）
+        binary_mask = (mask_np > 0.5).astype(np.float32)
+        
+        # 如果mask全为0，直接返回
+        if binary_mask.sum() == 0:
+            return mask_tensor
+        
+        # 根据mask前景区域的面积自适应计算膨胀半径
+        # 计算前景区域的面积（像素数量）
+        foreground_area = binary_mask.sum()
+        
+        if foreground_area == 0:
+            # 如果没有前景区域，直接返回
+            return mask_tensor
+        
+        # 假设前景区域是圆形的，根据面积计算等效直径
+        # area = π * (diameter/2)^2 => diameter = 2 * sqrt(area / π)
+        equivalent_diameter = 2 * np.sqrt(foreground_area / np.pi)
+        
+        # 直接使用等效直径作为膨胀半径
+        # 这样无论前景区域是什么形状（细长、圆形、不规则），都能根据实际面积自适应
+        dilation_radius = max(1, int(equivalent_diameter))
+        
+        # 计算距离变换：计算每个像素到最近前景像素的距离
+        # 对于前景像素，距离为0；对于背景像素，距离为正数
+        distance = ndimage.distance_transform_edt(1 - binary_mask)
+        
+        # 创建软膨胀mask，初始化为全0（背景）
+        soft_mask = np.zeros_like(binary_mask, dtype=np.float32)
+        
+        # 找到膨胀区域：距离在(0, radius]范围内的背景像素
+        # 注意：distance=0的像素（原始前景）不包含在内，确保原始前景保持不变
+        dilation_region = (distance > 0) & (distance <= dilation_radius)
+        
+        # 在膨胀区域内，根据距离计算像素值
+        # 距离为1时（紧邻前景），值接近1
+        # 距离为radius时，值为0
+        # 线性插值：value = 1 - (distance / radius)
+        if dilation_region.any():
+            normalized_distance = distance[dilation_region] / dilation_radius
+            soft_mask[dilation_region] = 1.0 - normalized_distance
+        
+        # 确保原始前景区域保持为1
+        soft_mask[binary_mask > 0.5] = 1.0
+        
+        # 转换回torch tensor
+        soft_mask_tensor = torch.from_numpy(soft_mask).unsqueeze(0).to(mask_tensor.device)
+        
+        return soft_mask_tensor
 
 
 class TwoViewAugmentation:
@@ -38,6 +126,10 @@ class TwoViewAugmentation:
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225]
         )
+        
+        # mask软膨胀处理器
+        mask_dilation_config = config.get('mask_dilation', {})
+        self.mask_dilation = MaskSoftDilation(mask_dilation_config)
     
     def _build_transform(self, config: Dict, view: int) -> transforms.Compose:
         """构建变换pipeline"""
@@ -153,6 +245,9 @@ class TwoViewAugmentation:
         else:
             mask_tensor = (mask_tensor[0:1] > 0.5).float()
         
+        # 应用软膨胀
+        mask_tensor = self.mask_dilation(mask_tensor)
+        
         return image_tensor, mask_tensor
     
 
@@ -204,8 +299,17 @@ class SupConDataset(Dataset):
                     'shear': 20,  # 剪切角度
                     'fill': 0  # 填充值：0=黑色填充（默认）
                 },
-                'color_jitter': {'enabled': True}
+                'color_jitter': {'enabled': True},
+                'mask_dilation': {
+                    'enabled': True  # 是否启用mask软膨胀
+                }
             }) if split == 'train' else None
+        
+        # mask软膨胀处理器（train和val都使用）
+        mask_dilation_config = {
+            'enabled': True
+        }
+        self.mask_dilation = MaskSoftDilation(mask_dilation_config)
         
         # 验证集不使用增强，只做resize和归一化
         if split == 'val' and self.augmentation is None:
@@ -311,6 +415,8 @@ class SupConDataset(Dataset):
             view1_image = self.val_transform(image)
             view1_mask = self.val_mask_transform(mask)
             view1_mask = (view1_mask > 0.5).float()  # 二值化
+            # 应用软膨胀（与train保持一致）
+            view1_mask = self.mask_dilation(view1_mask)
             view2_image = view1_image.clone()
             view2_mask = view1_mask.clone()
         
@@ -428,8 +534,8 @@ class MultiConfigDataset(Dataset):
         return len(self.concat_dataset)
     
     def __getitem__(self, idx):
-        # ConcatDataset 会自动处理索引映射
-        # 我们需要找到这个索引对应的数据集
+        # 手动实现索引映射（因为需要重新映射类别索引）
+        # 找到这个索引对应的数据集
         if idx < 0:
             if -idx > len(self):
                 raise ValueError("索引超出范围")
