@@ -15,34 +15,40 @@ supcon:
     fusion_dim: 512
   
   data:
-    image_size: 220
+    image_size: 224
     batch_size: 128
     num_workers: 4
     pin_memory: true
   
   training:
-    epochs: 20
+    epochs: 500
     learning_rate: 1e-4
     weight_decay: 0.05
     backbone_lr_ratio: 0.1  # backbone学习率比例
     lr_scheduler: "cosine"
-    save_interval: 20  # 每隔多少epoch保存一次模型
+    save_interval: 50  # 每隔多少epoch保存一次模型
   
   training_strategy:
     freeze_backbone_epochs: 10000  # 冻结backbone的epoch数（0表示不冻结）
   
   loss:
-    type: "contrastive"  # "contrastive" 或 "target"
-    # contrastive: 标准对比loss，使用相似度作为权重
-    # target: MSE loss，使用相似度作为目标值
     supcon:
       weight: 1.0
       temperature: 0.07
+    # 相似度矩阵配置
+    use_similarity_matrix: false  # 是否使用相似度矩阵（true: 使用，false: 使用标准SupCon，仅同label为positive）
+  
+  # MoCo配置（动量对比学习，适合小batch size）
+  moco:
+    enabled: true  # 是否启用MoCo（true: 使用MoCo，false: 使用标准SupCon）
+    momentum: 0.995  # 动量系数（默认0.999，越大更新越慢）
+    queue_size: 16384  # 负样本队列大小（默认16384，适合显存受限；可设置为32768或65536）
+    loss_type: "supervised"  # loss类型："supervised"（使用相似度矩阵）或 "standard"（标准MoCo InfoNCE）
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/1225-2"
-    log_dir: "logs/supcon_logs/1225-2"
+    checkpoint_dir: "checkpoints/supcon_models/1225-5"
+    log_dir: "logs/supcon_logs/1225-5"
     use_wandb: true
-    wandb_project: "supcon_1224"
+    wandb_project: "supcon_moco"
 

@@ -26,7 +26,10 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.supcon_train.datasets.supcon_dataset import MultiConfigDataset, SupConDataset
-from src.supcon_train.models.losses import SimilarityTargetLoss, SupervisedContrastiveLoss
+from src.supcon_train.models.losses import SupervisedContrastiveLoss
+from src.supcon_train.models.moco_loss import MoCoLoss
+from src.supcon_train.models.moco_model import MoCoModel
+from src.supcon_train.models.moco_queue import MoCoQueue
 from src.supcon_train.models.supcon_model import SupConModel
 from src.utils.config_loader import load_config
 from src.utils.logging import setup_logger
@@ -43,8 +46,22 @@ def train_epoch(
     optimizer: optim.Optimizer,
     device: torch.device,
     epoch: int,
+    use_moco: bool = False,
+    moco_queue: Optional[MoCoQueue] = None,
 ) -> dict:
-    """训练一个epoch"""
+    """
+    训练一个epoch
+    
+    Args:
+        model: 模型（SupConModel或MoCoModel）
+        dataloader: 数据加载器
+        criterion: 损失函数
+        optimizer: 优化器
+        device: 设备
+        epoch: 当前epoch
+        use_moco: 是否使用MoCo
+        moco_queue: MoCo队列（如果使用MoCo）
+    """
     model.train()
     total_loss = 0.0
     num_batches = 0
@@ -61,51 +78,109 @@ def train_epoch(
         view2_masks = batch['view2_mask'].to(device)
         labels = batch['label'].to(device)
         
-        # 前向传播：分别计算view1和view2的embedding
-        outputs1 = model(view1_images, view1_masks, return_features=False)
-        embeddings1 = outputs1['embeddings']
-        
-        outputs2 = model(view2_images, view2_masks, return_features=False)
-        embeddings2 = outputs2['embeddings']
-        
-        # 拼接view1和view2的embedding，形成2B大小的batch
-        # embeddings: [view1_0, view1_1, ..., view1_B-1, view2_0, view2_1, ..., view2_B-1]
-        # labels_duplicated: [label_0, label_1, ..., label_B-1, label_0, label_1, ..., label_B-1]
-        # 这样同一个样本的view1和view2（索引i和i+B）有相同的label，会被视为positive pair
-        embeddings = torch.cat([embeddings1, embeddings2], dim=0)  # (2B, D)
-        labels_duplicated = torch.cat([labels, labels], dim=0)  # (2B,)
-        
-        # 检查embeddings是否包含NaN或Inf
-        if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
-            nan_embedding_count += 1
-            skipped_batches += 1
-            if nan_embedding_count <= 5:  # 只打印前5次警告
-                print(f"警告：Epoch {epoch}, Batch {num_batches}: embeddings包含NaN或Inf，跳过此batch")
-            continue
-        
+        if use_moco:
+            # MoCo训练流程
+            # 1. 使用query_encoder计算view1的query embeddings
+            query_outputs1 = model(view1_images, view1_masks, mode='query', return_features=False)
+            query_embeddings1 = query_outputs1['embeddings']
+            
+            # 2. 使用momentum_encoder计算view2的key embeddings（用于positive pairs和更新队列）
+            with torch.no_grad():
+                key_outputs2 = model(view2_images, view2_masks, mode='key', return_features=False)
+                key_embeddings2 = key_outputs2['embeddings']
+            
+            # 3. 获取队列中的负样本
+            queue_embeddings, queue_labels = moco_queue.get_queue(device=device)
+            
+            # 4. 检查embeddings是否包含NaN或Inf
+            if (torch.isnan(query_embeddings1).any() or torch.isinf(query_embeddings1).any() or
+                torch.isnan(key_embeddings2).any() or torch.isinf(key_embeddings2).any()):
+                nan_embedding_count += 1
+                skipped_batches += 1
+                if nan_embedding_count <= 5:
+                    print(f"警告：Epoch {epoch}, Batch {num_batches}: embeddings包含NaN或Inf，跳过此batch")
+                continue
+            
+            # 5. 计算MoCo loss（结合当前batch和队列中的负样本）
+            loss = criterion(
+                query_embeddings=query_embeddings1,
+                key_embeddings=key_embeddings2,
+                query_labels=labels,
+                queue_embeddings=queue_embeddings,
+                queue_labels=queue_labels
+            )
+            
+            # 6. 检查loss是否为NaN或Inf
+            if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
+                nan_loss_count += 1
+                skipped_batches += 1
+                if nan_loss_count <= 5:
+                    print(f"警告：Epoch {epoch}, Batch {num_batches}: loss为NaN或Inf，跳过此batch")
+                continue
+            
+            # 7. 反向传播
+            optimizer.zero_grad()
+            loss.backward()
+            
+            # 梯度裁剪，防止梯度爆炸
+            torch.nn.utils.clip_grad_norm_(model.query_encoder.parameters(), max_norm=2.0)
+            
+            optimizer.step()
+            
+            # 8. 更新队列（FIFO）
+            with torch.no_grad():
+                moco_queue.enqueue(key_embeddings2, labels)
+            
+            # 9. 动量更新momentum_encoder
+            with torch.no_grad():
+                model.momentum_update()
+        else:
+            # 标准SupCon训练流程
+            # 前向传播：分别计算view1和view2的embedding
+            outputs1 = model(view1_images, view1_masks, return_features=False)
+            embeddings1 = outputs1['embeddings']
+            
+            outputs2 = model(view2_images, view2_masks, return_features=False)
+            embeddings2 = outputs2['embeddings']
+            
+            # 拼接view1和view2的embedding，形成2B大小的batch
+            # embeddings: [view1_0, view1_1, ..., view1_B-1, view2_0, view2_1, ..., view2_B-1]
+            # labels_duplicated: [label_0, label_1, ..., label_B-1, label_0, label_1, ..., label_B-1]
+            # 这样同一个样本的view1和view2（索引i和i+B）有相同的label，会被视为positive pair
+            embeddings = torch.cat([embeddings1, embeddings2], dim=0)  # (2B, D)
+            labels_duplicated = torch.cat([labels, labels], dim=0)  # (2B,)
+            
+            # 检查embeddings是否包含NaN或Inf
+            if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
+                nan_embedding_count += 1
+                skipped_batches += 1
+                if nan_embedding_count <= 5:  # 只打印前5次警告
+                    print(f"警告：Epoch {epoch}, Batch {num_batches}: embeddings包含NaN或Inf，跳过此batch")
+                continue
+            
 
-        # 计算SupCon loss
-        # 在loss计算中：
-        # - 同一个样本的view1和view2（相同label）会被视为positive pair，它们的embedding会被拉近
-        # - 不同样本之间根据相似度矩阵判断是否为positive pair
-        loss = criterion(embeddings, labels_duplicated)
-        
-        # 检查loss是否为NaN或Inf
-        if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
-            nan_loss_count += 1
-            skipped_batches += 1
-            if nan_loss_count <= 5:  # 只打印前5次警告
-                print(f"警告：Epoch {epoch}, Batch {num_batches}: loss为NaN或Inf，跳过此batch")
-            continue
-        
-        # 反向传播
-        optimizer.zero_grad()
-        loss.backward()
-        
-        # 梯度裁剪，防止梯度爆炸
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
-        
-        optimizer.step()
+            # 计算SupCon loss
+            # 在loss计算中：
+            # - 同一个样本的view1和view2（相同label）会被视为positive pair，它们的embedding会被拉近
+            # - 不同样本之间根据相似度矩阵判断是否为positive pair
+            loss = criterion(embeddings, labels_duplicated)
+            
+            # 检查loss是否为NaN或Inf
+            if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
+                nan_loss_count += 1
+                skipped_batches += 1
+                if nan_loss_count <= 5:  # 只打印前5次警告
+                    print(f"警告：Epoch {epoch}, Batch {num_batches}: loss为NaN或Inf，跳过此batch")
+                continue
+            
+            # 反向传播
+            optimizer.zero_grad()
+            loss.backward()
+            
+            # 梯度裁剪，防止梯度爆炸
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+            
+            optimizer.step()
         
         total_loss += loss.item()
         num_batches += 1
@@ -129,6 +204,10 @@ def validate(
     dataloader: DataLoader,
     criterion: nn.Module,
     device: torch.device,
+    use_moco: bool = False,
+    similarity_matrix: Optional[np.ndarray] = None,
+    default_similarity: float = 0.0,
+    loss_temperature: float = 0.07,
 ) -> dict:
     """
     验证函数，使用相似度分布分析作为评估指标
@@ -137,6 +216,13 @@ def validate(
     - PosSim: 正样本平均相似度（越大越好，通常趋近1）
     - NegSim: 负样本平均相似度（越小越好，接近0或负值）
     - Margin: 正负样本间隔（越大越好，表示判别性越强）
+    
+    Args:
+        model: 模型（SupConModel或MoCoModel）
+        dataloader: 数据加载器
+        criterion: 损失函数
+        device: 设备
+        use_moco: 是否使用MoCo（如果使用MoCo，验证时只使用query_encoder）
     """
     model.eval()
     total_loss = 0.0
@@ -157,7 +243,12 @@ def validate(
             labels = batch['label'].to(device)
             
             # 前向传播：计算embedding
-            outputs1 = model(view1_images, view1_masks, return_features=False)
+            if use_moco:
+                # MoCo验证：只使用query_encoder
+                outputs1 = model(view1_images, view1_masks, mode='query', return_features=False)
+            else:
+                # 标准SupCon验证
+                outputs1 = model(view1_images, view1_masks, return_features=False)
             embeddings1 = outputs1['embeddings']
             
             # 归一化embeddings（L2归一化）
@@ -171,7 +262,19 @@ def validate(
                     print(f"警告：验证时embeddings包含NaN或Inf，跳过此batch")
                 continue
             
-            loss = criterion(embeddings1, labels)
+            # 对于MoCo，验证时使用标准SupCon loss（因为不需要队列）
+            # 对于标准SupCon，使用原有的loss
+            if use_moco:
+                # MoCo验证时，使用标准SupCon loss（需要从criterion中提取相似度矩阵信息）
+                # 创建一个临时的SupervisedContrastiveLoss用于验证
+                temp_criterion = SupervisedContrastiveLoss(
+                    temperature=loss_temperature,
+                    similarity_matrix=similarity_matrix,
+                    default_similarity=default_similarity
+                ).to(device)
+                loss = temp_criterion(embeddings1, labels)
+            else:
+                loss = criterion(embeddings1, labels)
             
             # 检查loss是否为NaN或Inf
             if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
@@ -227,6 +330,137 @@ def validate(
         'knn_accuracy': knn_accuracy,
         'skipped_batches': skipped_batches,
     }
+
+
+def build_model(
+    model_config: dict,
+    moco_config: dict,
+    use_moco: bool,
+    image_size: int,
+    freeze_backbone: bool,
+    device: torch.device,
+    logger
+) -> tuple:
+    """
+    构建模型
+    
+    Args:
+        model_config: 模型配置
+        moco_config: MoCo配置
+        use_moco: 是否使用MoCo
+        image_size: 图像大小
+        freeze_backbone: 是否冻结backbone
+        device: 设备
+        logger: 日志记录器
+        
+    Returns:
+        (model, moco_queue): 模型和MoCo队列（如果不使用MoCo则为None）
+    """
+    if use_moco:
+        logger.info("使用MoCo模型（动量对比学习）")
+        momentum = moco_config.get('momentum', 0.999)
+        logger.info(f"MoCo动量系数: {momentum}")
+        model = MoCoModel(
+            model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
+            embedding_dim=model_config['embedding_dim'],
+            projection_hidden_dims=model_config['projection_head']['hidden_dims'],
+            image_size=image_size,
+            freeze_backbone=freeze_backbone,
+            use_layers=model_config.get('use_layers', None),
+            fpn_out_channels=model_config.get('fpn_out_channels', 256),
+            fusion_dim=model_config.get('fusion_dim', 512),
+            momentum=momentum
+        ).to(device)
+        
+        # 创建MoCo队列
+        queue_size = moco_config.get('queue_size', 16384)
+        logger.info(f"MoCo队列大小: {queue_size}")
+        moco_queue = MoCoQueue(
+            queue_size=queue_size,
+            embedding_dim=model_config['embedding_dim']
+        ).to(device)
+    else:
+        logger.info("使用标准SupCon模型")
+        model = SupConModel(
+            model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
+            embedding_dim=model_config['embedding_dim'],
+            projection_hidden_dims=model_config['projection_head']['hidden_dims'],
+            image_size=image_size,
+            freeze_backbone=freeze_backbone,
+            use_layers=model_config.get('use_layers', None),
+            fusion_dim=model_config.get('fusion_dim', 512)
+        ).to(device)
+        moco_queue = None
+    
+    return model, moco_queue
+
+
+def build_loss_func(
+    loss_config: dict,
+    moco_config: dict,
+    use_moco: bool,
+    similarity_matrix: Optional[np.ndarray],
+    default_similarity: float,
+    device: torch.device,
+    logger
+) -> nn.Module:
+    """
+    构建损失函数
+    
+    Args:
+        loss_config: 损失函数配置
+        moco_config: MoCo配置
+        use_moco: 是否使用MoCo
+        similarity_matrix: 相似度矩阵
+        default_similarity: 默认相似度
+        device: 设备
+        logger: 日志记录器
+        
+    Returns:
+        损失函数模块
+    """
+    # 获取是否使用相似度矩阵的配置
+    use_similarity_matrix = loss_config.get('use_similarity_matrix', True)
+    
+    if use_moco:
+        # MoCo Loss
+        moco_loss_type = moco_config.get('loss_type', 'supervised')  # 'supervised' 或 'standard'
+        logger.info(f"使用MoCoLoss（类型: {moco_loss_type}）")
+        
+        if moco_loss_type == 'supervised':
+            # 监督对比loss（支持相似度矩阵）
+            if use_similarity_matrix:
+                logger.info("  使用相似度矩阵")
+            else:
+                logger.info("  不使用相似度矩阵（标准SupCon模式）")
+            criterion = MoCoLoss(
+                temperature=loss_config['supcon']['temperature'],
+                loss_type='supervised',
+                similarity_matrix=similarity_matrix if use_similarity_matrix else None,
+                default_similarity=default_similarity if use_similarity_matrix else 0.0,
+                use_similarity_matrix=use_similarity_matrix
+            ).to(device)
+        else:
+            # 标准MoCo loss（InfoNCE），不使用相似度矩阵
+            criterion = MoCoLoss(
+                temperature=loss_config['supcon']['temperature'],
+                loss_type='standard',
+                use_similarity_matrix=False
+            ).to(device)
+    else:
+        # 标准SupCon Loss
+        if use_similarity_matrix:
+            logger.info("使用SupervisedContrastiveLoss（相似度作为权重，使用相似度矩阵）")
+        else:
+            logger.info("使用SupervisedContrastiveLoss（标准SupCon模式，仅同label为positive）")
+        criterion = SupervisedContrastiveLoss(
+            temperature=loss_config['supcon']['temperature'],
+            similarity_matrix=similarity_matrix if use_similarity_matrix else None,
+            default_similarity=default_similarity if use_similarity_matrix else 0.0,
+            use_similarity_matrix=use_similarity_matrix
+        ).to(device)
+    
+    return criterion
 
 
 def main():
@@ -302,7 +536,7 @@ def main():
             logger.info(f"  配置 {i+1}: {config_path} ({len(train_dataset.datasets[i])} 个样本)")
     
     logger.info(f"训练集样本数: {len(train_dataset)}, 类别数: {num_classes}")
-    logger.info(f"默认相似度阈值: {default_similarity}")
+    # logger.info(f"默认相似度阈值: {default_similarity}")
     logger.info(f"缺陷类别: {train_dataset.categories}")
     
     # 创建数据加载器
@@ -342,39 +576,36 @@ def main():
         )
         logger.info(f"验证集样本数: {len(val_dataset)}")
     
+    # 检查是否使用MoCo
+    moco_config = supcon_config['supcon'].get('moco', {})
+    use_moco = moco_config.get('enabled', False)
+    
     # 创建模型
     logger.info("创建模型...")
     model_config = supcon_config['supcon']['model']
-    model = SupConModel(
-        model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
-        embedding_dim=model_config['embedding_dim'],
-        projection_hidden_dims=model_config['projection_head']['hidden_dims'],
-        image_size=image_size,
-        freeze_backbone=supcon_config['supcon']['training_strategy'].get('freeze_backbone_epochs', 0) > 0,
-        use_layers=model_config.get('use_layers', None),
-        fusion_dim=model_config.get('fusion_dim', 512)
-    ).to(device)
+    freeze_backbone = supcon_config['supcon']['training_strategy'].get('freeze_backbone_epochs', 0) > 0
     
+    model, moco_queue = build_model(
+        model_config=model_config,
+        moco_config=moco_config,
+        use_moco=use_moco,
+        image_size=image_size,
+        freeze_backbone=freeze_backbone,
+        device=device,
+        logger=logger
+    )
     
     # 创建Loss（传入相似度矩阵和默认相似度）
     loss_config = supcon_config['supcon']['loss']
-    loss_type = loss_config.get('type', 'contrastive')  # 'contrastive' 或 'target'
-    
-    if loss_type == 'target':
-        # 使用MSE loss，相似度作为目标值
-        logger.info("使用SimilarityTargetLoss（相似度作为目标值）")
-        criterion = SimilarityTargetLoss(
-            similarity_matrix=similarity_matrix,
-            default_similarity=default_similarity
-        ).to(device)
-    else:
-        # 使用标准对比loss，相似度作为权重
-        logger.info("使用SupervisedContrastiveLoss（相似度作为权重）")
-        criterion = SupervisedContrastiveLoss(
-            temperature=loss_config['supcon']['temperature'],
-            similarity_matrix=similarity_matrix,
-            default_similarity=default_similarity
-        ).to(device)
+    criterion = build_loss_func(
+        loss_config=loss_config,
+        moco_config=moco_config,
+        use_moco=use_moco,
+        similarity_matrix=similarity_matrix,
+        default_similarity=default_similarity,
+        device=device,
+        logger=logger
+    )
     
     # 创建优化器（backbone和projection head使用不同学习率）
     training_config = supcon_config['supcon']['training']
@@ -383,11 +614,20 @@ def main():
     # 分离backbone和projection head的参数
     backbone_params = []
     other_params = []
-    for name, param in model.named_parameters():
-        if 'backbone' in name:
-            backbone_params.append(param)
-        else:
-            other_params.append(param)
+    if use_moco:
+        # MoCo模型：只优化query_encoder的参数
+        for name, param in model.query_encoder.named_parameters():
+            if 'backbone' in name:
+                backbone_params.append(param)
+            else:
+                other_params.append(param)
+    else:
+        # 标准SupCon模型
+        for name, param in model.named_parameters():
+            if 'backbone' in name:
+                backbone_params.append(param)
+            else:
+                other_params.append(param)
     
     optimizer = optim.AdamW([
         {'params': backbone_params, 'lr': float(training_config['learning_rate']) * backbone_lr_ratio},
@@ -423,6 +663,11 @@ def main():
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_epoch = checkpoint['epoch'] + 1
         best_margin = checkpoint.get('best_margin', float('inf'))
+        
+        # 如果使用MoCo，恢复队列状态（如果checkpoint中有）
+        if use_moco and moco_queue is not None and 'moco_queue_state' in checkpoint:
+            moco_queue.load_state_dict(checkpoint['moco_queue_state'])
+            logger.info("MoCo队列状态已恢复")
     
     # 训练循环
     logger.info("开始训练...")
@@ -438,13 +683,21 @@ def main():
         # 训练
         train_metrics = train_epoch(
             model, train_dataloader, criterion, optimizer, device, epoch,
+            use_moco=use_moco,
+            moco_queue=moco_queue
         )
         train_losses.append(train_metrics['loss'])
         
         # 验证
         val_metrics = None
         if args.use_eval and val_dataloader is not None:
-            val_metrics = validate(model, val_dataloader, criterion, device)
+            val_metrics = validate(
+                model, val_dataloader, criterion, device,
+                use_moco=use_moco,
+                similarity_matrix=similarity_matrix,
+                default_similarity=default_similarity,
+                loss_temperature=loss_config['supcon']['temperature']
+            )
             val_losses.append(val_metrics['loss'])
         
         # 更新学习率
@@ -463,7 +716,8 @@ def main():
                 f"PosSim={val_metrics.get('margin_pos_sim', 0.0):.4f}, "
                 f"NegSim={val_metrics.get('margin_neg_sim', 0.0):.4f}, "
                 f"Margin={val_metrics.get('margin', 0.0):.4f}\n"
-                f"  kNN Accuracy: {val_metrics.get('knn_accuracy', 0.0):.4f}"
+                f"  kNN Accuracy: {val_metrics.get('knn_accuracy', 0.0):.4f}\n"
+                f"  moco_queue is full: {moco_queue.is_full() if moco_queue is not None else 'N/A'}"
             )
         logger.info(log_msg)
         
@@ -503,16 +757,20 @@ def main():
             )
 
         # 保存当前模型（覆盖）
+        checkpoint_data = {
+            'epoch': epoch,
+            'model_state_dict': model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_loss': train_metrics['loss'],
+            'best_margin': best_margin,
+            'config': supcon_config
+        }
+        # 如果使用MoCo，保存队列状态
+        if use_moco and moco_queue is not None:
+            checkpoint_data['moco_queue_state'] = moco_queue.state_dict()
         torch.save(
-            {
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'train_loss': train_metrics['loss'],
-                'best_margin': best_margin,
-                'config': supcon_config
-            },
+            checkpoint_data,
             checkpoint_dir / "current_model.pth"
         )
         

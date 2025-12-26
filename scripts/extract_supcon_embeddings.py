@@ -1,6 +1,7 @@
 """
-提取SupCon模型的embedding
+提取SupCon/MoCo模型的embedding
 适配最新的算法架构：DINOv3 Backbone + FPN + Mask特征筛选 + 多层特征融合 + Projection Head
+支持标准SupCon模型和MoCo（动量对比学习）模型
 使用与训练脚本相同的数据加载模式（基于data_config_zhenyu.yaml和SupConDataset）
 """
 import argparse
@@ -20,7 +21,8 @@ from tqdm import tqdm
 # 添加src到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.supcon_train.datasets.supcon_dataset import SupConDataset
+from src.supcon_train.datasets.supcon_dataset import MaskSoftDilation, SupConDataset
+from src.supcon_train.models.moco_model import MoCoModel
 from src.supcon_train.models.supcon_model import SupConModel
 from src.utils.config_loader import load_config
 from src.utils.logging import setup_logger
@@ -50,7 +52,7 @@ class FolderDataset(Dataset):
         # 加载样本列表
         self.samples = self._load_samples()
         
-        # 验证集变换（提取时不需要增强）
+        # 验证集变换（与SupConDataset的val split保持一致）
         self.val_transform = transforms.Compose([
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor(),
@@ -63,6 +65,12 @@ class FolderDataset(Dataset):
             transforms.Resize((image_size, image_size)),
             transforms.ToTensor()
         ])
+        
+        # mask软膨胀处理器（与SupConDataset保持一致）
+        mask_dilation_config = {
+            'enabled': True
+        }
+        self.mask_dilation = MaskSoftDilation(mask_dilation_config)
     
     def _load_samples(self) -> list:
         """加载数据样本列表"""
@@ -126,6 +134,8 @@ class FolderDataset(Dataset):
             mask = Image.open(sample['mask_path']).convert('L')
             view1_mask = self.val_mask_transform(mask)
             view1_mask = (view1_mask > 0.5).float()  # 二值化
+            # 应用软膨胀（与SupConDataset的val split保持一致）
+            view1_mask = self.mask_dilation(view1_mask)
         else:
             # 如果没有mask，使用全1的mask
             view1_mask = torch.ones(1, self.image_size, self.image_size)
@@ -145,7 +155,7 @@ class FolderDataset(Dataset):
 
 
 class SupConEmbeddingExtractor:
-    """SupCon模型embedding提取器（支持mask）"""
+    """SupCon/MoCo模型embedding提取器（支持mask）"""
     
     def __init__(
         self,
@@ -170,20 +180,45 @@ class SupConEmbeddingExtractor:
         if config_path:
             config = load_config(config_path)
             model_config = config['supcon']['model']
+            moco_config = config['supcon'].get('moco', {})
         else:
             model_config = checkpoint.get('config', {}).get('supcon', {}).get('model', {})
+            moco_config = checkpoint.get('config', {}).get('supcon', {}).get('moco', {})
         
-        # 创建模型（使用最新的架构）
-        self.model = SupConModel(
-            model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
-            embedding_dim=model_config.get('embedding_dim', 128),
-            projection_hidden_dims=model_config.get('projection_head', {}).get('hidden_dims', [256, 128]),
-            image_size=model_config.get('image_size', 224),
-            freeze_backbone=False,  # 提取时不需要冻结
-            use_layers=model_config.get('use_layers', [1, 2, 3, 4]),
-            fpn_out_channels=model_config.get('fpn_out_channels', 256),
-            fusion_dim=model_config.get('fusion_dim', 512)
-        ).to(self.device)
+        # 检测模型类型：检查checkpoint中是否包含MoCo相关的键
+        state_dict = checkpoint.get('model_state_dict', checkpoint)
+        is_moco_model = any('query_encoder' in key or 'momentum_encoder' in key for key in state_dict.keys())
+        
+        if is_moco_model:
+            print("检测到MoCo模型，使用MoCoModel")
+            # 创建MoCo模型
+            momentum = moco_config.get('momentum', 0.999)
+            self.model = MoCoModel(
+                model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
+                embedding_dim=model_config.get('embedding_dim', 128),
+                projection_hidden_dims=model_config.get('projection_head', {}).get('hidden_dims', [256, 128]),
+                image_size=model_config.get('image_size', 224),
+                freeze_backbone=False,  # 提取时不需要冻结
+                use_layers=model_config.get('use_layers', [1, 2, 3, 4]),
+                fpn_out_channels=model_config.get('fpn_out_channels', 256),
+                fusion_dim=model_config.get('fusion_dim', 512),
+                momentum=momentum
+            ).to(self.device)
+            self.use_moco = True
+        else:
+            print("检测到标准SupCon模型，使用SupConModel")
+            # 创建标准SupCon模型
+            self.model = SupConModel(
+                model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
+                embedding_dim=model_config.get('embedding_dim', 128),
+                projection_hidden_dims=model_config.get('projection_head', {}).get('hidden_dims', [256, 128]),
+                image_size=model_config.get('image_size', 224),
+                freeze_backbone=False,  # 提取时不需要冻结
+                use_layers=model_config.get('use_layers', [1, 2, 3, 4]),
+                fpn_out_channels=model_config.get('fpn_out_channels', 256),
+                fusion_dim=model_config.get('fusion_dim', 512)
+            ).to(self.device)
+            self.use_moco = False
         
         # 加载权重
         if 'model_state_dict' in checkpoint:
@@ -261,7 +296,11 @@ class SupConEmbeddingExtractor:
         mask_tensor = mask_tensor.unsqueeze(0)  # (1, 1, H, W)
         
         with torch.no_grad():
-            outputs = self.model(image_tensor, mask_tensor, return_features=False)
+            # 如果是MoCo模型，使用query_encoder（mode='query'）
+            if self.use_moco:
+                outputs = self.model(image_tensor, mask_tensor, mode='query', return_features=False)
+            else:
+                outputs = self.model(image_tensor, mask_tensor, return_features=False)
             embedding = outputs['embeddings'].cpu().numpy()[0]
         
         return embedding
@@ -336,7 +375,11 @@ class SupConEmbeddingExtractor:
                 mask_path = batch['mask_path']
                 
                 # 前向传播
-                outputs = self.model(images, masks, return_features=False)
+                # 如果是MoCo模型，使用query_encoder（mode='query'）
+                if self.use_moco:
+                    outputs = self.model(images, masks, mode='query', return_features=False)
+                else:
+                    outputs = self.model(images, masks, return_features=False)
                 embeddings = outputs['embeddings'].cpu().numpy()
                 
                 # 归一化embeddings（与训练时loss函数中的归一化保持一致）
@@ -383,13 +426,13 @@ class SupConEmbeddingExtractor:
 
 
 def main():
-    parser = argparse.ArgumentParser(description='提取SupCon模型embedding（使用与训练脚本相同的数据加载模式）')
-    parser.add_argument('--model', type=str, default="checkpoints/supcon_models/1225-2/checkpoint_epoch_20.pth",
+    parser = argparse.ArgumentParser(description='提取SupCon/MoCo模型embedding（使用与训练脚本相同的数据加载模式）')
+    parser.add_argument('--model', type=str, default="checkpoints/supcon_models/1225-5/checkpoint_epoch_500.pth",
                        help='模型checkpoint路径')
-    parser.add_argument('--data_config', type=str, default='data/datasets/zhenyu/1201-5.x/val',
+    parser.add_argument('--data_config', type=str, default='data/zhenyu_data/60194/60194-CCD1-负极',
                        help='数据配置文件路径（.yaml/.yml）或文件夹路径。\
                        如果提供文件夹路径，将自动搜索其中的图像和对应的mask，父文件夹名作为label_name')
-    parser.add_argument('--output', type=str, default="checkpoints/supcon_models/1225-2/extract_embeddings/4.x-val.npz",
+    parser.add_argument('--output', type=str, default="checkpoints/supcon_models/1225-5/extract_embeddings/60194-CCD1-负极.npz",
                        help='输出文件路径（.npz或.npy）')
     parser.add_argument('--config', type=str, default="configs/supcon_config.yaml",
                        help='训练配置文件路径（可选，如果checkpoint中没有配置）')
