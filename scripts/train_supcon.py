@@ -25,7 +25,8 @@ except ImportError:
 # 添加src到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.supcon_train.datasets.supcon_dataset import MultiConfigDataset, SupConDataset
+from src.supcon_train.datasets.supcon_dataset import (MultiConfigDataset, MultiScaleBatchSampler,
+                                                      SupConDataset, multi_scale_collate_fn)
 from src.supcon_train.models.losses import SupervisedContrastiveLoss
 from src.supcon_train.models.moco_loss import MoCoLoss
 from src.supcon_train.models.moco_model import MoCoModel
@@ -511,13 +512,34 @@ def main():
     logger.info("加载数据集...")
     logger.info(f"数据配置文件: {data_config_paths}")
     
-    image_size = supcon_config['supcon']['data'].get('image_size', 224)
+    # 处理image_size配置（可能是单个整数或整数列表）
+    image_size_config = supcon_config['supcon']['data'].get('image_size', 224)
+    if isinstance(image_size_config, int):
+        image_sizes = [image_size_config]
+        use_multiscale = False
+    elif isinstance(image_size_config, list):
+        image_sizes = image_size_config
+        use_multiscale = len(image_sizes) > 1
+    else:
+        raise ValueError(f"image_size必须是int或List[int]，当前为{type(image_size_config)}")
+    
+    # 确定模型初始化时使用的image_size（使用最大尺度）
+    model_image_size = max(image_sizes)
+    # 验证集使用的image_size（固定使用最大尺度）
+    val_image_size = max(image_sizes)
+    
+    logger.info(f"图像尺度配置: {image_sizes}")
+    if use_multiscale:
+        logger.info(f"启用多尺度训练: 训练时每个batch随机选择 {image_sizes} 中的一个尺度")
+        logger.info(f"验证集固定使用尺度: {val_image_size}")
+    logger.info(f"模型初始化使用尺度: {model_image_size}")
+    
     # 如果只有一个配置文件，直接使用 SupConDataset；否则使用 MultiConfigDataset
     if len(data_config_paths) == 1:
         train_dataset = SupConDataset(
             data_config_path=data_config_paths[0],
             split='train',
-            image_size=image_size
+            image_size=image_sizes  # 传递列表（即使只有一个元素）
         )
         num_classes = len(train_dataset.categories)
         similarity_matrix = train_dataset.get_similarity_matrix()
@@ -526,7 +548,7 @@ def main():
         train_dataset = MultiConfigDataset(
             data_config_paths=data_config_paths,
             split='train',
-            image_size=image_size
+            image_size=image_sizes  # 传递列表（即使只有一个元素）
         )
         num_classes = len(train_dataset.categories)
         similarity_matrix = train_dataset.get_similarity_matrix()
@@ -542,14 +564,31 @@ def main():
     # 创建数据加载器
     batch_size = supcon_config['supcon']['data']['batch_size']
     
-    # 使用普通shuffle
-    train_dataloader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=supcon_config['supcon']['data']['num_workers'],
-        pin_memory=supcon_config['supcon']['data']['pin_memory']
-    )
+    # 根据是否使用多尺度，选择不同的数据加载方式
+    if use_multiscale:
+        # 使用MultiScaleBatchSampler
+        batch_sampler = MultiScaleBatchSampler(
+            dataset=train_dataset,
+            batch_size=batch_size,
+            image_sizes=image_sizes,
+            shuffle=True
+        )
+        train_dataloader = DataLoader(
+            train_dataset,
+            batch_sampler=batch_sampler,
+            collate_fn=multi_scale_collate_fn,
+            num_workers=supcon_config['supcon']['data']['num_workers'],
+            pin_memory=supcon_config['supcon']['data']['pin_memory']
+        )
+    else:
+        # 使用普通shuffle
+        train_dataloader = DataLoader(
+            train_dataset,
+            batch_size=batch_size,
+            shuffle=True,
+            num_workers=supcon_config['supcon']['data']['num_workers'],
+            pin_memory=supcon_config['supcon']['data']['pin_memory']
+        )
     
     # 创建验证集（如果启用验证）
     val_dataset = None
@@ -559,13 +598,13 @@ def main():
             val_dataset = SupConDataset(
                 data_config_path=data_config_paths[0],
                 split='val',
-                image_size=image_size
+                image_size=val_image_size  # 验证集使用固定尺度
             )
         else:
             val_dataset = MultiConfigDataset(
                 data_config_paths=data_config_paths,
                 split='val',
-                image_size=image_size
+                image_size=val_image_size  # 验证集使用固定尺度
             )
         val_dataloader = DataLoader(
             val_dataset,
@@ -589,7 +628,7 @@ def main():
         model_config=model_config,
         moco_config=moco_config,
         use_moco=use_moco,
-        image_size=image_size,
+        image_size=model_image_size,  # 使用最大尺度初始化模型
         freeze_backbone=freeze_backbone,
         device=device,
         logger=logger

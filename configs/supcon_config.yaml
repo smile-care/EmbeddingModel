@@ -15,8 +15,8 @@ supcon:
     fusion_dim: 512
   
   data:
-    image_size: 224
-    batch_size: 128
+    image_size: [224, 320, 448]  # 支持单个整数或整数列表，如: 224 或 [224, 320, 448]
+    batch_size: 32
     num_workers: 4
     pin_memory: true
   
@@ -47,8 +47,8 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/1225-5"
-    log_dir: "logs/supcon_logs/1225-5"
+    checkpoint_dir: "checkpoints/supcon_models/debug"
+    log_dir: "logs/supcon_logs/debug"
     use_wandb: true
-    wandb_project: "supcon_moco"
+    wandb_project: "supcon_moco_debug"
 

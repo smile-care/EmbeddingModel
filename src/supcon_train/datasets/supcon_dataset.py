@@ -5,7 +5,7 @@
 import os
 import random
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import torch
@@ -13,7 +13,7 @@ import torch.nn.functional as F
 import yaml
 from PIL import Image
 from scipy import ndimage
-from torch.utils.data import ConcatDataset, Dataset
+from torch.utils.data import ConcatDataset, Dataset, Sampler
 from torchvision import transforms
 from torchvision.transforms import functional as TF
 
@@ -117,9 +117,10 @@ class TwoViewAugmentation:
         """
         self.image_size = config.get('image_size', 224)
         
-        # 构建增强pipeline
-        self.transform1 = self._build_transform(config, view=1)
-        self.transform2 = self._build_transform(config, view=2)
+        # 构建增强pipeline（使用默认image_size，但会在__call__中动态更新）
+        self.config = config
+        self.transform1 = self._build_transform(config, view=1, image_size=self.image_size)
+        self.transform2 = self._build_transform(config, view=2, image_size=self.image_size)
         
         # 图像归一化
         self.normalize = transforms.Normalize(
@@ -131,12 +132,12 @@ class TwoViewAugmentation:
         mask_dilation_config = config.get('mask_dilation', {})
         self.mask_dilation = MaskSoftDilation(mask_dilation_config)
     
-    def _build_transform(self, config: Dict, view: int) -> transforms.Compose:
+    def _build_transform(self, config: Dict, view: int, image_size: int) -> transforms.Compose:
         """构建变换pipeline"""
         transform_list = []
         
         transform_list.append(
-                transforms.Resize((self.image_size, self.image_size))
+                transforms.Resize((image_size, image_size))
             )
         
         # 水平翻转
@@ -172,22 +173,32 @@ class TwoViewAugmentation:
         
         return transforms.Compose(transform_list)
     
-    def __call__(self, image: Image.Image, mask: Image.Image) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    def __call__(self, image: Image.Image, mask: Image.Image, image_size: Optional[int] = None) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         应用双视图增强
         
         Args:
             image: PIL图像
             mask: PIL mask图像
+            image_size: 动态指定的图像尺寸（如果提供，会覆盖初始化时的image_size）
             
         Returns:
             (view1_image, view1_mask, view2_image, view2_mask)
         """
+        # 如果提供了动态image_size，重新构建transform
+        current_image_size = image_size if image_size is not None else self.image_size
+        if image_size is not None and image_size != self.image_size:
+            transform1 = self._build_transform(self.config, view=1, image_size=current_image_size)
+            transform2 = self._build_transform(self.config, view=2, image_size=current_image_size)
+        else:
+            transform1 = self.transform1
+            transform2 = self.transform2
+        
         # 对view1应用增强（确保image和mask使用相同的随机参数）
-        view1_image, view1_mask = self._apply_augmentation_with_mask(image, mask, self.transform1)
+        view1_image, view1_mask = self._apply_augmentation_with_mask(image, mask, transform1)
         
         # 对view2应用增强（确保image和mask使用相同的随机参数）
-        view2_image, view2_mask = self._apply_augmentation_with_mask(image, mask, self.transform2)
+        view2_image, view2_mask = self._apply_augmentation_with_mask(image, mask, transform2)
         
         # 归一化图像
         view1_image = self.normalize(view1_image)
@@ -252,6 +263,91 @@ class TwoViewAugmentation:
     
 
 
+class IndexWithScale:
+    """包装索引和尺度的辅助类"""
+    def __init__(self, idx: int, image_size: int):
+        self.idx = idx
+        self.image_size = image_size
+
+
+class MultiScaleBatchSampler(Sampler):
+    """
+    多尺度Batch采样器
+    确保每个batch内的所有样本使用相同的图像尺度
+    """
+    
+    def __init__(self, dataset: Dataset, batch_size: int, image_sizes: List[int], shuffle: bool = True):
+        """
+        初始化多尺度Batch采样器
+        
+        Args:
+            dataset: 数据集
+            batch_size: batch大小
+            image_sizes: 可用的图像尺度列表
+            shuffle: 是否打乱数据顺序
+        """
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.image_sizes = image_sizes
+        self.shuffle = shuffle
+        
+        # 创建索引列表
+        self.indices = list(range(len(dataset)))
+    
+    def __iter__(self):
+        """生成batch索引（包装了尺度信息）"""
+        if self.shuffle:
+            # 打乱索引
+            indices = self.indices.copy()
+            random.shuffle(indices)
+        else:
+            indices = self.indices
+        
+        # 生成batch
+        for i in range(0, len(indices), self.batch_size):
+            batch_indices = indices[i:i + self.batch_size]
+            # 为这个batch随机选择一个尺度
+            image_size = random.choice(self.image_sizes)
+            # 返回包装了尺度的索引对象列表
+            yield [IndexWithScale(idx, image_size) for idx in batch_indices]
+    
+    def __len__(self):
+        """返回batch数量"""
+        return (len(self.dataset) + self.batch_size - 1) // self.batch_size
+
+
+def multi_scale_collate_fn(batch_data):
+    """
+    多尺度batch的collate函数
+    
+    Args:
+        batch_data: 由MultiScaleBatchSampler和数据集返回的数据列表
+                    每个元素是一个字典，包含view1_image, view1_mask等
+    
+    Returns:
+        组织好的batch字典
+    """
+    # batch_data是一个列表，每个元素是一个样本字典
+    # 将所有字段分别堆叠
+    result = {}
+    
+    # 获取所有键
+    keys = batch_data[0].keys()
+    
+    for key in keys:
+        if key in ['view1_image', 'view1_mask', 'view2_image', 'view2_mask']:
+            # 对于tensor字段，使用torch.stack
+            result[key] = torch.stack([item[key] for item in batch_data])
+        elif key in ['label']:
+            # 对于label，使用torch.tensor
+            result[key] = torch.tensor([item[key] for item in batch_data])
+        else:
+            # 对于其他字段（如字符串），保持列表格式
+            result[key] = [item[key] for item in batch_data]
+    
+    return result
+
+
 class SupConDataset(Dataset):
     """监督对比学习数据集（基于data_config_zhenyu.yaml）"""
     
@@ -259,7 +355,7 @@ class SupConDataset(Dataset):
         self,
         data_config_path: str = 'configs/data_config_zhenyu.yaml',
         split: str = 'train',  # 'train' or 'val'
-        image_size: int = 224
+        image_size: Union[int, List[int]] = 224
     ):
         """
         初始化数据集
@@ -267,7 +363,7 @@ class SupConDataset(Dataset):
         Args:
             data_config_path: 数据配置文件路径
             split: 数据集划分（'train' 或 'val'）
-            image_size: 输入图像大小
+            image_size: 输入图像大小，可以是单个整数或整数列表（多尺度训练）
         """
         # 加载配置
         with open(data_config_path, 'r', encoding='utf-8') as f:
@@ -275,7 +371,17 @@ class SupConDataset(Dataset):
         
         self.root = Path(self.config['root'])
         self.split = split
-        self.image_size = image_size
+        
+        # 处理image_size：统一转换为列表格式
+        if isinstance(image_size, int):
+            self.image_sizes = [image_size]
+        elif isinstance(image_size, list):
+            self.image_sizes = image_size
+        else:
+            raise ValueError(f"image_size必须是int或List[int]，当前为{type(image_size)}")
+        
+        # 为了向后兼容，保留image_size属性（使用第一个尺度）
+        self.image_size = self.image_sizes[0]
         
         # 加载数据列表
         self.samples = self._load_samples()
@@ -287,7 +393,7 @@ class SupConDataset(Dataset):
         # 构建相似度矩阵
         self.similarity_matrix = self._build_similarity_matrix()
         
-        # 构建增强器
+        # 构建增强器（使用第一个尺度作为默认值，实际使用时可以动态指定）
         self.augmentation = TwoViewAugmentation({
                 'image_size': self.image_size,
                 'horizontal_flip': {'enabled': True, 'prob': 0.5},
@@ -400,8 +506,31 @@ class SupConDataset(Dataset):
     def __len__(self):
         return len(self.samples)
     
-    def __getitem__(self, idx):
-        sample = self.samples[idx]
+    def __getitem__(self, idx, current_image_size: Optional[int] = None):
+        """
+        获取数据样本
+        
+        Args:
+            idx: 样本索引，可以是整数或IndexWithScale对象
+            current_image_size: 当前使用的图像尺寸（用于多尺度训练，如果为None则使用默认尺度）
+        """
+        # 处理IndexWithScale包装的索引
+        if isinstance(idx, IndexWithScale):
+            actual_idx = idx.idx
+            current_image_size = idx.image_size
+        else:
+            actual_idx = idx
+        
+        sample = self.samples[actual_idx]
+        
+        # 确定使用的图像尺寸
+        if current_image_size is not None:
+            image_size = current_image_size
+        elif len(self.image_sizes) == 1:
+            image_size = self.image_sizes[0]
+        else:
+            # 如果未指定且有多个尺度，随机选择一个（用于兼容性，但多尺度训练应通过BatchSampler控制）
+            image_size = random.choice(self.image_sizes)
         
         # 加载图像和mask
         image = Image.open(sample['image_path']).convert('RGB')
@@ -409,11 +538,32 @@ class SupConDataset(Dataset):
         
         # 应用增强
         if self.augmentation is not None:
-            view1_image, view1_mask, view2_image, view2_mask = self.augmentation(image, mask)
+            # 如果image_size与默认不同，需要动态更新
+            view1_image, view1_mask, view2_image, view2_mask = self.augmentation(
+                image, mask, image_size=image_size
+            )
         else:
             # 验证集：只做resize和归一化
-            view1_image = self.val_transform(image)
-            view1_mask = self.val_mask_transform(mask)
+            # 如果image_size与默认不同，需要重新构建transform
+            if image_size != self.image_size:
+                val_transform = transforms.Compose([
+                    transforms.Resize((image_size, image_size)),
+                    transforms.ToTensor(),
+                    transforms.Normalize(
+                        mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225]
+                    )
+                ])
+                val_mask_transform = transforms.Compose([
+                    transforms.Resize((image_size, image_size)),
+                    transforms.ToTensor()
+                ])
+            else:
+                val_transform = self.val_transform
+                val_mask_transform = self.val_mask_transform
+            
+            view1_image = val_transform(image)
+            view1_mask = val_mask_transform(mask)
             view1_mask = (view1_mask > 0.5).float()  # 二值化
             # 应用软膨胀（与train保持一致）
             view1_mask = self.mask_dilation(view1_mask)
@@ -443,7 +593,7 @@ class MultiConfigDataset(Dataset):
         self,
         data_config_paths: list,
         split: str = 'train',
-        image_size: int = 224,
+        image_size: Union[int, List[int]] = 224,
     ):
         """
         初始化多配置数据集
@@ -451,10 +601,21 @@ class MultiConfigDataset(Dataset):
         Args:
             data_config_paths: 数据配置文件路径列表
             split: 数据集划分（'train' 或 'val'）
-            image_size: 输入图像大小
+            image_size: 输入图像大小，可以是单个整数或整数列表（多尺度训练）
         """
         self.data_config_paths = data_config_paths
         self.split = split
+        
+        # 处理image_size：统一转换为列表格式
+        if isinstance(image_size, int):
+            self.image_sizes = [image_size]
+        elif isinstance(image_size, list):
+            self.image_sizes = image_size
+        else:
+            raise ValueError(f"image_size必须是int或List[int]，当前为{type(image_size)}")
+        
+        # 为了向后兼容，保留image_size属性（使用第一个尺度）
+        self.image_size = self.image_sizes[0]
         
         # 为每个配置创建数据集
         self.datasets = []
@@ -466,7 +627,7 @@ class MultiConfigDataset(Dataset):
             dataset = SupConDataset(
                 data_config_path=config_path,
                 split=split,
-                image_size=image_size,
+                image_size=image_size,  # 传递列表或整数
             )
             self.datasets.append(dataset)
             
@@ -533,27 +694,41 @@ class MultiConfigDataset(Dataset):
     def __len__(self):
         return len(self.concat_dataset)
     
-    def __getitem__(self, idx):
+    def __getitem__(self, idx, current_image_size: Optional[int] = None):
+        """
+        获取数据样本
+        
+        Args:
+            idx: 样本索引，可以是整数或IndexWithScale对象
+            current_image_size: 当前使用的图像尺寸（用于多尺度训练，如果为None则使用默认尺度）
+        """
+        # 处理IndexWithScale包装的索引
+        if isinstance(idx, IndexWithScale):
+            actual_idx = idx.idx
+            current_image_size = idx.image_size
+        else:
+            actual_idx = idx
+        
         # 手动实现索引映射（因为需要重新映射类别索引）
         # 找到这个索引对应的数据集
-        if idx < 0:
-            if -idx > len(self):
+        if actual_idx < 0:
+            if -actual_idx > len(self):
                 raise ValueError("索引超出范围")
-            idx = len(self) + idx
+            actual_idx = len(self) + actual_idx
         
         dataset_idx = 0
         cumulative_size = 0
         for i, dataset in enumerate(self.datasets):
-            if idx < cumulative_size + len(dataset):
+            if actual_idx < cumulative_size + len(dataset):
                 dataset_idx = i
-                local_idx = idx - cumulative_size
+                local_idx = actual_idx - cumulative_size
                 break
             cumulative_size += len(dataset)
         else:
-            raise IndexError(f"索引 {idx} 超出范围")
+            raise IndexError(f"索引 {actual_idx} 超出范围")
         
-        # 从对应的数据集获取样本
-        sample = self.datasets[dataset_idx][local_idx]
+        # 从对应的数据集获取样本（传递current_image_size）
+        sample = self.datasets[dataset_idx].__getitem__(local_idx, current_image_size=current_image_size)
         
         # 重新映射类别索引
         old_label_idx = sample['label']
