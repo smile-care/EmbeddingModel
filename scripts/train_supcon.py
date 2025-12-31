@@ -65,6 +65,8 @@ def train_epoch(
     """
     model.train()
     total_loss = 0.0
+    total_pos_loss = 0.0
+    total_neg_loss = 0.0
     num_batches = 0
     skipped_batches = 0
     nan_embedding_count = 0
@@ -184,6 +186,13 @@ def train_epoch(
             optimizer.step()
         
         total_loss += loss.item()
+        
+        # 收集pos_loss和neg_loss（仅MoCo）
+        if use_moco and hasattr(criterion, 'last_pos_loss') and criterion.last_pos_loss is not None:
+            total_pos_loss += criterion.last_pos_loss
+        if use_moco and hasattr(criterion, 'last_neg_loss') and criterion.last_neg_loss is not None:
+            total_neg_loss += criterion.last_neg_loss
+        
         num_batches += 1
         
         pbar.set_postfix({
@@ -194,10 +203,21 @@ def train_epoch(
     if skipped_batches > 0:
         print(f"Epoch {epoch}统计: 跳过{skipped_batches}个batch (NaN embedding: {nan_embedding_count}, NaN loss: {nan_loss_count})")
     
-    return {
+    result = {
         'loss': total_loss / num_batches if num_batches > 0 else 0.0,
         'skipped_batches': skipped_batches,
     }
+    
+    # 添加pos_loss和neg_loss（仅MoCo）
+    if use_moco:
+        if num_batches > 0:
+            result['pos_loss'] = total_pos_loss / num_batches
+            result['neg_loss'] = total_neg_loss / num_batches if total_neg_loss > 0 else 0.0
+        else:
+            result['pos_loss'] = 0.0
+            result['neg_loss'] = 0.0
+    
+    return result
 
 
 def validate(
@@ -434,19 +454,31 @@ def build_loss_func(
                 logger.info("  使用相似度矩阵")
             else:
                 logger.info("  不使用相似度矩阵（标准SupCon模式）")
+            # 获取负样本惩罚参数（从loss_config中读取，如果不存在则使用默认值）
+            neg_weight = loss_config.get('neg_weight', 0.5)
+            margin = loss_config.get('margin', 0.0)
+            logger.info(f"  负样本惩罚权重: {neg_weight}, margin: {margin}")
             criterion = MoCoLoss(
                 temperature=loss_config['supcon']['temperature'],
                 loss_type='supervised',
                 similarity_matrix=similarity_matrix if use_similarity_matrix else None,
                 default_similarity=default_similarity if use_similarity_matrix else 0.0,
-                use_similarity_matrix=use_similarity_matrix
+                use_similarity_matrix=use_similarity_matrix,
+                neg_weight=neg_weight,
+                margin=margin
             ).to(device)
         else:
             # 标准MoCo loss（InfoNCE），不使用相似度矩阵
+            # 获取负样本惩罚参数（从loss_config中读取，如果不存在则使用默认值）
+            neg_weight = loss_config.get('neg_weight', 0.5)
+            margin = loss_config.get('margin', 0.0)
+            logger.info(f"  负样本惩罚权重: {neg_weight}, margin: {margin}")
             criterion = MoCoLoss(
                 temperature=loss_config['supcon']['temperature'],
                 loss_type='standard',
-                use_similarity_matrix=False
+                use_similarity_matrix=False,
+                neg_weight=neg_weight,
+                margin=margin
             ).to(device)
     else:
         # 标准SupCon Loss
@@ -748,6 +780,13 @@ def main():
             f"train_loss={train_metrics['loss']:.4f}, "
             f"lr={scheduler.get_last_lr()[0]:.6f}"
         )
+        # 添加pos_loss和neg_loss（仅MoCo）
+        if use_moco:
+            if 'pos_loss' in train_metrics:
+                log_msg += f", pos_loss={train_metrics['pos_loss']:.4f}"
+            if 'neg_loss' in train_metrics:
+                log_msg += f", neg_loss={train_metrics['neg_loss']:.4f}"
+        
         if val_metrics is not None:
             log_msg += (
                 f", val_loss={val_metrics['loss']:.4f}\n"
@@ -767,6 +806,13 @@ def main():
                 'train_loss': train_metrics['loss'],
                 'learning_rate': scheduler.get_last_lr()[0]
             }
+            # 添加pos_loss和neg_loss（仅MoCo）
+            if use_moco:
+                if 'pos_loss' in train_metrics:
+                    log_dict['train_pos_loss'] = train_metrics['pos_loss']
+                if 'neg_loss' in train_metrics:
+                    log_dict['train_neg_loss'] = train_metrics['neg_loss']
+            
             if val_metrics is not None:
                 log_dict.update({
                     'val_loss': val_metrics['loss'],

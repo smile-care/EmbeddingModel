@@ -25,7 +25,9 @@ class MoCoLoss(nn.Module):
         loss_type: str = 'supervised',  # 'standard' 或 'supervised'
         similarity_matrix: Optional[np.ndarray] = None,
         default_similarity: float = 0.0,
-        use_similarity_matrix: bool = True
+        use_similarity_matrix: bool = True,
+        neg_weight: float = 0.5,  # 负样本惩罚权重
+        margin: float = 0.0  # 正负样本margin（0表示不使用margin）
     ):
         """
         初始化MoCo Loss
@@ -36,11 +38,19 @@ class MoCoLoss(nn.Module):
             similarity_matrix: 类别相似度矩阵 (num_classes, num_classes)，仅在supervised模式下使用
             default_similarity: 默认相似度阈值，大于此值的类别对被认为是positive pairs
             use_similarity_matrix: 是否使用相似度矩阵（False时强制使用标准SupCon，仅同label为positive）
+            neg_weight: 负样本惩罚权重，用于显式推动负样本分离（0-1之间，越大负样本分离越强）
+            margin: 正负样本margin，确保正样本相似度至少比负样本高margin（0表示不使用margin）
         """
         super().__init__()
         self.temperature = temperature
         self.loss_type = loss_type
         self.use_similarity_matrix = use_similarity_matrix
+        self.neg_weight = neg_weight
+        self.margin = margin
+        
+        # 用于存储pos_loss和neg_loss（用于wandb记录）
+        self.last_pos_loss = None
+        self.last_neg_loss = None
         
         # 根据use_similarity_matrix决定是否使用相似度矩阵
         if use_similarity_matrix and similarity_matrix is not None:
@@ -99,16 +109,24 @@ class MoCoLoss(nn.Module):
         if self.loss_type == 'standard':
             # 标准MoCo loss（InfoNCE）
             # 每个query与对应的key是positive pair，与队列中的所有样本是negative pairs
-            return self._standard_moco_loss(
+            loss, pos_loss, neg_loss = self._standard_moco_loss(
                 query_embeddings, key_embeddings, queue_embeddings
             )
+            # 保存pos_loss和neg_loss（用于wandb记录）
+            self.last_pos_loss = pos_loss.item() if pos_loss is not None else None
+            self.last_neg_loss = neg_loss.item() if neg_loss is not None else None
+            return loss
         elif self.loss_type == 'supervised':
             # 监督对比loss（支持相似度矩阵）
             # 当前batch内的positive pairs（基于相似度矩阵）+ 队列中的负样本
-            return self._supervised_moco_loss(
+            loss, pos_loss, neg_loss = self._supervised_moco_loss(
                 query_embeddings, key_embeddings, query_labels,
                 queue_embeddings, queue_labels
             )
+            # 保存pos_loss和neg_loss（用于wandb记录）
+            self.last_pos_loss = pos_loss.item() if pos_loss is not None else None
+            self.last_neg_loss = neg_loss.item() if neg_loss is not None else None
+            return loss
         else:
             raise ValueError(f"loss_type必须是'standard'或'supervised'，当前为{self.loss_type}")
     
@@ -117,7 +135,7 @@ class MoCoLoss(nn.Module):
         query_embeddings: torch.Tensor,  # (B, D)
         key_embeddings: torch.Tensor,    # (B, D)
         queue_embeddings: torch.Tensor   # (K, D)
-    ) -> torch.Tensor:
+    ) -> tuple:
         """
         标准MoCo loss（InfoNCE）
         
@@ -156,15 +174,40 @@ class MoCoLoss(nn.Module):
         # 计算log概率
         log_prob = pos_logits_stable - torch.log(denominator.squeeze(1) + 1e-8)  # (B,)
         
-        # 平均loss（取负，因为我们要最大化log概率）
-        loss = -log_prob.mean()
+        # 正样本loss（取负，因为我们要最大化log概率）
+        pos_loss = -log_prob.mean()
+        
+        # 添加负样本惩罚项：显式地最小化负样本相似度
+        neg_loss = None
+        if self.neg_weight > 0:
+            # 计算负样本的平均相似度（使用归一化后的特征点积，而不是除以temperature后的值）
+            neg_sim_raw = torch.matmul(query_embeddings, queue_embeddings.T)  # (B, K)
+            neg_mean_sim = neg_sim_raw.mean()  # 所有负样本的平均相似度
+            
+            # 负样本惩罚项：最小化负样本相似度
+            # 如果使用margin，确保负样本相似度至少比正样本低margin
+            if self.margin > 0:
+                pos_mean_sim = pos_sim.mean()  # 正样本的平均相似度（原始相似度）
+                # 确保正样本相似度至少比负样本高margin
+                neg_loss = F.relu(neg_mean_sim - pos_mean_sim + self.margin)
+            else:
+                # 直接最小化负样本相似度（鼓励负样本相似度为负值或接近0）
+                # 使用ReLU确保只惩罚正相似度（负相似度已经是分离的，不需要惩罚）
+                neg_loss = F.relu(neg_mean_sim)
+            
+            # 组合loss：正样本loss + 负样本惩罚项
+            loss = pos_loss + self.neg_weight * neg_loss
+        else:
+            # neg_weight为0，只使用正样本loss
+            loss = pos_loss
         
         # 检查loss是否为NaN
         if torch.isnan(loss) or torch.isinf(loss):
             print(f"警告：Loss为NaN或Inf！pos_sim范围: [{pos_sim.min():.4f}, {pos_sim.max():.4f}]")
-            return torch.tensor(0.0, device=device, requires_grad=True)
+            zero_loss = torch.tensor(0.0, device=device, requires_grad=True)
+            return zero_loss, zero_loss, None
         
-        return loss
+        return loss, pos_loss, neg_loss
     
     def _supervised_moco_loss(
         self,
@@ -173,7 +216,7 @@ class MoCoLoss(nn.Module):
         query_labels: torch.Tensor,      # (B,)
         queue_embeddings: torch.Tensor,  # (K, D)
         queue_labels: torch.Tensor       # (K,)
-    ) -> torch.Tensor:
+    ) -> tuple:
         """
         监督对比MoCo loss（支持相似度矩阵）
         
@@ -250,19 +293,71 @@ class MoCoLoss(nn.Module):
         
         if valid_mask.sum() == 0:
             print("警告：batch中没有positive pairs，返回小的正loss以保持梯度流动")
-            return torch.tensor(1e-6, device=device, requires_grad=True)
+            small_loss = torch.tensor(1e-6, device=device, requires_grad=True)
+            return small_loss, small_loss, None
         
-        # 加权平均log概率
+        # 加权平均log概率（正样本部分）
         weighted_mean_log_prob = (all_weights * log_prob).sum(1) / (weight_sum + 1e-8)
         weighted_mean_log_prob = weighted_mean_log_prob[valid_mask]
         
-        # 平均loss（取负，因为我们要最大化log概率）
-        loss = -weighted_mean_log_prob.mean()
+        # 正样本loss（取负，因为我们要最大化log概率）
+        pos_loss = -weighted_mean_log_prob.mean()
+        
+        # 9. 添加负样本惩罚项：显式地最小化负样本相似度
+        # 负样本权重矩阵（1 - all_weights，但排除正样本）
+        neg_weights = 1.0 - all_weights  # (B, B+K)
+        # 只考虑真正的负样本（相似度矩阵中权重为0的样本对）
+        if self.similarity_matrix_tensor is not None:
+            # 使用相似度矩阵时，负样本是相似度 <= default_similarity 的样本对
+            neg_mask = (all_weights <= self.default_similarity).float()
+        else:
+            # 标准SupCon时，负样本是不同label的样本对
+            neg_mask = (all_weights == 0.0).float()
+        
+        neg_weights = neg_weights * neg_mask  # (B, B+K)
+        neg_weight_sum = neg_weights.sum(1)  # (B,)
+        valid_neg_mask = neg_weight_sum > 0  # 有负样本的样本
+        
+        if valid_neg_mask.sum() > 0 and self.neg_weight > 0:
+            # 计算负样本的平均相似度（使用归一化后的特征点积，而不是除以temperature后的值）
+            # 重新计算原始相似度（归一化后的特征点积）
+            # batch内相似度（归一化后的特征点积）
+            batch_sim_raw = torch.matmul(query_embeddings, key_embeddings.T)  # (B, B)
+            # 队列相似度（归一化后的特征点积）
+            queue_sim_raw = torch.matmul(query_embeddings, queue_embeddings.T)  # (B, K)
+            # 合并
+            all_sim_raw = torch.cat([batch_sim_raw, queue_sim_raw], dim=1)  # (B, B+K)
+            
+            # 计算负样本的平均相似度（使用原始相似度值）
+            neg_similarity = all_sim_raw * neg_weights  # (B, B+K)
+            neg_mean_sim = (neg_similarity.sum(1) / (neg_weight_sum + 1e-8))[valid_neg_mask]  # (B',)
+            
+            # 负样本惩罚项：最小化负样本相似度
+            # 如果使用margin，确保负样本相似度至少比正样本低margin
+            if self.margin > 0:
+                # 计算正样本的平均相似度（用于margin计算）
+                pos_similarity = all_sim_raw * all_weights  # (B, B+K)
+                pos_mean_sim = (pos_similarity.sum(1) / (weight_sum + 1e-8))[valid_mask]  # (B',)
+                # 确保正样本相似度至少比负样本高margin
+                neg_loss = F.relu(neg_mean_sim - pos_mean_sim + self.margin).mean()
+            else:
+                # 直接最小化负样本相似度（鼓励负样本相似度为负值或接近0）
+                # 使用ReLU确保只惩罚正相似度（负相似度已经是分离的，不需要惩罚）
+                neg_loss = F.relu(neg_mean_sim).mean()
+            
+            # 组合loss：正样本loss + 负样本惩罚项
+            loss = pos_loss + self.neg_weight * neg_loss
+        else:
+            # 没有负样本或neg_weight为0，只使用正样本loss
+            loss = pos_loss
         
         # 检查loss是否为NaN
         if torch.isnan(loss) or torch.isinf(loss):
             print(f"警告：Loss为NaN或Inf！batch_similarity范围: [{batch_similarity.min():.4f}, {batch_similarity.max():.4f}]")
-            return torch.tensor(0.0, device=device, requires_grad=True)
+            zero_loss = torch.tensor(0.0, device=device, requires_grad=True)
+            return zero_loss, zero_loss, None
         
-        return loss
+        # 返回loss, pos_loss, neg_loss
+        neg_loss_tensor = neg_loss if (valid_neg_mask.sum() > 0 and self.neg_weight > 0) else None
+        return loss, pos_loss, neg_loss_tensor
 
