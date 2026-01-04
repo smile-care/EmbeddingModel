@@ -1,0 +1,7 @@
+# 异常点检测系统配置文件
+
+# 类别中心计算配置
+center_computation:
+  method: "trimmed_mean"  # 可选: trimmed_mean, median, iterative
+  trim_ratio: 0.1  # 修剪比例 (仅trimmed_mean方法有效)
+
