@@ -491,40 +491,40 @@ def main():
 
 
 if __name__ == '__main__':
-    # main()
+    main()
     
-    src_dir = "/home/unitx/workspace_custom/data/震裕/4.x/60194/4xdata"
-    save_dir = "/home/unitx/workspace_custom/EmbeddingModel/data/zhenyu_data/60194"
-    dir_list = [
-        "60194-CCD1-蓝膜",
-        "60194-CCD1-蓝膜铝板",
-        "60194-CCD1-铝板",
-        "60194-CCD1-铝板压印",
-        "60194-CCD1-正极",
-        "60194-CCD1-正极高亮定位孔",
-        "60194-CCD1-正极高亮极柱",
-        "60194-CCD1-正极高亮铝板",
-        "60194-CCD1-注液孔",
-        "60194-CCD2-3-极柱",
-        "60194-CCD2-3-铝板",
-        "60194-CCD4-5-负极",
-        "60194-CCD4-5-铝板",
-        "60194-CCD4-5-正极",
-        "60194-CCD4-5-注液孔",
-        "60194-CCD6-负极",  
-        "60194-CCD6-下塑胶",
-        "60194-CCD6-正极"
-    ]
+    # src_dir = "/home/unitx/workspace_custom/data/震裕/4.x/60194/4xdata"
+    # save_dir = "/home/unitx/workspace_custom/EmbeddingModel/data/zhenyu_data/60194"
+    # dir_list = [
+    #     "60194-CCD1-蓝膜",
+    #     "60194-CCD1-蓝膜铝板",
+    #     "60194-CCD1-铝板",
+    #     "60194-CCD1-铝板压印",
+    #     "60194-CCD1-正极",
+    #     "60194-CCD1-正极高亮定位孔",
+    #     "60194-CCD1-正极高亮极柱",
+    #     "60194-CCD1-正极高亮铝板",
+    #     "60194-CCD1-注液孔",
+    #     "60194-CCD2-3-极柱",
+    #     "60194-CCD2-3-铝板",
+    #     "60194-CCD4-5-负极",
+    #     "60194-CCD4-5-铝板",
+    #     "60194-CCD4-5-正极",
+    #     "60194-CCD4-5-注液孔",
+    #     "60194-CCD6-负极",  
+    #     "60194-CCD6-下塑胶",
+    #     "60194-CCD6-正极"
+    # ]
 
-    for dir_name in dir_list:
-        input_folder = str(Path(src_dir) / dir_name)
-        output_folder = str(Path(save_dir) / dir_name)
-        print(f"\n处理文件夹: {input_folder}")
-        process_folder(
-            input_folder,
-            output_folder,
-            expand_ratio=1.0,
-            min_size=8,
-            crop_sizes=[96, 160, 224]
-        )
+    # for dir_name in dir_list:
+    #     input_folder = str(Path(src_dir) / dir_name)
+    #     output_folder = str(Path(save_dir) / dir_name)
+    #     print(f"\n处理文件夹: {input_folder}")
+    #     process_folder(
+    #         input_folder,
+    #         output_folder,
+    #         expand_ratio=1.0,
+    #         min_size=8,
+    #         crop_sizes=[96, 160, 224]
+    #     )
     

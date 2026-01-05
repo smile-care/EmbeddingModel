@@ -30,7 +30,9 @@ class MoCoModel(nn.Module):
         use_layers: Optional[List[int]] = [0, 1, 2],
         fpn_out_channels: int = 256,
         fusion_dim: int = 512,
-        momentum: float = 0.999
+        momentum: float = 0.999,
+        enable_segmentation: bool = True,
+        seg_layer_idx: int = 0
     ):
         """
         初始化MoCo模型
@@ -45,6 +47,8 @@ class MoCoModel(nn.Module):
             fpn_out_channels: FPN输出通道数
             fusion_dim: 特征融合后的维度
             momentum: 动量系数（默认0.999）
+            enable_segmentation: 是否启用语义分割分支
+            seg_layer_idx: 用于分割的FPN层索引
         """
         super().__init__()
         
@@ -59,7 +63,9 @@ class MoCoModel(nn.Module):
             freeze_backbone=freeze_backbone,
             use_layers=use_layers,
             fpn_out_channels=fpn_out_channels,
-            fusion_dim=fusion_dim
+            fusion_dim=fusion_dim,
+            enable_segmentation=enable_segmentation,
+            seg_layer_idx=seg_layer_idx
         )
         
         # Momentum encoder: 动量更新的编码器（不训练）
@@ -71,7 +77,9 @@ class MoCoModel(nn.Module):
             freeze_backbone=freeze_backbone,
             use_layers=use_layers,
             fpn_out_channels=fpn_out_channels,
-            fusion_dim=fusion_dim
+            fusion_dim=fusion_dim,
+            enable_segmentation=enable_segmentation,
+            seg_layer_idx=seg_layer_idx
         )
         
         # 初始化momentum_encoder的参数与query_encoder相同
@@ -106,7 +114,8 @@ class MoCoModel(nn.Module):
         x: torch.Tensor,
         mask: torch.Tensor,
         mode: str = 'query',
-        return_features: bool = False
+        return_features: bool = False,
+        return_segmentation: bool = False
     ) -> dict:
         """
         前向传播
@@ -118,19 +127,22 @@ class MoCoModel(nn.Module):
                 - 'query': 使用query_encoder（可训练）
                 - 'key': 使用momentum_encoder（不训练，用于生成队列中的负样本）
             return_features: 是否返回backbone特征
+            return_segmentation: 是否返回分割结果（仅对query模式有效）
             
         Returns:
-            包含embedding和可选features的字典
+            包含embedding和可选features/segmentation的字典
         """
         if mode == 'query':
             encoder = self.query_encoder
         elif mode == 'key':
             encoder = self.momentum_encoder
+            # key模式通常不需要分割结果（用于生成队列中的负样本）
+            return_segmentation = False
         else:
             raise ValueError(f"mode必须是'query'或'key'，当前为{mode}")
         
         # 使用对应的编码器进行前向传播
-        return encoder(x, mask, return_features=return_features)
+        return encoder(x, mask, return_features=return_features, return_segmentation=return_segmentation)
     
     def freeze_backbone_layers(self, num_layers: Optional[int] = None):
         """

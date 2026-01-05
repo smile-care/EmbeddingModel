@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.supcon_train.datasets.supcon_dataset import (MultiConfigDataset, MultiScaleBatchSampler,
                                                       SupConDataset, multi_scale_collate_fn)
-from src.supcon_train.models.losses import SupervisedContrastiveLoss
+from src.supcon_train.models.losses import ComprehensiveSegmentationLoss, SupervisedContrastiveLoss
 from src.supcon_train.models.moco_loss import MoCoLoss
 from src.supcon_train.models.moco_model import MoCoModel
 from src.supcon_train.models.moco_queue import MoCoQueue
@@ -49,6 +49,8 @@ def train_epoch(
     epoch: int,
     use_moco: bool = False,
     moco_queue: Optional[MoCoQueue] = None,
+    seg_criterion: Optional[nn.Module] = None,
+    seg_loss_weight: float = 0.5,
 ) -> dict:
     """
     训练一个epoch
@@ -56,15 +58,19 @@ def train_epoch(
     Args:
         model: 模型（SupConModel或MoCoModel）
         dataloader: 数据加载器
-        criterion: 损失函数
+        criterion: 对比损失函数
         optimizer: 优化器
         device: 设备
         epoch: 当前epoch
         use_moco: 是否使用MoCo
         moco_queue: MoCo队列（如果使用MoCo）
+        seg_criterion: 分割损失函数（可选）
+        seg_loss_weight: 分割损失权重
     """
     model.train()
     total_loss = 0.0
+    total_contrastive_loss = 0.0
+    total_seg_loss = 0.0
     total_pos_loss = 0.0
     total_neg_loss = 0.0
     num_batches = 0
@@ -84,12 +90,12 @@ def train_epoch(
         if use_moco:
             # MoCo训练流程
             # 1. 使用query_encoder计算view1的query embeddings
-            query_outputs1 = model(view1_images, view1_masks, mode='query', return_features=False)
+            query_outputs1 = model(view1_images, view1_masks, mode='query', return_features=False, return_segmentation=(seg_criterion is not None))
             query_embeddings1 = query_outputs1['embeddings']
             
             # 2. 使用momentum_encoder计算view2的key embeddings（用于positive pairs和更新队列）
             with torch.no_grad():
-                key_outputs2 = model(view2_images, view2_masks, mode='key', return_features=False)
+                key_outputs2 = model(view2_images, view2_masks, mode='key', return_features=False, return_segmentation=False)
                 key_embeddings2 = key_outputs2['embeddings']
             
             # 3. 获取队列中的负样本
@@ -105,13 +111,22 @@ def train_epoch(
                 continue
             
             # 5. 计算MoCo loss（结合当前batch和队列中的负样本）
-            loss = criterion(
+            contrastive_loss = criterion(
                 query_embeddings=query_embeddings1,
                 key_embeddings=key_embeddings2,
                 query_labels=labels,
                 queue_embeddings=queue_embeddings,
                 queue_labels=queue_labels
             )
+            
+            # 计算分割损失（如果启用）
+            seg_loss = torch.tensor(0.0, device=device)
+            if seg_criterion is not None and 'segmentation' in query_outputs1:
+                seg_pred = query_outputs1['segmentation']  # (B, 1, H, W)
+                seg_loss = seg_criterion(seg_pred, view1_masks)
+            
+            # 总损失
+            loss = contrastive_loss + seg_loss_weight * seg_loss
             
             # 6. 检查loss是否为NaN或Inf
             if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
@@ -140,10 +155,10 @@ def train_epoch(
         else:
             # 标准SupCon训练流程
             # 前向传播：分别计算view1和view2的embedding
-            outputs1 = model(view1_images, view1_masks, return_features=False)
+            outputs1 = model(view1_images, view1_masks, return_features=False, return_segmentation=(seg_criterion is not None))
             embeddings1 = outputs1['embeddings']
             
-            outputs2 = model(view2_images, view2_masks, return_features=False)
+            outputs2 = model(view2_images, view2_masks, return_features=False, return_segmentation=False)
             embeddings2 = outputs2['embeddings']
             
             # 拼接view1和view2的embedding，形成2B大小的batch
@@ -166,7 +181,17 @@ def train_epoch(
             # 在loss计算中：
             # - 同一个样本的view1和view2（相同label）会被视为positive pair，它们的embedding会被拉近
             # - 不同样本之间根据相似度矩阵判断是否为positive pair
-            loss = criterion(embeddings, labels_duplicated)
+
+            contrastive_loss = criterion(embeddings, labels_duplicated)
+            
+            # 计算分割损失（如果启用）
+            seg_loss = torch.tensor(0.0, device=device)
+            if seg_criterion is not None and 'segmentation' in outputs1:
+                seg_pred = outputs1['segmentation']  # (B, 1, H, W)
+                seg_loss = seg_criterion(seg_pred, view1_masks)
+            
+            # 总损失
+            loss = contrastive_loss + seg_loss_weight * seg_loss
             
             # 检查loss是否为NaN或Inf
             if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
@@ -186,6 +211,12 @@ def train_epoch(
             optimizer.step()
         
         total_loss += loss.item()
+        if use_moco:
+            total_contrastive_loss += contrastive_loss.item()
+        else:
+            total_contrastive_loss += contrastive_loss.item()
+        if seg_criterion is not None:
+            total_seg_loss += seg_loss.item()
         
         # 收集pos_loss和neg_loss（仅MoCo）
         if use_moco and hasattr(criterion, 'last_pos_loss') and criterion.last_pos_loss is not None:
@@ -195,9 +226,10 @@ def train_epoch(
         
         num_batches += 1
         
-        pbar.set_postfix({
-            'loss': loss.item(),
-        })
+        postfix_dict = {'loss': loss.item()}
+        if seg_criterion is not None:
+            postfix_dict['seg_loss'] = seg_loss.item()
+        pbar.set_postfix(postfix_dict)
     
     # 打印统计信息
     if skipped_batches > 0:
@@ -205,8 +237,17 @@ def train_epoch(
     
     result = {
         'loss': total_loss / num_batches if num_batches > 0 else 0.0,
+        'contrastive_loss': total_contrastive_loss / num_batches if num_batches > 0 else 0.0,
         'skipped_batches': skipped_batches,
     }
+    
+    # 添加分割损失信息
+    if seg_criterion is not None and num_batches > 0:
+        result['seg_loss'] = total_seg_loss / num_batches
+        if hasattr(seg_criterion, 'last_loss_details') and seg_criterion.last_loss_details:
+            details = seg_criterion.last_loss_details
+            result['seg_pred_ratio'] = details['pred_foreground_ratio']
+            result['seg_gt_ratio'] = details['gt_foreground_ratio']
     
     # 添加pos_loss和neg_loss（仅MoCo）
     if use_moco:
@@ -381,6 +422,14 @@ def build_model(
         logger.info("使用MoCo模型（动量对比学习）")
         momentum = moco_config.get('momentum', 0.999)
         logger.info(f"MoCo动量系数: {momentum}")
+        # 获取分割相关配置
+        seg_config = model_config.get('segmentation', {})
+        enable_segmentation = seg_config.get('enabled', True)
+        seg_layer_idx = seg_config.get('layer_idx', 0)
+        
+        if enable_segmentation:
+            logger.info(f"启用语义分割分支，使用FPN第{seg_layer_idx}层特征")
+        
         model = MoCoModel(
             model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
             embedding_dim=model_config['embedding_dim'],
@@ -390,7 +439,9 @@ def build_model(
             use_layers=model_config.get('use_layers', None),
             fpn_out_channels=model_config.get('fpn_out_channels', 256),
             fusion_dim=model_config.get('fusion_dim', 512),
-            momentum=momentum
+            momentum=momentum,
+            enable_segmentation=enable_segmentation,
+            seg_layer_idx=seg_layer_idx
         ).to(device)
         
         # 创建MoCo队列
@@ -402,6 +453,14 @@ def build_model(
         ).to(device)
     else:
         logger.info("使用标准SupCon模型")
+        # 获取分割相关配置
+        seg_config = model_config.get('segmentation', {})
+        enable_segmentation = seg_config.get('enabled', True)
+        seg_layer_idx = seg_config.get('layer_idx', 0)
+        
+        if enable_segmentation:
+            logger.info(f"启用语义分割分支，使用FPN第{seg_layer_idx}层特征")
+        
         model = SupConModel(
             model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
             embedding_dim=model_config['embedding_dim'],
@@ -409,7 +468,10 @@ def build_model(
             image_size=image_size,
             freeze_backbone=freeze_backbone,
             use_layers=model_config.get('use_layers', None),
-            fusion_dim=model_config.get('fusion_dim', 512)
+            fpn_out_channels=model_config.get('fpn_out_channels', 256),
+            fusion_dim=model_config.get('fusion_dim', 512),
+            enable_segmentation=enable_segmentation,
+            seg_layer_idx=seg_layer_idx
         ).to(device)
         moco_queue = None
     
@@ -423,8 +485,9 @@ def build_loss_func(
     similarity_matrix: Optional[np.ndarray],
     default_similarity: float,
     device: torch.device,
-    logger
-) -> nn.Module:
+    logger,
+    enable_segmentation: bool = True
+) -> tuple:
     """
     构建损失函数
     
@@ -436,9 +499,10 @@ def build_loss_func(
         default_similarity: 默认相似度
         device: 设备
         logger: 日志记录器
+        enable_segmentation: 是否启用分割分支
         
     Returns:
-        损失函数模块
+        (对比损失函数, 分割损失函数) 或 (对比损失函数, None)
     """
     # 获取是否使用相似度矩阵的配置
     use_similarity_matrix = loss_config.get('use_similarity_matrix', True)
@@ -493,7 +557,23 @@ def build_loss_func(
             use_similarity_matrix=use_similarity_matrix
         ).to(device)
     
-    return criterion
+    # 构建分割损失函数
+    seg_criterion = None
+    if enable_segmentation:
+        seg_config = loss_config.get('segmentation', {})
+        logger.info("构建分割损失函数（ComprehensiveSegmentationLoss）")
+        logger.info(f"  BCE权重: {seg_config.get('bce_weight', 0.4)}, "
+                   f"Dice权重: {seg_config.get('dice_weight', 0.4)}, "
+                   f"比例约束权重: {seg_config.get('ratio_weight', 0.1)}")
+        seg_criterion = ComprehensiveSegmentationLoss(
+            bce_weight=seg_config.get('bce_weight', 0.4),
+            dice_weight=seg_config.get('dice_weight', 0.4),
+            ratio_weight=seg_config.get('ratio_weight', 0.1),
+            target_foreground_ratio=seg_config.get('target_foreground_ratio', 0.1),
+            max_foreground_ratio=seg_config.get('max_foreground_ratio', 0.1)
+        ).to(device)
+    
+    return criterion, seg_criterion
 
 
 def main():
@@ -668,15 +748,22 @@ def main():
     
     # 创建Loss（传入相似度矩阵和默认相似度）
     loss_config = supcon_config['supcon']['loss']
-    criterion = build_loss_func(
+    enable_segmentation = model_config.get('segmentation', {}).get('enabled', True)
+    criterion, seg_criterion = build_loss_func(
         loss_config=loss_config,
         moco_config=moco_config,
         use_moco=use_moco,
         similarity_matrix=similarity_matrix,
         default_similarity=default_similarity,
         device=device,
-        logger=logger
+        logger=logger,
+        enable_segmentation=enable_segmentation
     )
+    
+    # 获取分割损失权重
+    seg_loss_weight = loss_config.get('segmentation', {}).get('weight', 0.5)
+    if enable_segmentation:
+        logger.info(f"分割损失权重: {seg_loss_weight}")
     
     # 创建优化器（backbone和projection head使用不同学习率）
     training_config = supcon_config['supcon']['training']
@@ -755,7 +842,9 @@ def main():
         train_metrics = train_epoch(
             model, train_dataloader, criterion, optimizer, device, epoch,
             use_moco=use_moco,
-            moco_queue=moco_queue
+            moco_queue=moco_queue,
+            seg_criterion=seg_criterion,
+            seg_loss_weight=seg_loss_weight
         )
         train_losses.append(train_metrics['loss'])
         

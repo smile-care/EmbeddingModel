@@ -13,6 +13,10 @@ supcon:
     use_layers: [0, 1, 2, 3]  # 4x, 8x, 16x, 32x 下采样层的输出特征
     fpn_out_channels: 256
     fusion_dim: 512
+    # 语义分割分支配置
+    segmentation:
+      enabled: true  # 是否启用语义分割分支
+      layer_idx: 0  # 用于分割的FPN层索引（0为最高分辨率层）
   
   data:
     image_size: [224, 320, 448]  # 支持单个整数或整数列表，如: 224 或 [224, 320, 448]
@@ -21,7 +25,7 @@ supcon:
     pin_memory: true
   
   training:
-    epochs: 500
+    epochs: 300
     learning_rate: 1e-4
     weight_decay: 0.05
     backbone_lr_ratio: 0.1  # backbone学习率比例
@@ -40,6 +44,14 @@ supcon:
     # 负样本惩罚配置（用于优化负样本分离）
     neg_weight: 0.5  # 负样本惩罚权重（0-1之间，越大负样本分离越强，建议0.3-0.7）
     margin: 0.0  # 正负样本margin（0表示不使用margin，建议0.0-0.2，确保正样本相似度至少比负样本高margin）
+    # 语义分割损失配置（综合分割损失）
+    segmentation:
+      weight: 0.5  # 分割损失在总损失中的权重
+      bce_weight: 0.4  # BCE损失权重
+      dice_weight: 0.4  # Dice损失权重
+      ratio_weight: 0.1  # 前景比例约束权重
+      target_foreground_ratio: 0.1  # 目标前景比例（保留用于未来扩展）
+      max_foreground_ratio: 0.4  # 最大允许的前景比例（超过此值会触发比例惩罚）
   
   # MoCo配置（动量对比学习，适合小batch size）
   moco:
@@ -50,8 +62,8 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/1229-2"
-    log_dir: "logs/supcon_logs/1229-2"
-    use_wandb: true
+    checkpoint_dir: "checkpoints/supcon_models/debug"
+    log_dir: "logs/supcon_logs/debug"
+    use_wandb: false
     wandb_project: "supcon_moco"
 

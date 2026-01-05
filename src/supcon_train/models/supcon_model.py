@@ -1,5 +1,5 @@
 """
-SupCon模型：DINOv3 Backbone + FPN + Mask特征筛选 + 多层特征融合 + Projection Head
+SupCon模型：DINOv3 Backbone + FPN + Mask特征筛选 + 多层特征融合 + Projection Head + 语义分割分支
 """
 from typing import List, Optional
 
@@ -22,7 +22,9 @@ class SupConModel(nn.Module):
         freeze_backbone: bool = False,
         use_layers: Optional[List[int]] = [0, 1, 2],  # 使用FPN的哪些层的特征(FPN共有4层，索引0-3, 4x, 8x, 16x, 32x)
         fpn_out_channels = 256,  # FPN输出通道数
-        fusion_dim: int = 512  # 特征融合后的维度
+        fusion_dim: int = 512,  # 特征融合后的维度
+        enable_segmentation: bool = True,  # 是否启用语义分割分支
+        seg_layer_idx: int = 0  # 用于分割的FPN层索引（0为最高分辨率层）
     ):
         """
         初始化SupCon模型
@@ -35,6 +37,8 @@ class SupConModel(nn.Module):
             freeze_backbone: 是否冻结backbone
             use_layers: 使用FPN的哪些层的特征（None表示使用所有层）
             fusion_dim: 特征融合后的维度
+            enable_segmentation: 是否启用语义分割分支
+            seg_layer_idx: 用于分割的FPN层索引（0为最高分辨率层）
         """
         super().__init__()
         
@@ -59,6 +63,7 @@ class SupConModel(nn.Module):
                     feature_dims.append(feat.shape[-1])
         
         self.use_layers = use_layers
+        self.image_size = image_size
         
         # FPN特征金字塔网络
         # 标准FPN/PNFPN统一所有特征图的通道数为256
@@ -87,12 +92,44 @@ class SupConModel(nn.Module):
             dropout=0.1
         )
         
+        # 语义分割分支（与对比学习分支并行）
+        self.enable_segmentation = enable_segmentation
+        self.seg_layer_idx = seg_layer_idx
+        if enable_segmentation:
+            # 分割头：使用FPN的某一层特征进行分割
+            # 使用最高分辨率层（索引0）以获得更好的空间细节
+            self.segmentation_head = nn.Sequential(
+                nn.Conv2d(fpn_out_channels, 128, kernel_size=3, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(128, 64, kernel_size=3, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(64, 1, kernel_size=1),  # 输出单通道分割mask
+                nn.Sigmoid()  # 类别无关，输出0-1的概率
+            )
+            
+            # 初始化分割头权重
+            self._initialize_segmentation_head()
+        
 
+    def _initialize_segmentation_head(self):
+        """初始化分割头权重"""
+        for m in self.segmentation_head.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+    
     def forward(
         self,
         x: torch.Tensor,
         mask: torch.Tensor,
-        return_features: bool = False
+        return_features: bool = False,
+        return_segmentation: bool = False
     ) -> dict:
         """
         前向传播
@@ -101,9 +138,10 @@ class SupConModel(nn.Module):
             x: 输入图像 (B, C, H, W)
             mask: mask张量 (B, 1, H, W)
             return_features: 是否返回backbone特征
+            return_segmentation: 是否返回分割结果
             
         Returns:
-            包含embedding和logits的字典
+            包含embedding和可选分割结果的字典
         """
         # Backbone特征提取（获取所有层）
         features = self.backbone(x, output_hidden_states=True)
@@ -112,7 +150,7 @@ class SupConModel(nn.Module):
         # FPN统一所有特征图的通道数，通过自顶向下和自底向上路径融合多尺度信息
         fpn_features = self.fpn(features)
         
-        # 特征融合（应用mask筛选）
+        # 对比学习分支：特征融合（应用mask筛选）
         fused_features = self.feature_fusion(fpn_features, mask)
         
         # Projection
@@ -127,6 +165,23 @@ class SupConModel(nn.Module):
         
         if return_features:
             result['features'] = fused_features
+        
+        # 语义分割分支（与对比学习分支并行）
+        if self.enable_segmentation:
+            # 使用FPN的指定层进行分割（默认使用最高分辨率层）
+            seg_feat = fpn_features[self.seg_layer_idx]  # (B, C, H, W)
+            seg_logits = self.segmentation_head(seg_feat)  # (B, 1, H', W')
+            
+            # 如果分割输出尺寸与输入mask不一致，进行上采样
+            if seg_logits.shape[2:] != mask.shape[2:]:
+                seg_logits = torch.nn.functional.interpolate(
+                    seg_logits,
+                    size=mask.shape[2:],
+                    mode='bilinear',
+                    align_corners=False
+                )
+            
+            result['segmentation'] = seg_logits
         
         return result
     
