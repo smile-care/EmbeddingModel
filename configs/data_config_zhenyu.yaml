@@ -2,11 +2,12 @@
 # 用于设置不同缺陷类别之间的相似度关系
 
 
-root: "data/datasets/zhenyu"
+root: "data/zhenyu_data/60194/60194-CCD1-防爆阀变形"
 data_split:
   train: "train"
   val: "val"
 
+debug_mode: true
 
 default_similarity: 0.0
 
