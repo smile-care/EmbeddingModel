@@ -471,9 +471,9 @@ def process_folder(
 def main():
     parser = argparse.ArgumentParser(description='从图像和JSON标注文件提取patch')
     parser.add_argument('--input_dir', type=str, 
-                       default="/home/unitx/workspace_custom/data/震裕/4.x/60194/4xdata/60194-CCD1-负极",
+                       default="/home/unitx/workspace_custom/data/震裕/4.x/60194/4xdata/60194-CCD1-客户喷码区",
                        help='输入文件夹路径（包含图像和JSON文件）')
-    parser.add_argument('--output_dir', type=str, default="/home/unitx/workspace_custom/EmbeddingModel/data/zhenyu_data/60194/60194-CCD1-负极", help='输出目录')
+    parser.add_argument('--output_dir', type=str, default="/home/unitx/workspace_custom/EmbeddingModel/data/zhenyu_data/60194/60194-CCD1-客户喷码区", help='输出目录')
     parser.add_argument('--expand_ratio', type=float, default=1.0, help='扩边比例（用于大尺寸缺陷）')
     parser.add_argument('--min_size', type=int, default=8, help='最小patch尺寸')
     parser.add_argument('--crop_sizes', type=int, nargs='+', default=[96, 160, 224],
@@ -491,4 +491,40 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    # main()
+    
+    src_dir = "/home/unitx/workspace_custom/data/震裕/4.x/60194/4xdata"
+    save_dir = "/home/unitx/workspace_custom/EmbeddingModel/data/zhenyu_data/60194"
+    dir_list = [
+        "60194-CCD1-蓝膜",
+        "60194-CCD1-蓝膜铝板",
+        "60194-CCD1-铝板",
+        "60194-CCD1-铝板压印",
+        "60194-CCD1-正极",
+        "60194-CCD1-正极高亮定位孔",
+        "60194-CCD1-正极高亮极柱",
+        "60194-CCD1-正极高亮铝板",
+        "60194-CCD1-注液孔",
+        "60194-CCD2-3-极柱",
+        "60194-CCD2-3-铝板",
+        "60194-CCD4-5-负极",
+        "60194-CCD4-5-铝板",
+        "60194-CCD4-5-正极",
+        "60194-CCD4-5-注液孔",
+        "60194-CCD6-负极",  
+        "60194-CCD6-下塑胶",
+        "60194-CCD6-正极"
+    ]
+
+    for dir_name in dir_list:
+        input_folder = str(Path(src_dir) / dir_name)
+        output_folder = str(Path(save_dir) / dir_name)
+        print(f"\n处理文件夹: {input_folder}")
+        process_folder(
+            input_folder,
+            output_folder,
+            expand_ratio=1.0,
+            min_size=8,
+            crop_sizes=[96, 160, 224]
+        )
+    

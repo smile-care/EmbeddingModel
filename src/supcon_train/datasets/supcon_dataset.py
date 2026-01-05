@@ -71,11 +71,13 @@ class MaskSoftDilation:
         
         # 假设前景区域是圆形的，根据面积计算等效直径
         # area = π * (diameter/2)^2 => diameter = 2 * sqrt(area / π)
-        equivalent_diameter = 2 * np.sqrt(foreground_area / np.pi)
+        equivalent_diameter = np.sqrt(foreground_area / np.pi) * 2
+        # 等效半径
+        equivalent_radius = equivalent_diameter / 2
         
         # 直接使用等效直径作为膨胀半径
         # 这样无论前景区域是什么形状（细长、圆形、不规则），都能根据实际面积自适应
-        dilation_radius = max(1, int(equivalent_diameter))
+        dilation_radius = min(30, max(10, int(equivalent_radius)))
         
         # 计算距离变换：计算每个像素到最近前景像素的距离
         # 对于前景像素，距离为0；对于背景像素，距离为正数
@@ -463,6 +465,7 @@ class SupConDataset(Dataset):
             raise FileNotFoundError(f"数据根目录不存在: {self.root}")
         
         data_split = self.config.get('data_split', {'train': 'train', 'val': 'val'})
+        debug_mode = self.config.get('debug_mode', False)
         
         samples = []
         categories = set()
@@ -470,7 +473,7 @@ class SupConDataset(Dataset):
         # 遍历所有类别目录，使用rglob递归查找所有png文件
         for file_path in self.root.rglob("*.png"):
             # 仅处理当前划分的数据
-            if data_split.get(self.split, self.split) != file_path.parent.parent.name:
+            if data_split.get(self.split, self.split) != file_path.parent.parent.name and not debug_mode:
                 continue
             # 跳过mask文件
             if "_mask.png" in file_path.name:
@@ -567,6 +570,7 @@ class SupConDataset(Dataset):
             view1_mask = (view1_mask > 0.5).float()  # 二值化
             # 应用软膨胀（与train保持一致）
             view1_mask = self.mask_dilation(view1_mask)
+            # 生成第二视图与第一视图相同
             view2_image = view1_image.clone()
             view2_mask = view1_mask.clone()
         

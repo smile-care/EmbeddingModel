@@ -8,6 +8,7 @@ import numpy as np
 matplotlib.use('Agg')  # 使用非交互式后端
 import base64
 import io
+import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -20,6 +21,41 @@ from PIL import Image
 from sklearn.decomposition import PCA
 
 matplotlib.rc("font", family='AR PL UKai CN')
+
+
+def generate_high_contrast_colors(n_colors: int) -> np.ndarray:
+    """
+    生成随机颜色的颜色映射
+    
+    Args:
+        n_colors: 需要的颜色数量
+    
+    Returns:
+        颜色数组 (n_colors, 4) RGBA格式
+    """
+    if n_colors <= 0:
+        return np.array([])
+    
+    # 使用tab10 (10种高对比度颜色), 超过则用tab20, 都随机一下顺序
+
+    if n_colors == 1:
+        # 蓝色 默认
+        return np.array([[0.0, 0.447, 0.741, 1.0]])
+
+    if n_colors <= 10:
+        color_pool = plt.cm.tab10(np.linspace(0, 1, 10))
+    else:
+        color_pool = plt.cm.tab20(np.linspace(0, 1, 20))
+    color_pool = color_pool.copy()
+    idx = list(range(len(color_pool)))
+    random.shuffle(idx)
+    # 如果颜色数不足，循环补足
+    colors = color_pool[idx][:n_colors]
+    if len(colors) < n_colors:
+        repeats = n_colors // len(color_pool) + 1
+        big_pool = np.tile(color_pool[idx], (repeats, 1))
+        colors = big_pool[:n_colors]
+    return colors
 
 
 def reduce_dimensions(embeddings_norm: np.ndarray, n_samples: int) -> Tuple[np.ndarray, str]:
@@ -116,7 +152,7 @@ def visualize_data_distribution(
             embeddings_2d_norm[mask, 1],
             c=[label_to_color[label]],
             label=f"{label} ({count})",
-            alpha=0.5,
+            alpha=0.7,
             s=2,
         )
     
@@ -129,7 +165,7 @@ def visualize_data_distribution(
         fancybox=True,
         shadow=True
     )
-    ax.set_title(f"数据分布可视化 ({method}降维)\n总样本: {len(embeddings)}, 类别数: {len(unique_labels)}")
+    ax.set_title(f"数据分布可视化 \n总样本: {len(embeddings)}, 类别数: {len(unique_labels)}")
     ax.set_xlim(-0.05, 1.05)
     ax.set_ylim(-0.05, 1.05)
     ax.set_xlabel(f'{method} 维度1')
@@ -158,7 +194,8 @@ def visualize_outlier_distribution(
     reduction_method: Optional[str] = None,
     label_to_color: Optional[Dict] = None,
     detection_mode: Optional[str] = None,
-    detected_label: Optional[str] = None
+    detected_labels: Optional[List[str]] = None,
+    color_mode: str = "use_module1"
 ) -> np.ndarray:
     """
     可视化异常点分布（自适应降维方法）
@@ -171,9 +208,10 @@ def visualize_outlier_distribution(
         all_results: 异常点检测结果字典
         embeddings_2d: 可选的已降维结果（如果提供则复用，避免重复计算）
         reduction_method: 降维方法名称（如果提供了embeddings_2d）
-        label_to_color: 类别到颜色的映射（与模块1对齐，如果为None则自动生成）
-        detection_mode: 检测模式（"单类检测"或"所有类检测"）
-        detected_label: 单类检测时选中的类别
+        label_to_color: 类别到颜色的映射（与数据分布模块对齐，如果为None则自动生成）
+        detection_mode: 检测模式（"指定类检测"或"所有类检测"）
+        detected_labels: 指定类检测时选中的类别列表
+        color_mode: 颜色模式，"use_module1"使用数据分布模块的颜色映射，"high_contrast"使用随机颜色
     
     Returns:
         图像数组（numpy格式，用于Gradio显示）
@@ -204,12 +242,17 @@ def visualize_outlier_distribution(
         is_global_outlier[outlier_indices] = True
     
     # 确定要可视化的类别范围
-    if detection_mode == "单类检测" and detected_label is not None:
-        # 单类检测：只可视化该类别
-        labels_to_visualize = [detected_label]
-        # 创建掩码：只显示该类别的样本
-        visualize_mask = np.array([l == detected_label for l in label_names])
-        title_suffix = f"（单类检测: {detected_label}）"
+    if detection_mode == "指定类检测" and detected_labels is not None and len(detected_labels) > 0:
+        # 指定类检测：只可视化选中的类别
+        labels_to_visualize = detected_labels
+        # 创建掩码：只显示选中类别的样本
+        visualize_mask = np.array([l in detected_labels for l in label_names])
+        if len(detected_labels) == 1:
+            title_suffix = f"（指定类检测: {detected_labels[0]}）"
+        elif len(detected_labels) <= 3:
+            title_suffix = f"（指定类检测: {', '.join(detected_labels)}）"
+        else:
+            title_suffix = f"（指定类检测: {len(detected_labels)}个类别）"
     else:
         # 所有类检测：可视化所有检测到的类别
         labels_to_visualize = list(all_results.keys())
@@ -217,7 +260,25 @@ def visualize_outlier_distribution(
         title_suffix = "（所有类检测）"
     
     # 生成或使用提供的颜色映射
-    if label_to_color is None:
+    if color_mode == "high_contrast":
+        # 使用随机颜色映射（基于要可视化的类别）
+        unique_labels_display = sorted(list(set([l for l in label_names if l in labels_to_visualize])))
+        n_colors = len(unique_labels_display)
+        if n_colors > 0:
+            colors_all = generate_high_contrast_colors(n_colors)
+            label_to_color = dict(zip(unique_labels_display, colors_all))
+        else:
+            # 如果没有要可视化的类别，使用默认颜色
+            label_to_color = {}
+        # 对于不在可视化列表中的类别，使用灰色（低透明度）
+        all_unique_labels = sorted(list(set(label_names)))
+        for label in all_unique_labels:
+            if label not in label_to_color:
+                label_to_color[label] = np.array([0.7, 0.7, 0.7, 0.3])  # 灰色，低透明度
+    elif color_mode == "use_module1" and label_to_color is not None:
+        # 使用数据分布模块的颜色映射（已提供）
+        pass  # 直接使用提供的label_to_color
+    elif label_to_color is None:
         # 如果没有提供颜色映射，生成新的（基于所有唯一标签）
         unique_labels_all = sorted(list(set(label_names)))
         if len(unique_labels_all) <= 10:
@@ -254,14 +315,14 @@ def visualize_outlier_distribution(
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
     
-    # 右图: 按类别着色（使用与模块1一致的颜色映射）
+    # 右图: 按类别着色（使用与数据分布模块一致的颜色映射）
     # 只显示要可视化的类别
     display_indices = np.where(display_mask)[0]
     display_embeddings_2d = embeddings_2d[display_indices]
     display_label_names = label_names[display_indices]
     display_outlier_mask = is_global_outlier[display_indices]
     
-    # 按类别绘制，使用与模块1一致的颜色
+    # 按类别绘制，使用与数据分布模块一致的颜色
     unique_labels_display = sorted(list(set(display_label_names)))
     for label in unique_labels_display:
         if label in label_to_color:

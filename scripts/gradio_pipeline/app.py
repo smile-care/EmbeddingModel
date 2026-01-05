@@ -49,9 +49,9 @@ class AppState:
         self.embeddings_2d_raw = None  # 保存原始降维结果（未归一化）
         self.embeddings_2d_norm = None  # 保存归一化后的降维结果（用于数据分布）
         self.reduction_method = None  # 保存使用的降维方法
-        self.label_to_color = None  # 保存模块1的颜色映射（用于结果可视化对齐）
-        self.detection_mode = None  # 保存检测模式（"单类检测"或"所有类检测"）
-        self.detected_label = None  # 保存单类检测时选中的类别
+        self.label_to_color = None  # 保存数据分布模块的颜色映射（用于结果可视化对齐）
+        self.detection_mode = None  # 保存检测模式（"指定类检测"或"所有类检测"）
+        self.detected_labels = None  # 保存指定类检测时选中的类别列表
     
     def reset(self):
         """重置所有状态"""
@@ -203,7 +203,7 @@ def load_and_preprocess(file) -> Tuple[str, str]:
 # ==================== 模块2: 异常点检测 ====================
 def detect_outliers_module(
     detection_mode: str,
-    selected_label: str,
+    selected_labels: List[str],
     threshold_percentile: float,
     min_samples: int,
     state: Dict
@@ -220,10 +220,14 @@ def detect_outliers_module(
         all_results = {}
         
         # 确定要检测的类别
-        if detection_mode == "单类检测":
-            if selected_label not in app_state.unique_labels:
-                return "❌ 请选择有效的类别", None, state
-            labels_to_process = [selected_label]
+        if detection_mode == "指定类检测":
+            if not selected_labels or len(selected_labels) == 0:
+                return "❌ 请至少选择一个类别", None, state
+            # 验证选中的类别是否有效
+            invalid_labels = [l for l in selected_labels if l not in app_state.unique_labels]
+            if invalid_labels:
+                return f"❌ 以下类别无效: {', '.join(invalid_labels)}", None, state
+            labels_to_process = selected_labels
         else:  # 所有类检测
             labels_to_process = app_state.unique_labels
         
@@ -324,7 +328,7 @@ def detect_outliers_module(
         # 保存到状态
         app_state.all_results = all_results
         app_state.detection_mode = detection_mode
-        app_state.detected_label = selected_label if detection_mode == "单类检测" else None
+        app_state.detected_labels = selected_labels if detection_mode == "指定类检测" else None
         
         # 生成统计信息
         stats_rows = []
@@ -363,7 +367,7 @@ def clear_detection_module(state: Dict) -> Tuple[str, Optional[pd.DataFrame], Di
     """清除异常点检测模块数据"""
     app_state.all_results = None
     app_state.detection_mode = None
-    app_state.detected_label = None
+    app_state.detected_labels = None
     state['detection_done'] = False
     state['detection_info'] = ""
     return "✓ 异常点检测数据已清除", None, state
@@ -405,12 +409,17 @@ def analyze_outliers_module(state: Dict) -> Tuple[str, Optional[pd.DataFrame], D
                     embedding, 
                     label, 
                     app_state.label_centers, 
-                    top_k=3
+                    top_k=3,
+                    similarity_threshold=0.0
                 )
+                
+                # 与当前label center的余弦相似度
+                current_center = app_state.label_centers[label]
+                current_cosine_similarity = np.dot(embedding, current_center)
                 
                 # 格式化最相似标签
                 similar_str = ", ".join([
-                    f"{sim_label}({sim_score:.3f})" 
+                    f"{sim_label}({sim_score:.3f})"
                     for sim_label, sim_score in similar_labels
                 ])
                 
@@ -420,7 +429,8 @@ def analyze_outliers_module(state: Dict) -> Tuple[str, Optional[pd.DataFrame], D
                     '类内索引': int(local_idx),
                     '异常分数': f"{outlier_score:.3f}",
                     '投票数': f"{int(votes)}/5",
-                    '最相似类别': similar_str,
+                    '与当前类别中心相似度': f"{current_cosine_similarity:.3f}",
+                    '最相似类别(前三)': similar_str,
                     '图像路径': app_state.image_paths[global_idx],
                     '掩码路径': app_state.mask_paths[global_idx]
                 })
@@ -522,7 +532,7 @@ def clear_data_dist_module(state: Dict) -> Tuple[Optional[np.ndarray], str, Dict
 
 
 # ==================== 模块4: 结果可视化 ====================
-def visualize_outlier_result_module(state: Dict) -> Tuple[Optional[np.ndarray], str, Dict]:
+def visualize_outlier_result_module(color_mode: str, state: Dict) -> Tuple[Optional[np.ndarray], str, Dict]:
     """结果可视化模块（基于异常点检测结果）"""
     if app_state.all_results is None:
         error_msg = "❌ 请先执行异常点检测"
@@ -537,19 +547,26 @@ def visualize_outlier_result_module(state: Dict) -> Tuple[Optional[np.ndarray], 
     try:
         print("\n" + "=" * 80)
         print("开始生成异常点结果分布图...")
+        print(f"颜色模式: {color_mode}")
         print("=" * 80)
         
         # 如果数据分布模块已经计算过降维结果，复用原始降维结果；否则重新计算
-        # 使用模块1的颜色映射（如果存在）以保持颜色一致
+        # 根据颜色模式选择颜色映射
+        if color_mode == "use_module1":
+            label_to_color = app_state.label_to_color  # 使用数据分布模块的颜色映射
+        else:
+            label_to_color = None  # 使用随机颜色映射（在visualize_outlier_distribution中生成）
+        
         img_array = visualize_outlier_distribution(
             app_state.embeddings,
             app_state.label_names,
             app_state.all_results,
             embeddings_2d=app_state.embeddings_2d_raw,  # 使用原始降维结果
             reduction_method=app_state.reduction_method,
-            label_to_color=app_state.label_to_color,  # 使用模块1的颜色映射
+            label_to_color=label_to_color,  # 根据颜色模式选择
             detection_mode=app_state.detection_mode,  # 传递检测模式
-            detected_label=app_state.detected_label  # 传递选中的类别
+            detected_labels=app_state.detected_labels,  # 传递选中的类别列表
+            color_mode=color_mode  # 传递颜色模式
         )
         state['outlier_result_image'] = img_array
         
@@ -618,7 +635,7 @@ def visualize_image_module(
 - 全局索引: {item['全局索引']}
 - 异常分数: {item['异常分数']}
 - 投票数: {item['投票数']}
-- 最相似类别: {item['最相似类别']}
+- 最相似类别(前三): {item['最相似类别(前三)']}
 """
         return image_array, mask_array, info, state
     except Exception as e:
@@ -655,9 +672,9 @@ def clear_all_data() -> str:
 def create_interface():
     """创建Gradio界面"""
     
-    with gr.Blocks(title="异常点检测可视化系统", theme=gr.themes.Soft()) as demo:
+    with gr.Blocks(title="Data_Clustering调试程序", theme=gr.themes.Soft()) as demo:
         gr.Markdown("""
-        # 🔍 异常点检测可视化系统
+        # 🔍 Data_Clustering调试程序
         
         基于embedding分布的异常点检测和分析工具
         """)
@@ -709,29 +726,31 @@ def create_interface():
             with gr.Tab("🔍 异常点检测"):
                 with gr.Row():
                     detection_mode = gr.Radio(
-                        choices=["单类检测", "所有类检测"],
-                        value="所有类检测",
+                        choices=["指定类检测", "所有类检测"],
+                        value="指定类检测",
                         label="检测模式"
                     )
-                    selected_label = gr.Dropdown(
+                    selected_labels = gr.Dropdown(
                         choices=[],
-                        label="选择类别 (单类模式)",
-                        visible=False
+                        label="选择类别 (指定类模式)",
+                        visible=True,
+                        multiselect=True,
+                        value=[]
                     )
                 with gr.Row():
                     threshold_percentile = gr.Slider(
                         minimum=80.0,
                         maximum=99.0,
-                        value=95.0,
+                        value=90.0,
                         step=1.0,
-                        label="阈值百分位数 (%)"
+                        label="阈值百分位数 (默认90%)"
                     )
                     min_samples = gr.Slider(
                         minimum=5,
                         maximum=50,
-                        value=10,
+                        value=5,
                         step=1,
-                        label="最少样本数"
+                        label="最少样本数 (默认5)"
                     )
                 with gr.Row():
                     detect_btn = gr.Button("执行异常点检测", variant="primary")
@@ -759,6 +778,12 @@ def create_interface():
             with gr.Tab("📉 结果可视化"):
                 gr.Markdown("**说明:** 基于异常点检测结果进行可视化，显示正常点和异常点的分布")
                 with gr.Row():
+                    color_mode = gr.Radio(
+                        choices=["沿用数据分布颜色", "随机颜色"],
+                        value="沿用数据分布颜色",
+                        label="颜色模式"
+                    )
+                with gr.Row():
                     visualize_result_btn = gr.Button("生成结果分布图", variant="primary")
                     clear_result_btn = gr.Button("清除本模块数据", variant="secondary")
                 outlier_result_info = gr.Markdown("等待生成结果分布图...")
@@ -785,24 +810,24 @@ def create_interface():
         
         # 绑定事件
         def update_label_dropdown(mode):
-            if mode == "单类检测":
+            if mode == "指定类检测":
                 if app_state.unique_labels is not None and len(app_state.unique_labels) > 0:
-                    return gr.update(choices=app_state.unique_labels, visible=True)
-                return gr.update(visible=True)
-            return gr.update(visible=False)
+                    return gr.update(choices=app_state.unique_labels, visible=True, value=[])
+                return gr.update(visible=True, value=[])
+            return gr.update(visible=False, value=[])
         
         detection_mode.change(
             update_label_dropdown,
             inputs=[detection_mode],
-            outputs=[selected_label]
+            outputs=[selected_labels]
         )
         
         # 数据加载
         def update_label_after_load():
             """加载数据后更新类别下拉列表"""
             if app_state.unique_labels is not None and len(app_state.unique_labels) > 0:
-                return gr.update(choices=app_state.unique_labels, visible=True)
-            return gr.update(visible=False)
+                return gr.update(choices=app_state.unique_labels, visible=True, value=[])
+            return gr.update(visible=True, value=[])
         
         load_btn.click(
             load_and_preprocess,
@@ -810,7 +835,7 @@ def create_interface():
             outputs=[load_info, load_status]
         ).then(
             update_label_after_load,
-            outputs=[selected_label]
+            outputs=[selected_labels]
         )
         
         # 全局清除
@@ -835,7 +860,7 @@ def create_interface():
         # 模块2: 异常点检测
         detect_btn.click(
             detect_outliers_module,
-            inputs=[detection_mode, selected_label, threshold_percentile, min_samples, global_state],
+            inputs=[detection_mode, selected_labels, threshold_percentile, min_samples, global_state],
             outputs=[detect_info, detect_table, global_state]
         )
         
@@ -862,9 +887,18 @@ def create_interface():
         )
         
         # 模块4: 结果可视化
+        def visualize_with_color_mode(color_mode_str: str, state: Dict):
+            """将中文颜色模式转换为内部模式"""
+            color_mode_map = {
+                "沿用数据分布颜色": "use_module1",
+                "随机颜色": "high_contrast"
+            }
+            color_mode = color_mode_map.get(color_mode_str, "use_module1")
+            return visualize_outlier_result_module(color_mode, state)
+        
         visualize_result_btn.click(
-            visualize_outlier_result_module,
-            inputs=[global_state],
+            visualize_with_color_mode,
+            inputs=[color_mode, global_state],
             outputs=[outlier_result_plot, outlier_result_info, global_state]
         )
         

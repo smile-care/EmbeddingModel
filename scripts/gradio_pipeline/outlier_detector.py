@@ -149,7 +149,7 @@ def compute_robust_center(embeddings, method='trimmed_mean', trim_ratio=0.1):
     return center
 
 
-def find_most_similar_label(embedding, current_label, label_centers, top_k=3):
+def find_most_similar_label(embedding, current_label, label_centers, top_k=3, similarity_threshold=0.6):
     """
     找到与给定embedding最相似的其他类别
     
@@ -158,6 +158,7 @@ def find_most_similar_label(embedding, current_label, label_centers, top_k=3):
         current_label: 当前类别（排除该类别）
         label_centers: 所有类别的中心embedding字典
         top_k: 返回前k个最相似的类别
+        similarity_threshold: 相似度阈值，低于该阈值的类别不返回
     
     Returns:
         List of (label, similarity_score) tuples
@@ -168,7 +169,8 @@ def find_most_similar_label(embedding, current_label, label_centers, top_k=3):
             continue
         # 计算余弦相似度
         similarity = np.dot(embedding, center)
-        similarities.append((label, float(similarity)))
+        if similarity >= similarity_threshold:
+            similarities.append((label, float(similarity)))
     
     # 按相似度降序排序
     similarities.sort(key=lambda x: x[1], reverse=True)

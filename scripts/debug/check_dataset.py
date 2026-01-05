@@ -30,7 +30,7 @@ if __name__ == "__main__":
     data_config_path = "configs/data_config_zhenyu.yaml"
     
     # 是否显示原始二值mask（False则显示软膨胀后的mask）
-    SHOW_BINARY_MASK = True  # 设置为True查看原始二值mask
+    SHOW_BINARY_MASK = False  # 设置为True查看原始二值mask
     
     supcon_config = load_config(config_path)
     
