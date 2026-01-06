@@ -427,16 +427,16 @@ class SupConEmbeddingExtractor:
 
 def main():
     parser = argparse.ArgumentParser(description='提取SupCon/MoCo模型embedding（使用与训练脚本相同的数据加载模式）')
-    parser.add_argument('--model', type=str, default="checkpoints/supcon_models/1229-2/checkpoint_epoch_500.pth",
+    parser.add_argument('--model', type=str, default="checkpoints/supcon_models/0105-1/checkpoint_epoch_300.pth",
                        help='模型checkpoint路径')
-    parser.add_argument('--data_config', type=str, default='data/zhenyu_data/60194/60194-CCD1-负极',
+    parser.add_argument('--data_config', type=str, default='data/zhenyu_data/60194/60194-CCD6-负极',
                        help='数据配置文件路径（.yaml/.yml）或文件夹路径。\
                        如果提供文件夹路径，将自动搜索其中的图像和对应的mask，父文件夹名作为label_name')
-    parser.add_argument('--output', type=str, default="checkpoints/supcon_models/1229-2/extract_embeddings/60194-CCD1-负极.npz",
+    parser.add_argument('--output', type=str, default="checkpoints/supcon_models/0105-1/extract_embeddings/60194-CCD6-负极.npz",
                        help='输出文件路径（.npz或.npy）')
     parser.add_argument('--config', type=str, default="configs/supcon_config.yaml",
                        help='训练配置文件路径（可选，如果checkpoint中没有配置）')
-    parser.add_argument('--batch_size', type=int, default=128,
+    parser.add_argument('--batch_size', type=int, default=8,
                        help='batch大小')
     args = parser.parse_args()
     

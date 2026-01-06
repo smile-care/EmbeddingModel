@@ -166,8 +166,13 @@ class TwoViewAugmentation:
         
         # 颜色抖动
         if config.get('color_jitter', {}).get('enabled', False):
+            color_jitter_config = config.get('color_jitter', {})
+            brightness = color_jitter_config.get('brightness', 0.1)
+            contrast = color_jitter_config.get('contrast', 0.1)
+            saturation = color_jitter_config.get('saturation', 0.1)
+            hue = color_jitter_config.get('hue', 0.05)
             transform_list.append(transforms.ColorJitter(
-                brightness=0.4, contrast=0.4, saturation=0.4, hue=0.1
+                brightness=brightness, contrast=contrast, saturation=saturation, hue=hue
             ))
         
         # 转为tensor
@@ -404,10 +409,16 @@ class SupConDataset(Dataset):
                     'degrees': 15,  # 旋转角度范围
                     'translate': (0.2, 0.2),  # 平移比例 (tx, ty)
                     'scale': (0.8, 1.2),  # 缩放范围
-                    'shear': 20,  # 剪切角度
+                    'shear': 15,  # 剪切角度
                     'fill': 0  # 填充值：0=黑色填充（默认）
                 },
-                'color_jitter': {'enabled': True},
+                'color_jitter': {
+                    'enabled': True,
+                    'brightness': 0.2,
+                    'contrast': 0.2,
+                    'saturation': 0.1,
+                    'hue': 0.05
+                },
                 'mask_dilation': {
                     'enabled': True  # 是否启用mask软膨胀
                 }

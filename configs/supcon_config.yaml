@@ -47,12 +47,12 @@ supcon:
     # 语义分割损失配置（综合分割损失）
     segmentation:
       weight: 0.5  # 分割损失在总损失中的权重
-      bce_weight: 0.4  # BCE损失权重
-      dice_weight: 0.4  # Dice损失权重
-      ratio_weight: 0.1  # 前景比例约束权重
+      bce_weight: 0.25  # BCE损失权重
+      dice_weight: 0.25  # Dice损失权重
+      ratio_weight: 0.5  # 前景比例约束权重
       target_foreground_ratio: 0.1  # 目标前景比例（保留用于未来扩展）
-      max_foreground_ratio: 0.4  # 最大允许的前景比例（超过此值会触发比例惩罚）
-  
+      max_foreground_ratio: 0.25  # 最大允许的前景比例（超过此值会触发比例惩罚），目前crop策略前景占比最大为1/4
+
   # MoCo配置（动量对比学习，适合小batch size）
   moco:
     enabled: true  # 是否启用MoCo（true: 使用MoCo，false: 使用标准SupCon）
@@ -62,8 +62,8 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/debug"
-    log_dir: "logs/supcon_logs/debug"
-    use_wandb: false
+    checkpoint_dir: "checkpoints/supcon_models/0105-1"
+    log_dir: "logs/supcon_logs/0105-1"
+    use_wandb: true
     wandb_project: "supcon_moco"
 

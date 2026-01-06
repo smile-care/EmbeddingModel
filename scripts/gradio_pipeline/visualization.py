@@ -168,8 +168,8 @@ def visualize_data_distribution(
     ax.set_title(f"数据分布可视化 \n总样本: {len(embeddings)}, 类别数: {len(unique_labels)}")
     ax.set_xlim(-0.05, 1.05)
     ax.set_ylim(-0.05, 1.05)
-    ax.set_xlabel(f'{method} 维度1')
-    ax.set_ylabel(f'{method} 维度2')
+    ax.set_xlabel('维度1')
+    ax.set_ylabel('维度2')
     ax.grid(True, alpha=0.3)
     
     plt.tight_layout()
@@ -310,8 +310,8 @@ def visualize_outlier_distribution(
         f'显示样本: {np.sum(display_mask)}, 异常点: {np.sum(outlier_mask)} '
         f'({np.sum(outlier_mask)/np.sum(display_mask)*100:.1f}%)' if np.sum(display_mask) > 0 else ''
     )
-    axes[0].set_xlabel(f'{method} 维度1')
-    axes[0].set_ylabel(f'{method} 维度2')
+    axes[0].set_xlabel('维度1')
+    axes[0].set_ylabel('维度2')
     axes[0].legend()
     axes[0].grid(True, alpha=0.3)
     
@@ -345,8 +345,8 @@ def visualize_outlier_distribution(
         marker='o', label='异常点'
     )
     axes[1].set_title(f'按类别着色的分布 {title_suffix} \n类别数: {len(unique_labels_display)}')
-    axes[1].set_xlabel(f'{method} 维度1')
-    axes[1].set_ylabel(f'{method} 维度2')
+    axes[1].set_xlabel('维度1')
+    axes[1].set_ylabel('维度2')
     axes[1].legend(bbox_to_anchor=(1.01, 1), loc='upper left', fontsize='small')
     axes[1].grid(True, alpha=0.3)
     

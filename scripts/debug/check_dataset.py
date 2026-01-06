@@ -38,7 +38,7 @@ if __name__ == "__main__":
     
     dataset = SupConDataset(
             data_config_path=data_config_path,
-            split='val',
+            split='train',
             image_size=image_size
         )
     
@@ -46,7 +46,7 @@ if __name__ == "__main__":
     print(f"类别列表: {dataset.categories}")
     print("\n关闭窗口继续下一个样本...")
 
-    # random.shuffle(dataset.samples)
+    random.shuffle(dataset.samples)
 
     # 逐个显示样本
     for idx, data_item in enumerate(dataset):

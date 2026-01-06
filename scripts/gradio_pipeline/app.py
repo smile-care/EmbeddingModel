@@ -206,6 +206,7 @@ def detect_outliers_module(
     selected_labels: List[str],
     threshold_percentile: float,
     min_samples: int,
+    threshold_votes: int,
     state: Dict
 ) -> Tuple[str, Optional[pd.DataFrame], Dict]:
     """异常点检测模块"""
@@ -306,8 +307,7 @@ def detect_outliers_module(
             # 计算综合异常分数（归一化到0-1）
             outlier_scores_combined = outlier_votes / len(results)
             
-            # 设置综合异常点阈值（至少两种及以上方法认为是异常点）
-            threshold_votes = 2
+            # 设置综合异常点阈值（至少threshold_votes种方法认为是异常点）
             is_outlier_combined = outlier_votes >= threshold_votes
             
             # 保存综合结果
@@ -353,6 +353,7 @@ def detect_outliers_module(
 - 检测模式: {detection_mode}
 - 阈值百分位数: {threshold_percentile}%
 - 最少样本数: {min_samples}
+- 投票阈值: {threshold_votes}/5
 - 处理的类别数: {len(all_results)}
 - 总异常点数: {total_outliers}
 """
@@ -381,6 +382,9 @@ def analyze_outliers_module(state: Dict) -> Tuple[str, Optional[pd.DataFrame], D
     
     if app_state.label_centers is None:
         return "❌ 请先计算类别中心", None, state
+    
+    if len(app_state.all_results) == 0:
+        return "❌ 没有检测到异常点", None, state
     
     try:
         outlier_analysis = []
@@ -635,6 +639,7 @@ def visualize_image_module(
 - 全局索引: {item['全局索引']}
 - 异常分数: {item['异常分数']}
 - 投票数: {item['投票数']}
+- 与当前类别中心相似度: {item['与当前类别中心相似度']}
 - 最相似类别(前三): {item['最相似类别(前三)']}
 """
         return image_array, mask_array, info, state
@@ -739,11 +744,11 @@ def create_interface():
                     )
                 with gr.Row():
                     threshold_percentile = gr.Slider(
-                        minimum=80.0,
+                        minimum=85.0,
                         maximum=99.0,
-                        value=90.0,
+                        value=95.0,
                         step=1.0,
-                        label="阈值百分位数 (默认90%)"
+                        label="阈值百分位数 (默认95%)"
                     )
                     min_samples = gr.Slider(
                         minimum=5,
@@ -751,6 +756,13 @@ def create_interface():
                         value=5,
                         step=1,
                         label="最少样本数 (默认5)"
+                    )
+                    threshold_votes = gr.Slider(
+                        minimum=1,
+                        maximum=5,
+                        value=2,
+                        step=1,
+                        label="投票阈值 (默认2/5，至少几种方法认为是异常点)"
                     )
                 with gr.Row():
                     detect_btn = gr.Button("执行异常点检测", variant="primary")
@@ -860,7 +872,7 @@ def create_interface():
         # 模块2: 异常点检测
         detect_btn.click(
             detect_outliers_module,
-            inputs=[detection_mode, selected_labels, threshold_percentile, min_samples, global_state],
+            inputs=[detection_mode, selected_labels, threshold_percentile, min_samples, threshold_votes, global_state],
             outputs=[detect_info, detect_table, global_state]
         )
         

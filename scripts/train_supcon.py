@@ -895,6 +895,17 @@ def main():
                 'train_loss': train_metrics['loss'],
                 'learning_rate': scheduler.get_last_lr()[0]
             }
+            
+            # 添加对比损失和分割损失
+            if 'contrastive_loss' in train_metrics:
+                log_dict['train_contrastive_loss'] = train_metrics['contrastive_loss']
+            if 'seg_loss' in train_metrics:
+                log_dict['train_seg_loss'] = train_metrics['seg_loss']
+            if 'seg_pred_ratio' in train_metrics:
+                log_dict['train_seg_pred_ratio'] = train_metrics['seg_pred_ratio']
+            if 'seg_gt_ratio' in train_metrics:
+                log_dict['train_seg_gt_ratio'] = train_metrics['seg_gt_ratio']
+            
             # 添加pos_loss和neg_loss（仅MoCo）
             if use_moco:
                 if 'pos_loss' in train_metrics:
