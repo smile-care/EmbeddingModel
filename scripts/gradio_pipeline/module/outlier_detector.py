@@ -2,6 +2,7 @@
 异常点检测器模块
 从 notebook 提取的 OutlierDetector 类和辅助函数
 """
+
 import numpy as np
 from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
@@ -10,7 +11,7 @@ from sklearn.neighbors import LocalOutlierFactor
 class OutlierDetector:
     """异常点检测器 - 基于embedding分布检测异常点"""
     
-    def __init__(self, embeddings: np.ndarray):
+    def __init__(self, embeddings: np.ndarray, embedding_centers: np.ndarray):
         """
         Args:
             embeddings: (N, D) embedding向量
@@ -19,7 +20,7 @@ class OutlierDetector:
         self.n_samples, self.n_features = embeddings.shape
         
         # 计算中心点
-        self.center = np.mean(embeddings, axis=0)
+        self.center = embedding_centers
         
         # 计算协方差矩阵（用于马氏距离）
         self.cov = np.cov(embeddings.T)

@@ -25,7 +25,7 @@ class MoCoLoss(nn.Module):
         loss_type: str = 'supervised',  # 'standard' 或 'supervised'
         similarity_matrix: Optional[np.ndarray] = None,
         default_similarity: float = 0.0,
-        use_similarity_matrix: bool = True,
+        use_similarity_matrix: bool = False,
         neg_weight: float = 0.5,  # 负样本惩罚权重
         margin: float = 0.0  # 正负样本margin（0表示不使用margin）
     ):

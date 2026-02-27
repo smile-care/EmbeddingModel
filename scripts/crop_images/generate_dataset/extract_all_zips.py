@@ -10,7 +10,7 @@ os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
 
 
-def extract_all_zips(root_dir):
+def extract_all_zips(root_dir, save_dir, type_id):
     """递归解压目录下所有zip文件"""
     root_path = Path(root_dir)
     zip_files = list(root_path.rglob("*.zip"))
@@ -18,8 +18,10 @@ def extract_all_zips(root_dir):
     print(f"找到 {len(zip_files)} 个zip文件")
     
     for zip_file in tqdm(zip_files):
+        if type_id not in zip_file.parent.stem:
+            continue
         try:
-            extract_dir = zip_file.parent / zip_file.stem
+            extract_dir = Path(save_dir) / zip_file.stem
             print(f"正在解压: {zip_file.name} -> {extract_dir}")
             
             with zipfile.ZipFile(zip_file, 'r') as zip_ref:
@@ -31,5 +33,7 @@ def extract_all_zips(root_dir):
 
 
 if __name__ == "__main__":
-    target_dir = "/home/unitx/workspace_custom/data/震裕/4.x/60194/4xdata"
-    extract_all_zips(target_dir)
+    type_id = "L5"
+    target_dir = "/media/unitx/预训练模型数据-2T-1/zhenyu_3F/E0_2"
+    save_dir = f"data/zhenyu_data/E0_2/{type_id}"
+    extract_all_zips(target_dir, save_dir, type_id)

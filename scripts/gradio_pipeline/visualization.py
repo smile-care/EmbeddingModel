@@ -153,7 +153,7 @@ def visualize_data_distribution(
             c=[label_to_color[label]],
             label=f"{label} ({count})",
             alpha=0.7,
-            s=2,
+            s=1,
         )
     
     ax.legend(
