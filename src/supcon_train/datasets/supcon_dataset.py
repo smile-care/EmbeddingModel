@@ -360,21 +360,26 @@ class SupConDataset(Dataset):
     
     def __init__(
         self,
-        data_config_path: str = 'configs/data_config_zhenyu.yaml',
+        data_config_path: Optional[str] = None,
         split: str = 'train',  # 'train' or 'val'
-        image_size: Union[int, List[int]] = 224
+        image_size: Union[int, List[int]] = 224,
+        data_config: Optional[Dict] = None,
     ):
         """
         初始化数据集
         
         Args:
-            data_config_path: 数据配置文件路径
+            data_config_path: 数据配置文件路径（与 data_config 二选一）
             split: 数据集划分（'train' 或 'val'）
             image_size: 输入图像大小，可以是单个整数或整数列表（多尺度训练）
+            data_config: 数据配置字典（与 data_config_path 二选一，多场景时由训练脚本传入）
         """
-        # 加载配置
-        with open(data_config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
+        if data_config is not None:
+            self.config = data_config
+        else:
+            path = data_config_path or 'configs/data_config_zhenyu.yaml'
+            with open(path, 'r', encoding='utf-8') as f:
+                self.config = yaml.safe_load(f)
         
         self.root = Path(self.config['root'])
         self.split = split

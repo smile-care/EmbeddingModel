@@ -1,6 +1,20 @@
 # 对比学习相似度配置文件
 # 用于设置不同缺陷类别之间的相似度关系
-
+#
+# 单场景：直接写 root / data_split 等（当前格式）。
+# 多场景：使用 scenes 列表，每项为一套完整配置（name、root、data_split、default_similarity、custom_similarity 等），
+#        每个场景单独一个 dataset，训练时按场景依次训练，验证时按场景分别计算指标。
+# 示例多场景（注释掉 root 后启用）:
+# scenes:
+#   - name: scene_a
+#     root: "data/datasets/zhenyu/scene_a"
+#     data_split: { train: "train", val: "val" }
+#     default_similarity: 0.0
+#     custom_similarity: []
+#   - name: scene_b
+#     root: "data/datasets/zhenyu/scene_b"
+#     data_split: { train: "train", val: "val" }
+#     default_similarity: 0.0
 
 root: "data/datasets/zhenyu"
 data_split:
