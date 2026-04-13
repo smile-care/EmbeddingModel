@@ -23,6 +23,9 @@ supcon:
     batch_size: 32
     num_workers: 4
     pin_memory: true
+    # Mask软膨胀配置
+    mask_dilation:
+      enabled: false  # 是否启用mask软膨胀处理
   
   training:
     epochs: 300
@@ -39,8 +42,6 @@ supcon:
     supcon:
       weight: 1.0
       temperature: 0.07
-    # 相似度矩阵配置
-    use_similarity_matrix: false  # 是否使用相似度矩阵（true: 使用，false: 使用标准SupCon，仅同label为positive）
     # 负样本惩罚配置（用于优化负样本分离）
     neg_weight: 0.5  # 负样本惩罚权重（0-1之间，越大负样本分离越强，建议0.3-0.7）
     margin: 0.0  # 正负样本margin（0表示不使用margin，建议0.0-0.2，确保正样本相似度至少比负样本高margin）
@@ -62,8 +63,8 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/debug"
-    log_dir: "logs/supcon_logs/debug"
+    checkpoint_dir: "checkpoints/supcon_models/0412"
+    log_dir: "logs/supcon_logs/0412"
     use_wandb: false
     wandb_project: "supcon_moco"
 

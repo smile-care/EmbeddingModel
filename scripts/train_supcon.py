@@ -14,7 +14,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset, Sampler
+from torch.utils.data import DataLoader, Sampler
 from tqdm import tqdm
 
 try:
@@ -39,22 +39,6 @@ from src.utils.visualization import plot_loss_curve
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 
-
-class LabelMappingDataset(Dataset):
-    """包装数据集，将场景内 label 下标映射为全局 label 下标（供多场景训练 Loss 使用）"""
-
-    def __init__(self, inner_dataset: Dataset, label_mapping: dict):
-        self.inner_dataset = inner_dataset
-        self.label_mapping = label_mapping  # 场景内 idx -> 全局 idx
-
-    def __len__(self):
-        return len(self.inner_dataset)
-
-    def __getitem__(self, idx):
-        out = self.inner_dataset.__getitem__(idx)
-        out = dict(out)
-        out['label'] = self.label_mapping[out['label']]
-        return out
 
 
 def train_epoch(
@@ -284,8 +268,6 @@ def validate(
     criterion: nn.Module,
     device: torch.device,
     use_moco: bool = False,
-    similarity_matrix: Optional[np.ndarray] = None,
-    default_similarity: float = 0.0,
     loss_temperature: float = 0.07,
 ) -> dict:
     """
@@ -344,12 +326,10 @@ def validate(
             # 对于MoCo，验证时使用标准SupCon loss（因为不需要队列）
             # 对于标准SupCon，使用原有的loss
             if use_moco:
-                # MoCo验证时，使用标准SupCon loss（需要从criterion中提取相似度矩阵信息）
+                # MoCo验证时，使用标准SupCon loss
                 # 创建一个临时的SupervisedContrastiveLoss用于验证
                 temp_criterion = SupervisedContrastiveLoss(
                     temperature=loss_temperature,
-                    similarity_matrix=similarity_matrix,
-                    default_similarity=default_similarity
                 ).to(device)
                 loss = temp_criterion(embeddings1, labels)
             else:
@@ -363,7 +343,7 @@ def validate(
                     print(f"警告：验证时loss为NaN或Inf，跳过此batch")
                 continue
             
-            # 收集embeddings和labels（用于全局相似度分布分析）
+            # 收集embeddings and labels（用于全局相似度分布分析）
             all_embeddings.append(embeddings1.cpu())  # 移到CPU以节省GPU内存
             all_labels.append(labels.cpu())
             
@@ -499,8 +479,6 @@ def build_loss_func(
     loss_config: dict,
     moco_config: dict,
     use_moco: bool,
-    similarity_matrix: Optional[np.ndarray],
-    default_similarity: float,
     device: torch.device,
     logger,
     enable_segmentation: bool = True
@@ -512,8 +490,6 @@ def build_loss_func(
         loss_config: 损失函数配置
         moco_config: MoCo配置
         use_moco: 是否使用MoCo
-        similarity_matrix: 相似度矩阵
-        default_similarity: 默认相似度
         device: 设备
         logger: 日志记录器
         enable_segmentation: 是否启用分割分支
@@ -521,20 +497,13 @@ def build_loss_func(
     Returns:
         (对比损失函数, 分割损失函数) 或 (对比损失函数, None)
     """
-    # 获取是否使用相似度矩阵的配置
-    use_similarity_matrix = loss_config.get('use_similarity_matrix', True)
-    
     if use_moco:
         # MoCo Loss
         moco_loss_type = moco_config.get('loss_type', 'supervised')  # 'supervised' 或 'standard'
         logger.info(f"使用MoCoLoss（类型: {moco_loss_type}）")
         
         if moco_loss_type == 'supervised':
-            # 监督对比loss（支持相似度矩阵）
-            if use_similarity_matrix:
-                logger.info("  使用相似度矩阵")
-            else:
-                logger.info("  不使用相似度矩阵（标准SupCon模式）")
+            # 监督对比loss
             # 获取负样本惩罚参数（从loss_config中读取，如果不存在则使用默认值）
             neg_weight = loss_config.get('neg_weight', 0.5)
             margin = loss_config.get('margin', 0.0)
@@ -542,14 +511,11 @@ def build_loss_func(
             criterion = MoCoLoss(
                 temperature=loss_config['supcon']['temperature'],
                 loss_type='supervised',
-                similarity_matrix=similarity_matrix if use_similarity_matrix else None,
-                default_similarity=default_similarity if use_similarity_matrix else 0.0,
-                use_similarity_matrix=use_similarity_matrix,
                 neg_weight=neg_weight,
                 margin=margin
             ).to(device)
         else:
-            # 标准MoCo loss（InfoNCE），不使用相似度矩阵
+            # 标准MoCo loss（InfoNCE）
             # 获取负样本惩罚参数（从loss_config中读取，如果不存在则使用默认值）
             neg_weight = loss_config.get('neg_weight', 0.5)
             margin = loss_config.get('margin', 0.0)
@@ -557,21 +523,14 @@ def build_loss_func(
             criterion = MoCoLoss(
                 temperature=loss_config['supcon']['temperature'],
                 loss_type='standard',
-                use_similarity_matrix=False,
                 neg_weight=neg_weight,
                 margin=margin
             ).to(device)
     else:
         # 标准SupCon Loss
-        if use_similarity_matrix:
-            logger.info("使用SupervisedContrastiveLoss（相似度作为权重，使用相似度矩阵）")
-        else:
-            logger.info("使用SupervisedContrastiveLoss（标准SupCon模式，仅同label为positive）")
+        logger.info("使用SupervisedContrastiveLoss（标准SupCon模式，仅同label为positive）")
         criterion = SupervisedContrastiveLoss(
             temperature=loss_config['supcon']['temperature'],
-            similarity_matrix=similarity_matrix if use_similarity_matrix else None,
-            default_similarity=default_similarity if use_similarity_matrix else 0.0,
-            use_similarity_matrix=use_similarity_matrix
         ).to(device)
     
     # 构建分割损失函数
@@ -597,12 +556,9 @@ def main():
     parser = argparse.ArgumentParser(description='SupCon监督对比学习训练')
     parser.add_argument('--config', type=str, default='configs/supcon_config.yaml',
                        help='训练配置文件路径')
-    parser.add_argument('--data_config', type=str, nargs='+', 
-                       default=[
-                           'configs/data_config_zhenyu.yaml',
-                        #    'configs/data_config_mvtec_ad.yaml'
-                        ],
-                       help='数据配置文件路径（可以指定多个，用空格分隔）')
+    parser.add_argument('--data_config', type=str, 
+                       default= 'configs/data_config.yaml',
+                       help='数据配置文件路径')
     parser.add_argument('--use_eval', action='store_true', default=True, help='是否进行验证')
     parser.add_argument('--no_eval', dest='use_eval', action='store_false', help='禁用验证')
     parser.add_argument('--resume', type=str, default=None,
@@ -611,7 +567,7 @@ def main():
     
     # 加载配置
     supcon_config = load_config(args.config)
-    data_config_paths = args.data_config
+    data_config_path = args.data_config
     
     # 设置日志
     logger = setup_logger(
@@ -637,22 +593,16 @@ def main():
                 config=supcon_config['supcon']
             )
     
-    # 创建数据集（支持单配置文件内多场景：scenes 列表；无 scenes 时整文件视为单场景）
+    # 创建数据集
     logger.info("加载数据集...")
-    data_config_path = data_config_paths[0] if data_config_paths else 'configs/data_config_zhenyu.yaml'
     logger.info(f"数据配置文件: {data_config_path}")
     data_config = load_config(data_config_path)
 
-    # 解析场景列表：有 scenes 则为多场景，否则整份配置为一个场景
-    if 'scenes' in data_config:
-        scene_configs = data_config['scenes']
-        scene_names = [s.get('name', f'scene_{i}') for i, s in enumerate(scene_configs)]
-        logger.info(f"多场景模式: {len(scene_configs)} 个场景 -> {scene_names}")
-    else:
-        scene_configs = [data_config]
-        scene_names = ['default']
+    scenes = data_config['scenes']
+    train_scene_cfgs = scenes['train']                # 必填
+    val_scene_cfgs   = scenes.get('val', [])          # 可选，为空则跳过验证
 
-    # 处理image_size配置（可能是单个整数或整数列表）
+    # 处理 image_size 配置
     image_size_config = supcon_config['supcon']['data'].get('image_size', 224)
     if isinstance(image_size_config, int):
         image_sizes = [image_size_config]
@@ -661,71 +611,42 @@ def main():
         image_sizes = image_size_config
         use_multiscale = len(image_sizes) > 1
     else:
-        raise ValueError(f"image_size必须是int或List[int]，当前为{type(image_size_config)}")
+        raise ValueError(f"image_size 必须是 int 或 List[int]，当前为 {type(image_size_config)}")
 
     model_image_size = max(image_sizes)
-    val_image_size = max(image_sizes)
+    val_image_size   = max(image_sizes)
     logger.info(f"图像尺度配置: {image_sizes}")
     if use_multiscale:
-        logger.info(f"启用多尺度训练: 训练时每个batch随机选择 {image_sizes} 中的一个尺度")
+        logger.info(f"启用多尺度训练: 训练时每个 batch 随机选择 {image_sizes} 中的一个尺度")
         logger.info(f"验证集固定使用尺度: {val_image_size}")
     logger.info(f"模型初始化使用尺度: {model_image_size}")
 
-    # 为每个场景创建 SupConDataset（不混合）
-    train_datasets_raw = []
-    val_datasets_raw = []
-    for scene_cfg in scene_configs:
-        train_ds = SupConDataset(
-            data_config=scene_cfg,
-            split='train',
-            image_size=image_sizes,
-        )
-        val_ds = SupConDataset(
-            data_config=scene_cfg,
-            split='val',
-            image_size=val_image_size,
-        )
-        train_datasets_raw.append(train_ds)
-        val_datasets_raw.append(val_ds)
+    # 读取 mask_dilation 配置
+    mask_dilation_config = supcon_config['supcon']['data'].get('mask_dilation', {'enabled': False})
+    logger.info(f"Mask软膨胀配置: {mask_dilation_config}")
 
-    # 全局类别并集与每场景 label 映射
-    all_categories = []
-    for ds in train_datasets_raw:
-        for c in ds.categories:
-            if c not in all_categories:
-                all_categories.append(c)
-    all_categories = sorted(all_categories)
-    cat2idx_global = {c: i for i, c in enumerate(all_categories)}
-    label_mappings = []
-    for ds in train_datasets_raw:
-        mapping = {ds.cat2idx[c]: cat2idx_global[c] for c in ds.categories}
-        label_mappings.append(mapping)
+    # 创建 train datasets
+    train_datasets_raw = [
+        SupConDataset(root=s['root'], split='train', image_size=image_sizes, name=s.get('name', s['root']), mask_dilation_config=mask_dilation_config)
+        for s in train_scene_cfgs
+    ]
+    train_scene_names = [s.get('name', s['root']) for s in train_scene_cfgs]
 
-    # 全局相似度矩阵（合并各场景 custom_similarity / default_similarity）
-    all_custom_similarity = []
-    for ds in train_datasets_raw:
-        all_custom_similarity.extend(ds.custom_similarity)
-    default_similarity = train_datasets_raw[0].default_similarity if train_datasets_raw else 0.0
-    num_classes = len(all_categories)
-    similarity_matrix = np.full((num_classes, num_classes), default_similarity, dtype=np.float64)
-    np.fill_diagonal(similarity_matrix, 1.0)
-    for item in all_custom_similarity:
-        categories_list = item.get('list', [])
-        sim = item.get('similarity', default_similarity)
-        for i, cat1 in enumerate(categories_list):
-            for cat2 in categories_list[i + 1:]:
-                if cat1 in cat2idx_global and cat2 in cat2idx_global:
-                    idx1, idx2 = cat2idx_global[cat1], cat2idx_global[cat2]
-                    similarity_matrix[idx1, idx2] = sim
-                    similarity_matrix[idx2, idx1] = sim
+    # 创建 val datasets（可选）
+    val_datasets_raw = [
+        SupConDataset(root=s['root'], split='val', image_size=val_image_size, name=s.get('name', s['root']), mask_dilation_config=mask_dilation_config)
+        for s in val_scene_cfgs
+    ]
+    val_scene_names = [s.get('name', s['root']) for s in val_scene_cfgs]
 
-    logger.info(f"全局类别数: {num_classes}, 缺陷类别: {all_categories}")
-    for i, name in enumerate(scene_names):
-        logger.info(f"  场景 {name}: 训练 {len(train_datasets_raw[i])} 样本, 验证 {len(val_datasets_raw[i])} 样本")
+    # 每个场景类别独立，label idx 在场景内自洽，无需全局映射
+    for name, ds in zip(train_scene_names, train_datasets_raw):
+        logger.info(f"  [train] {name}: {len(ds)} 样本, 类别: {ds.categories}")
+    for name, ds in zip(val_scene_names, val_datasets_raw):
+        logger.info(f"  [val]   {name}: {len(ds)} 样本, 类别: {ds.categories}")
 
-    # 包装为全局 label 映射后的 dataset（供 Loss 使用统一类别空间）
-    train_datasets = [LabelMappingDataset(ds, label_mappings[i]) for i, ds in enumerate(train_datasets_raw)]
-    val_datasets = [LabelMappingDataset(ds, label_mappings[i]) for i, ds in enumerate(val_datasets_raw)]
+    train_datasets = train_datasets_raw
+    val_datasets   = val_datasets_raw
 
     # 创建每个场景的 DataLoader 列表
     batch_size = supcon_config['supcon']['data']['batch_size']
@@ -739,6 +660,7 @@ def main():
                 batch_size=batch_size,
                 image_sizes=image_sizes,
                 shuffle=True,
+                drop_last=True,
             )
             train_dataloaders.append(DataLoader(
                 ds,
@@ -752,6 +674,7 @@ def main():
                 ds,
                 batch_size=batch_size,
                 shuffle=True,
+                drop_last=True,
                 num_workers=num_workers,
                 pin_memory=pin_memory,
             ))
@@ -788,13 +711,20 @@ def main():
         logger=logger
     )
 
-    # 多场景时每个场景使用独立的 MoCo 队列，避免跨场景负样本混合；单场景沿用单个 queue
+    # 多场景时每个场景使用独立的 MoCo 队列，避免跨场景负样本混合
+    # 队列常驻 CPU，训练该场景时才搬到 GPU，训练完搬回 CPU（CPU offload）
+    # queue_size 按场景样本数自适应：min(num_samples * 2, config_max)，并对齐到 batch_size
     if use_moco and moco_queue is not None:
-        if len(scene_names) > 1:
-            queue_size = moco_config.get('queue_size', 16384)
-            emb_dim = model_config['embedding_dim']
-            moco_queues = [MoCoQueue(queue_size=queue_size, embedding_dim=emb_dim).to(device) for _ in scene_names]
-            logger.info(f"多场景 MoCo: 为 {len(scene_names)} 个场景各创建独立队列 (size={queue_size})")
+        max_queue_size = moco_config.get('queue_size', 16384)
+        emb_dim = model_config['embedding_dim']
+        if len(train_scene_names) > 1:
+            moco_queues = []
+            for ds in train_datasets:
+                adaptive_size = min(len(ds) * 2, max_queue_size)
+                adaptive_size = max((adaptive_size // batch_size) * batch_size, batch_size)
+                moco_queues.append(MoCoQueue(queue_size=adaptive_size, embedding_dim=emb_dim))
+            for name, q in zip(train_scene_names, moco_queues):
+                logger.info(f"  MoCo queue [{name}]: size={q.queue_size}")
         else:
             moco_queues = [moco_queue]
     else:
@@ -807,8 +737,6 @@ def main():
         loss_config=loss_config,
         moco_config=moco_config,
         use_moco=use_moco,
-        similarity_matrix=similarity_matrix,
-        default_similarity=default_similarity,
         device=device,
         logger=logger,
         enable_segmentation=enable_segmentation
@@ -901,8 +829,11 @@ def main():
 
         # 每 epoch 依次训练所有场景（每个场景使用自己的 MoCo 队列）
         train_metrics_per_scene = []
-        for scene_idx, (scene_name, train_dl) in enumerate(zip(scene_names, train_dataloaders)):
-            scene_queue = moco_queues[scene_idx] if moco_queues is not None else None
+        for scene_idx, (scene_name, train_dl) in enumerate(zip(train_scene_names, train_dataloaders)):
+            logger.info(f"训练场景({scene_idx+1}/{len(train_scene_names)}): {scene_name}")
+            scene_queue = None
+            if moco_queues is not None:
+                scene_queue = moco_queues[scene_idx].to(device)   # CPU → GPU
             metrics = train_epoch(
                 model, train_dl, criterion, optimizer, device, epoch,
                 use_moco=use_moco,
@@ -910,6 +841,8 @@ def main():
                 seg_criterion=seg_criterion,
                 seg_loss_weight=seg_loss_weight,
             )
+            if scene_queue is not None:
+                moco_queues[scene_idx] = scene_queue.cpu()        # GPU → CPU
             train_metrics_per_scene.append((scene_name, metrics))
         train_metrics = {
             'loss': sum(m['loss'] for _, m in train_metrics_per_scene) / len(train_metrics_per_scene),
@@ -927,12 +860,11 @@ def main():
         val_metrics = None
         val_metrics_per_scene = []
         if args.use_eval and val_dataloaders:
-            for scene_name, val_dl in zip(scene_names, val_dataloaders):
+            for scene_idx, (scene_name, val_dl) in enumerate(zip(val_scene_names, val_dataloaders)):
+                logger.info(f"验证场景({scene_idx+1}/{len(val_scene_names)}): {scene_name}")
                 vm = validate(
                     model, val_dl, criterion, device,
                     use_moco=use_moco,
-                    similarity_matrix=similarity_matrix,
-                    default_similarity=default_similarity,
                     loss_temperature=loss_config['supcon']['temperature'],
                 )
                 val_metrics_per_scene.append((scene_name, vm))
@@ -970,7 +902,7 @@ def main():
                 f"Margin={val_metrics.get('margin', 0):.4f}, kNN={val_metrics.get('knn_accuracy', 0):.4f}"
             )
             if moco_queues is not None:
-                for sn, q in zip(scene_names, moco_queues):
+                for sn, q in zip(train_scene_names, moco_queues):
                     log_msg += f"\n  moco_queue {sn} full: {q.is_full()}"
             for sn, vm in val_metrics_per_scene:
                 log_msg += (

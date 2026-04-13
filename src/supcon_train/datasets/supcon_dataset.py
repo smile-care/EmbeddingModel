@@ -1,8 +1,6 @@
 """
 监督对比学习数据集
-基于data_config_zhenyu.yaml配置，支持mask信息
 """
-import os
 import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -10,12 +8,10 @@ from typing import Dict, List, Optional, Tuple, Union
 import numpy as np
 import torch
 import torch.nn.functional as F
-import yaml
 from PIL import Image
 from scipy import ndimage
-from torch.utils.data import ConcatDataset, Dataset, Sampler
+from torch.utils.data import Dataset, Sampler
 from torchvision import transforms
-from torchvision.transforms import functional as TF
 
 
 class MaskSoftDilation:
@@ -283,43 +279,29 @@ class MultiScaleBatchSampler(Sampler):
     确保每个batch内的所有样本使用相同的图像尺度
     """
     
-    def __init__(self, dataset: Dataset, batch_size: int, image_sizes: List[int], shuffle: bool = True):
-        """
-        初始化多尺度Batch采样器
-        
-        Args:
-            dataset: 数据集
-            batch_size: batch大小
-            image_sizes: 可用的图像尺度列表
-            shuffle: 是否打乱数据顺序
-        """
+    def __init__(self, dataset: Dataset, batch_size: int, image_sizes: List[int], shuffle: bool = True, drop_last: bool = False):
         self.dataset = dataset
         self.batch_size = batch_size
         self.image_sizes = image_sizes
         self.shuffle = shuffle
-        
-        # 创建索引列表
+        self.drop_last = drop_last
         self.indices = list(range(len(dataset)))
-    
+
     def __iter__(self):
-        """生成batch索引（包装了尺度信息）"""
+        indices = self.indices.copy()
         if self.shuffle:
-            # 打乱索引
-            indices = self.indices.copy()
             random.shuffle(indices)
-        else:
-            indices = self.indices
-        
-        # 生成batch
+
         for i in range(0, len(indices), self.batch_size):
             batch_indices = indices[i:i + self.batch_size]
-            # 为这个batch随机选择一个尺度
+            if self.drop_last and len(batch_indices) < self.batch_size:
+                break
             image_size = random.choice(self.image_sizes)
-            # 返回包装了尺度的索引对象列表
             yield [IndexWithScale(idx, image_size) for idx in batch_indices]
-    
+
     def __len__(self):
-        """返回batch数量"""
+        if self.drop_last:
+            return len(self.dataset) // self.batch_size
         return (len(self.dataset) + self.batch_size - 1) // self.batch_size
 
 
@@ -356,170 +338,106 @@ def multi_scale_collate_fn(batch_data):
 
 
 class SupConDataset(Dataset):
-    """监督对比学习数据集（基于data_config_zhenyu.yaml）"""
-    
+    """监督对比学习数据集"""
+
     def __init__(
         self,
-        data_config_path: Optional[str] = None,
-        split: str = 'train',  # 'train' or 'val'
+        root: str,
+        split: str = 'train',
         image_size: Union[int, List[int]] = 224,
-        data_config: Optional[Dict] = None,
+        name: str = '',
+        mask_dilation_config: Optional[Dict] = None,
     ):
         """
-        初始化数据集
-        
         Args:
-            data_config_path: 数据配置文件路径（与 data_config 二选一）
-            split: 数据集划分（'train' 或 'val'）
-            image_size: 输入图像大小，可以是单个整数或整数列表（多尺度训练）
-            data_config: 数据配置字典（与 data_config_path 二选一，多场景时由训练脚本传入）
+            root: 数据目录，结构为 root/<category>/<image>.png
+            split: 'train' 使用数据增强，'val' 仅做 resize + 归一化
+            image_size: 输入尺寸，单个整数或整数列表（多尺度训练）
+            name: 数据集名称，仅用于日志
+            mask_dilation_config: mask软膨胀配置（来自config文件）
         """
-        if data_config is not None:
-            self.config = data_config
-        else:
-            path = data_config_path or 'configs/data_config_zhenyu.yaml'
-            with open(path, 'r', encoding='utf-8') as f:
-                self.config = yaml.safe_load(f)
-        
-        self.root = Path(self.config['root'])
+        self.root = Path(root)
         self.split = split
-        
-        # 处理image_size：统一转换为列表格式
+        self.name = name
+
         if isinstance(image_size, int):
             self.image_sizes = [image_size]
         elif isinstance(image_size, list):
             self.image_sizes = image_size
         else:
-            raise ValueError(f"image_size必须是int或List[int]，当前为{type(image_size)}")
-        
-        # 为了向后兼容，保留image_size属性（使用第一个尺度）
+            raise ValueError(f"image_size 必须是 int 或 List[int]，当前为 {type(image_size)}")
         self.image_size = self.image_sizes[0]
-        
-        # 加载数据列表
+
         self.samples = self._load_samples()
-        
-        # 读取类别相似度配置
-        self.default_similarity = self.config.get('default_similarity', 0.0)
-        self.custom_similarity = self.config.get('custom_similarity', [])
-        
-        # 构建相似度矩阵
-        self.similarity_matrix = self._build_similarity_matrix()
-        
-        # 构建增强器（使用第一个尺度作为默认值，实际使用时可以动态指定）
+
+        # 获取mask_dilation配置（如果未提供则使用默认值）
+        if mask_dilation_config is None:
+            mask_dilation_config = {'enabled': False}
+
         self.augmentation = TwoViewAugmentation({
-                'image_size': self.image_size,
-                'horizontal_flip': {'enabled': True, 'prob': 0.5},
-                'affine': {
-                    'enabled': True,
-                    'degrees': 15,  # 旋转角度范围
-                    'translate': (0.2, 0.2),  # 平移比例 (tx, ty)
-                    'scale': (0.8, 1.2),  # 缩放范围
-                    'shear': 15,  # 剪切角度
-                    'fill': 0  # 填充值：0=黑色填充（默认）
-                },
-                'color_jitter': {
-                    'enabled': True,
-                    'brightness': 0.2,
-                    'contrast': 0.2,
-                    'saturation': 0.1,
-                    'hue': 0.05
-                },
-                'mask_dilation': {
-                    'enabled': True  # 是否启用mask软膨胀
-                }
-            }) if split == 'train' else None
-        
-        # mask软膨胀处理器（train和val都使用）
-        mask_dilation_config = {
-            'enabled': True
-        }
+            'image_size': self.image_size,
+            'horizontal_flip': {'enabled': True, 'prob': 0.5},
+            'affine': {
+                'enabled': True,
+                'degrees': 15,
+                'translate': (0.2, 0.2),
+                'scale': (0.8, 1.2),
+                'shear': 15,
+                'fill': 0,
+            },
+            'color_jitter': {
+                'enabled': True,
+                'brightness': 0.2,
+                'contrast': 0.2,
+                'saturation': 0.1,
+                'hue': 0.05,
+            },
+            'mask_dilation': mask_dilation_config,
+        }) if split == 'train' else None
+
         self.mask_dilation = MaskSoftDilation(mask_dilation_config)
-        
-        # 验证集不使用增强，只做resize和归一化
-        if split == 'val' and self.augmentation is None:
+
+        if split == 'val':
             self.val_transform = transforms.Compose([
                 transforms.Resize((self.image_size, self.image_size)),
                 transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406],
-                    std=[0.229, 0.224, 0.225]
-                )
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ])
             self.val_mask_transform = transforms.Compose([
                 transforms.Resize((self.image_size, self.image_size)),
-                transforms.ToTensor()
+                transforms.ToTensor(),
             ])
     
-    def _build_similarity_matrix(self) -> np.ndarray:
-        """构建类别相似度矩阵"""
-        num_categories = len(self.categories)
-        similarity_matrix = np.full((num_categories, num_categories), self.default_similarity, dtype=float)
-        
-        # 设置对角线为1.0
-        np.fill_diagonal(similarity_matrix, 1.0)
-        
-        # 应用自定义相似度
-        for item in self.custom_similarity:
-            categories_list = item['list']
-            sim = item['similarity']
-            # 为列表中的所有类别对设置相似度
-            for i, cat1 in enumerate(categories_list):
-                for cat2 in categories_list[i+1:]:
-                    if cat1 not in self.cat2idx or cat2 not in self.cat2idx:
-                        print(f"警告: 跳过未知类别 {cat1} 或 {cat2}")
-                        continue
-                    idx1 = self.cat2idx[cat1]
-                    idx2 = self.cat2idx[cat2]
-                    similarity_matrix[idx1, idx2] = sim
-                    similarity_matrix[idx2, idx1] = sim  # 对称矩阵
-        
-        return similarity_matrix
-    
     def _load_samples(self) -> list:
-        """加载数据样本列表"""
+        """扫描 root 下所有图像，构建样本列表与类别映射"""
         if not self.root.exists():
-            raise FileNotFoundError(f"数据根目录不存在: {self.root}")
-        
-        data_split = self.config.get('data_split', {'train': 'train', 'val': 'val'})
-        debug_mode = self.config.get('debug_mode', False)
-        
+            raise FileNotFoundError(f"数据目录不存在: {self.root}")
+
         samples = []
         categories = set()
-        
-        # 遍历所有类别目录，使用rglob递归查找所有png文件
+
         for file_path in self.root.rglob("*.png"):
-            # 仅处理当前划分的数据
-            if data_split.get(self.split, self.split) != file_path.parent.parent.name and not debug_mode:
-                continue
-            # 跳过mask文件
             if "_mask.png" in file_path.name:
                 continue
-            
-            # 检查对应的mask文件是否存在
             mask_path = file_path.with_name(file_path.stem + "_mask.png")
             if not mask_path.exists():
                 print(f"警告: 缺失掩码文件: {mask_path}，跳过该样本")
                 continue
-            
-            # 获取类别（父目录名）
             category = file_path.parent.name
             categories.add(category)
-            
             samples.append({
                 'image_path': str(file_path),
                 'mask_path': str(mask_path),
                 'label': category,
-                'label_idx': None,  # 占位符，稍后映射
+                'label_idx': None,
             })
-        
-        # 构建类别映射
+
         self.categories = sorted(list(categories))
         self.cat2idx = {cat: idx for idx, cat in enumerate(self.categories)}
         self.idx2cat = {idx: cat for cat, idx in self.cat2idx.items()}
-        # 映射类别索引
         for sample in samples:
             sample['label_idx'] = self.cat2idx[sample['label']]
-        
+
         return samples
     
     def __len__(self):
@@ -600,166 +518,4 @@ class SupConDataset(Dataset):
             'image_path': sample['image_path'],
             'mask_path': sample['mask_path'],
         }
-    
-    def get_similarity_matrix(self) -> np.ndarray:
-        """获取相似度矩阵"""
-        return self.similarity_matrix.copy()
 
-
-class MultiConfigDataset(Dataset):
-    """合并多个数据配置的数据集包装类"""
-    
-    def __init__(
-        self,
-        data_config_paths: list,
-        split: str = 'train',
-        image_size: Union[int, List[int]] = 224,
-    ):
-        """
-        初始化多配置数据集
-        
-        Args:
-            data_config_paths: 数据配置文件路径列表
-            split: 数据集划分（'train' 或 'val'）
-            image_size: 输入图像大小，可以是单个整数或整数列表（多尺度训练）
-        """
-        self.data_config_paths = data_config_paths
-        self.split = split
-        
-        # 处理image_size：统一转换为列表格式
-        if isinstance(image_size, int):
-            self.image_sizes = [image_size]
-        elif isinstance(image_size, list):
-            self.image_sizes = image_size
-        else:
-            raise ValueError(f"image_size必须是int或List[int]，当前为{type(image_size)}")
-        
-        # 为了向后兼容，保留image_size属性（使用第一个尺度）
-        self.image_size = self.image_sizes[0]
-        
-        # 为每个配置创建数据集
-        self.datasets = []
-        all_categories = []
-        all_custom_similarity = []
-        default_similarity = 0.0
-        
-        for config_path in data_config_paths:
-            dataset = SupConDataset(
-                data_config_path=config_path,
-                split=split,
-                image_size=image_size,  # 传递列表或整数
-            )
-            self.datasets.append(dataset)
-            
-            # 收集所有类别（去重）
-            for cat in dataset.categories:
-                if cat not in all_categories:
-                    all_categories.append(cat)
-            
-            # 收集自定义相似度
-            all_custom_similarity.extend(dataset.custom_similarity)
-            
-            # 使用第一个数据集的默认相似度
-            if len(self.datasets) == 1:
-                default_similarity = dataset.default_similarity
-        
-        # 合并后的类别列表
-        self.categories = all_categories
-        self.default_similarity = default_similarity
-        self.custom_similarity = all_custom_similarity
-        
-        # 构建合并后的类别映射
-        self.cat2idx = {cat: idx for idx, cat in enumerate(self.categories)}
-        self.idx2cat = {idx: cat for cat, idx in self.cat2idx.items()}
-        
-        # 为每个数据集重新映射类别索引
-        self.dataset_label_mappings = []
-        for dataset in self.datasets:
-            label_mapping = {}
-            for old_idx, cat in dataset.idx2cat.items():
-                new_idx = self.cat2idx[cat]
-                label_mapping[old_idx] = new_idx
-            self.dataset_label_mappings.append(label_mapping)
-        
-        # 构建合并后的相似度矩阵
-        self.similarity_matrix = self._build_merged_similarity_matrix()
-        
-        # 使用 ConcatDataset 合并数据集
-        self.concat_dataset = ConcatDataset(self.datasets)
-    
-    def _build_merged_similarity_matrix(self) -> np.ndarray:
-        """构建合并后的相似度矩阵"""
-        num_categories = len(self.categories)
-        similarity_matrix = np.full((num_categories, num_categories), self.default_similarity, dtype=float)
-        
-        # 设置对角线为1.0
-        np.fill_diagonal(similarity_matrix, 1.0)
-        
-        # 应用自定义相似度
-        for item in self.custom_similarity:
-            categories_list = item['list']
-            sim = item['similarity']
-            # 为列表中的所有类别对设置相似度
-            for i, cat1 in enumerate(categories_list):
-                for cat2 in categories_list[i+1:]:
-                    if cat1 not in self.cat2idx or cat2 not in self.cat2idx:
-                        continue
-                    idx1 = self.cat2idx[cat1]
-                    idx2 = self.cat2idx[cat2]
-                    similarity_matrix[idx1, idx2] = sim
-                    similarity_matrix[idx2, idx1] = sim  # 对称矩阵
-        
-        return similarity_matrix
-    
-    def __len__(self):
-        return len(self.concat_dataset)
-    
-    def __getitem__(self, idx, current_image_size: Optional[int] = None):
-        """
-        获取数据样本
-        
-        Args:
-            idx: 样本索引，可以是整数或IndexWithScale对象
-            current_image_size: 当前使用的图像尺寸（用于多尺度训练，如果为None则使用默认尺度）
-        """
-        # 处理IndexWithScale包装的索引
-        if isinstance(idx, IndexWithScale):
-            actual_idx = idx.idx
-            current_image_size = idx.image_size
-        else:
-            actual_idx = idx
-        
-        # 手动实现索引映射（因为需要重新映射类别索引）
-        # 找到这个索引对应的数据集
-        if actual_idx < 0:
-            if -actual_idx > len(self):
-                raise ValueError("索引超出范围")
-            actual_idx = len(self) + actual_idx
-        
-        dataset_idx = 0
-        cumulative_size = 0
-        for i, dataset in enumerate(self.datasets):
-            if actual_idx < cumulative_size + len(dataset):
-                dataset_idx = i
-                local_idx = actual_idx - cumulative_size
-                break
-            cumulative_size += len(dataset)
-        else:
-            raise IndexError(f"索引 {actual_idx} 超出范围")
-        
-        # 从对应的数据集获取样本（传递current_image_size）
-        sample = self.datasets[dataset_idx].__getitem__(local_idx, current_image_size=current_image_size)
-        
-        # 重新映射类别索引
-        old_label_idx = sample['label']
-        new_label_idx = self.dataset_label_mappings[dataset_idx][old_label_idx]
-        
-        # 创建新的样本，使用新的类别索引
-        new_sample = sample.copy()
-        new_sample['label'] = new_label_idx
-        
-        return new_sample
-    
-    def get_similarity_matrix(self) -> np.ndarray:
-        """获取相似度矩阵"""
-        return self.similarity_matrix.copy()

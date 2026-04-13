@@ -1,10 +1,7 @@
 """
 MoCo损失函数实现
-支持标准MoCo loss和监督对比loss（兼容相似度矩阵）
+支持标准MoCo loss和监督对比loss
 """
-from typing import Optional
-
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -23,49 +20,27 @@ class MoCoLoss(nn.Module):
         self,
         temperature: float = 0.07,
         loss_type: str = 'supervised',  # 'standard' 或 'supervised'
-        similarity_matrix: Optional[np.ndarray] = None,
-        default_similarity: float = 0.0,
-        use_similarity_matrix: bool = False,
         neg_weight: float = 0.5,  # 负样本惩罚权重
         margin: float = 0.0  # 正负样本margin（0表示不使用margin）
     ):
         """
         初始化MoCo Loss
-        
+
         Args:
             temperature: 温度参数，越小越关注困难样本
-            loss_type: loss类型，'standard'（标准MoCo）或'supervised'（监督对比，支持相似度矩阵）
-            similarity_matrix: 类别相似度矩阵 (num_classes, num_classes)，仅在supervised模式下使用
-            default_similarity: 默认相似度阈值，大于此值的类别对被认为是positive pairs
-            use_similarity_matrix: 是否使用相似度矩阵（False时强制使用标准SupCon，仅同label为positive）
+            loss_type: loss类型，'standard'（标准MoCo）或'supervised'（监督对比）
             neg_weight: 负样本惩罚权重，用于显式推动负样本分离（0-1之间，越大负样本分离越强）
             margin: 正负样本margin，确保正样本相似度至少比负样本高margin（0表示不使用margin）
         """
         super().__init__()
         self.temperature = temperature
         self.loss_type = loss_type
-        self.use_similarity_matrix = use_similarity_matrix
         self.neg_weight = neg_weight
         self.margin = margin
-        
+
         # 用于存储pos_loss和neg_loss（用于wandb记录）
         self.last_pos_loss = None
         self.last_neg_loss = None
-        
-        # 根据use_similarity_matrix决定是否使用相似度矩阵
-        if use_similarity_matrix and similarity_matrix is not None:
-            self.similarity_matrix = similarity_matrix
-            self.default_similarity = default_similarity
-            # 转换为tensor并注册为buffer
-            self.register_buffer(
-                'similarity_matrix_tensor',
-                torch.from_numpy(similarity_matrix).float()
-            )
-        else:
-            # 不使用相似度矩阵，使用标准SupCon
-            self.similarity_matrix = None
-            self.default_similarity = 0.0
-            self.register_buffer('similarity_matrix_tensor', None)
     
     def forward(
         self,
@@ -236,40 +211,18 @@ class MoCoLoss(nn.Module):
         # 注意：在MoCo中，query[i]和key[i]是positive pair，所以不应该排除对角线
         query_labels = query_labels.contiguous()  # (B,)
         
-        if self.similarity_matrix_tensor is not None:
-            # 使用自定义相似度矩阵作为权重
-            # query_labels和key_labels应该相同（因为query和key是同一个样本的不同增强）
-            label_similarity = self.similarity_matrix_tensor[query_labels][:, query_labels]  # (B, B)
-            batch_weights = label_similarity.float().to(device)  # (B, B)
-            # 注意：保留对角线，因为query[i]和key[i]是positive pair
-            
-            # 只考虑相似度大于default_similarity的样本对
-            if self.default_similarity > 0.0:
-                batch_weights = batch_weights * (batch_weights > self.default_similarity).float()
-        else:
-            # 标准SupCon：同label的样本为positive，权重为1.0
-            # 注意：对角线元素（query[i]和key[i]）的标签相同，权重应该为1.0
-            labels_expanded = query_labels.unsqueeze(1)  # (B, 1)
-            batch_weights = torch.eq(labels_expanded, labels_expanded.T).float().to(device)  # (B, B)
-            # 注意：保留对角线，因为query[i]和key[i]是positive pair
+        # 标准SupCon：同label的样本为positive，权重为1.0
+        # 注意：对角线元素（query[i]和key[i]）的标签相同，权重为1.0，保留对角线
+        labels_expanded = query_labels.unsqueeze(1)  # (B, 1)
+        batch_weights = torch.eq(labels_expanded, labels_expanded.T).float().to(device)  # (B, B)
         
         # 2. 计算query与队列中样本的相似度: (B, K)
         queue_similarity = torch.matmul(query_embeddings, queue_embeddings.T) / self.temperature  # (B, K)
         
-        # 3. 计算query_labels与queue_labels之间的相似度矩阵，确定队列中的positive pairs
-        if self.similarity_matrix_tensor is not None:
-            # 使用自定义相似度矩阵: (B, K)
-            queue_label_similarity = self.similarity_matrix_tensor[query_labels][:, queue_labels]  # (B, K)
-            queue_weights = queue_label_similarity.float().to(device)  # (B, K)
-            
-            # 只考虑相似度大于default_similarity的样本对
-            if self.default_similarity > 0.0:
-                queue_weights = queue_weights * (queue_weights > self.default_similarity).float()
-        else:
-            # 标准SupCon：同label的样本为positive，权重为1.0
-            query_labels_expanded = query_labels.unsqueeze(1)  # (B, 1)
-            queue_labels_expanded = queue_labels.unsqueeze(0)  # (1, K)
-            queue_weights = torch.eq(query_labels_expanded, queue_labels_expanded).float().to(device)  # (B, K)
+        # 3. 确定队列中的positive pairs：同label的样本为positive，权重为1.0
+        query_labels_expanded = query_labels.unsqueeze(1)  # (B, 1)
+        queue_labels_expanded = queue_labels.unsqueeze(0)  # (1, K)
+        queue_weights = torch.eq(query_labels_expanded, queue_labels_expanded).float().to(device)  # (B, K)
         
         # 4. 合并batch内和队列中的相似度: (B, B+K)
         # 注意：不需要mask batch_similarity，因为query[i]和key[i]是positive pair，应该保留
@@ -306,13 +259,8 @@ class MoCoLoss(nn.Module):
         # 9. 添加负样本惩罚项：显式地最小化负样本相似度
         # 负样本权重矩阵（1 - all_weights，但排除正样本）
         neg_weights = 1.0 - all_weights  # (B, B+K)
-        # 只考虑真正的负样本（相似度矩阵中权重为0的样本对）
-        if self.similarity_matrix_tensor is not None:
-            # 使用相似度矩阵时，负样本是相似度 <= default_similarity 的样本对
-            neg_mask = (all_weights <= self.default_similarity).float()
-        else:
-            # 标准SupCon时，负样本是不同label的样本对
-            neg_mask = (all_weights == 0.0).float()
+        # 负样本是不同label的样本对
+        neg_mask = (all_weights == 0.0).float()
         
         neg_weights = neg_weights * neg_mask  # (B, B+K)
         neg_weight_sum = neg_weights.sum(1)  # (B,)
