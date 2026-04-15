@@ -948,12 +948,16 @@ def main():
             checkpoint = {
                 'epoch': epoch,
                 'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
                 'train_loss': train_metrics['loss'],
                 'best_margin': best_margin,
                 'config': supcon_config,
             }
             if val_metrics is not None:
                 checkpoint['val_loss'] = val_metrics['loss']
+            if use_moco and moco_queues is not None:
+                checkpoint['moco_queue_state'] = [q.state_dict() for q in moco_queues]
             torch.save(checkpoint, checkpoint_dir / f"checkpoint_epoch_{epoch}.pth")
 
         checkpoint_data = {

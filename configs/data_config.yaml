@@ -71,20 +71,9 @@ scenes:
     root: data/datasets/zhenyu/E0_2/K5_crop/顶盖正面
   - name: K5_crop_顶盖注液孔
     root: data/datasets/zhenyu/E0_2/K5_crop/顶盖注液孔
-  - name: 71173_crop_下塑胶_混料_红皮带
-    root: data/datasets/zhenyu/E0_2/71173_crop/下塑胶_混料_红皮带
-  - name: 71173_crop_二维码_缺码1
-    root: data/datasets/zhenyu/E0_2/71173_crop/二维码_缺码1
-  - name: 71173_crop_二维码_缺码2
-    root: data/datasets/zhenyu/E0_2/71173_crop/二维码_缺码2
-  - name: 71173_crop_二维码_缺码3
-    root: data/datasets/zhenyu/E0_2/71173_crop/二维码_缺码3
-  - name: 71173_crop_极柱_金属丝
-    root: data/datasets/zhenyu/E0_2/71173_crop/极柱_金属丝
-  - name: 71173_crop_极柱_错装_红皮带
-    root: data/datasets/zhenyu/E0_2/71173_crop/极柱_错装_红皮带
-  - name: 71173_crop_极柱正面_压伤
-    root: data/datasets/zhenyu/E0_2/71173_crop/极柱正面_压伤
+  # fixed: 71173_crop数据集格式
+  - name: 71173_crop_71173
+    root: data/datasets/zhenyu/E0_2/71173_crop/71173
 
 
 

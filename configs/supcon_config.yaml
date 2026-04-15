@@ -63,8 +63,8 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/0412"
-    log_dir: "logs/supcon_logs/0412"
-    use_wandb: false
+    checkpoint_dir: "checkpoints/supcon_models/0413"
+    log_dir: "logs/supcon_logs/0413"
+    use_wandb: true
     wandb_project: "supcon_moco"
 
