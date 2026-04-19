@@ -445,9 +445,9 @@ def process_folder(
 def main():
     parser = argparse.ArgumentParser(description='从图像和JSON标注文件提取patch')
     parser.add_argument('--input_dir', type=str, 
-                       default="data/zhenyu_data/E0_2/L5",
+                       default="data/zhenyu_data/3F-二代训练机-01/64201/64201-CCD1--极柱R角",
                        help='输入文件夹路径（包含图像和JSON文件）')
-    parser.add_argument('--output_dir', type=str, default="data/zhenyu_data/E0_2/L5_crop", help='输出目录')
+    parser.add_argument('--output_dir', type=str, default="data/zhenyu_data/3F-二代训练机-01/64201/64201-CCD1-极柱R角", help='输出目录')
     parser.add_argument('--min_size', type=int, default=8, help='最小patch尺寸')
     parser.add_argument('--crop_sizes', type=int, nargs='+', default=[96, 160, 224],
                        help='裁剪尺寸区间 [96, 160, 224]')
