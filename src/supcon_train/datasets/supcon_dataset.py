@@ -276,33 +276,49 @@ class IndexWithScale:
 class MultiScaleBatchSampler(Sampler):
     """
     多尺度Batch采样器
-    确保每个batch内的所有样本使用相同的图像尺度
+    确保每个batch内的所有样本使用相同的图像尺度。
+    支持 DDP 分布式训练：通过 rank/world_size 将 batch 分配到各进程。
     """
-    
-    def __init__(self, dataset: Dataset, batch_size: int, image_sizes: List[int], shuffle: bool = True, drop_last: bool = False):
+
+    def __init__(self, dataset: Dataset, batch_size: int, image_sizes: List[int],
+                 shuffle: bool = True, drop_last: bool = False,
+                 rank: int = 0, world_size: int = 1):
         self.dataset = dataset
         self.batch_size = batch_size
         self.image_sizes = image_sizes
         self.shuffle = shuffle
         self.drop_last = drop_last
         self.indices = list(range(len(dataset)))
+        self.rank = rank
+        self.world_size = world_size
+        self.epoch = 0
+
+    def set_epoch(self, epoch: int):
+        self.epoch = epoch
 
     def __iter__(self):
+        # 用 epoch 作为随机种子，保证所有 rank 的打乱顺序完全一致
+        rng = random.Random(self.epoch)
         indices = self.indices.copy()
         if self.shuffle:
-            random.shuffle(indices)
+            rng.shuffle(indices)
 
+        # 先生成所有 batch，再按 rank 间隔取子集
+        all_batches = []
         for i in range(0, len(indices), self.batch_size):
             batch_indices = indices[i:i + self.batch_size]
             if self.drop_last and len(batch_indices) < self.batch_size:
                 break
-            image_size = random.choice(self.image_sizes)
-            yield [IndexWithScale(idx, image_size) for idx in batch_indices]
+            image_size = rng.choice(self.image_sizes)
+            all_batches.append([IndexWithScale(idx, image_size) for idx in batch_indices])
+
+        for i in range(self.rank, len(all_batches), self.world_size):
+            yield all_batches[i]
 
     def __len__(self):
-        if self.drop_last:
-            return len(self.dataset) // self.batch_size
-        return (len(self.dataset) + self.batch_size - 1) // self.batch_size
+        total = (len(self.dataset) // self.batch_size if self.drop_last
+                 else (len(self.dataset) + self.batch_size - 1) // self.batch_size)
+        return (total + self.world_size - 1) // self.world_size
 
 
 def multi_scale_collate_fn(batch_data):

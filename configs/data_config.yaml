@@ -14,66 +14,1293 @@ scenes:
     root: data/datasets/zhenyu/2025-1219/train
   - name: zhenyu_2026-0105
     root: data/datasets/zhenyu/2026-0105/train
-    # 
-  - name: E3_crop_上下塑胶
-    root: data/datasets/zhenyu/E0_2/E3_crop/上下塑胶
-  - name: E3_crop_极柱上塑胶
-    root: data/datasets/zhenyu/E0_2/E3_crop/极柱上塑胶
-  - name: E3_crop_极柱反面
-    root: data/datasets/zhenyu/E0_2/E3_crop/极柱反面
-  - name: E3_crop_极柱正面
-    root: data/datasets/zhenyu/E0_2/E3_crop/极柱正面
-  - name: E3_crop_防爆阀
-    root: data/datasets/zhenyu/E0_2/E3_crop/防爆阀
-  - name: E3_crop_顶盖
-    root: data/datasets/zhenyu/E0_2/E3_crop/顶盖
-  - name: L0_crop_PET贴膜
-    root: data/datasets/zhenyu/E0_2/L0_crop/PET贴膜
-  - name: L0_crop_下塑胶
-    root: data/datasets/zhenyu/E0_2/L0_crop/下塑胶
-  - name: L0_crop_客户刻码区
-    root: data/datasets/zhenyu/E0_2/L0_crop/客户刻码区
-  - name: L0_crop_极柱上塑胶
-    root: data/datasets/zhenyu/E0_2/L0_crop/极柱上塑胶
-  - name: L0_crop_极柱反面
-    root: data/datasets/zhenyu/E0_2/L0_crop/极柱反面
-  - name: L0_crop_极柱定位孔
-    root: data/datasets/zhenyu/E0_2/L0_crop/极柱定位孔
-  - name: L0_crop_极柱正面
-    root: data/datasets/zhenyu/E0_2/L0_crop/极柱正面
-  - name: L0_crop_极柱焊接
-    root: data/datasets/zhenyu/E0_2/L0_crop/极柱焊接
-  - name: L0_crop_防爆阀
-    root: data/datasets/zhenyu/E0_2/L0_crop/防爆阀
-  - name: L0_crop_顶盖正面
-    root: data/datasets/zhenyu/E0_2/L0_crop/顶盖正面
-  - name: L0_crop_顶盖注液孔
-    root: data/datasets/zhenyu/E0_2/L0_crop/顶盖注液孔
-  - name: K5_crop_PET贴膜
-    root: data/datasets/zhenyu/E0_2/K5_crop/PET贴膜
-  - name: K5_crop_下塑胶
-    root: data/datasets/zhenyu/E0_2/K5_crop/下塑胶
-  - name: K5_crop_客户刻码区
-    root: data/datasets/zhenyu/E0_2/K5_crop/客户刻码区
-  - name: K5_crop_极柱上塑胶
-    root: data/datasets/zhenyu/E0_2/K5_crop/极柱上塑胶
-  - name: K5_crop_极柱反面
-    root: data/datasets/zhenyu/E0_2/K5_crop/极柱反面
-  - name: K5_crop_极柱定位孔
-    root: data/datasets/zhenyu/E0_2/K5_crop/极柱定位孔
-  - name: K5_crop_极柱正面
-    root: data/datasets/zhenyu/E0_2/K5_crop/极柱正面
-  - name: K5_crop_极柱焊接
-    root: data/datasets/zhenyu/E0_2/K5_crop/极柱焊接
-  - name: K5_crop_防爆阀
-    root: data/datasets/zhenyu/E0_2/K5_crop/防爆阀
-  - name: K5_crop_顶盖正面
-    root: data/datasets/zhenyu/E0_2/K5_crop/顶盖正面
-  - name: K5_crop_顶盖注液孔
-    root: data/datasets/zhenyu/E0_2/K5_crop/顶盖注液孔
-  # fixed: 71173_crop数据集格式
-  - name: 71173_crop_71173
-    root: data/datasets/zhenyu/E0_2/71173_crop/71173
+    ### 以下是以模型为单位的裁剪数据集
+  - name: 0F_E0_2-71173_71173
+    root: data/datasets/zhenyu/0F_E0_2-71173/71173
+  - name: 0F_E0_2-E3_上下塑胶
+    root: data/datasets/zhenyu/0F_E0_2-E3/上下塑胶
+  - name: 0F_E0_2-E3_极柱上塑胶
+    root: data/datasets/zhenyu/0F_E0_2-E3/极柱上塑胶
+  - name: 0F_E0_2-E3_极柱反面
+    root: data/datasets/zhenyu/0F_E0_2-E3/极柱反面
+  - name: 0F_E0_2-E3_极柱正面
+    root: data/datasets/zhenyu/0F_E0_2-E3/极柱正面
+  - name: 0F_E0_2-E3_防爆阀
+    root: data/datasets/zhenyu/0F_E0_2-E3/防爆阀
+  - name: 0F_E0_2-E3_顶盖
+    root: data/datasets/zhenyu/0F_E0_2-E3/顶盖
+  - name: 0F_E0_2-K5_PET贴膜
+    root: data/datasets/zhenyu/0F_E0_2-K5/PET贴膜
+  - name: 0F_E0_2-K5_下塑胶
+    root: data/datasets/zhenyu/0F_E0_2-K5/下塑胶
+  - name: 0F_E0_2-K5_客户刻码区
+    root: data/datasets/zhenyu/0F_E0_2-K5/客户刻码区
+  - name: 0F_E0_2-K5_极柱上塑胶
+    root: data/datasets/zhenyu/0F_E0_2-K5/极柱上塑胶
+  - name: 0F_E0_2-K5_极柱反面
+    root: data/datasets/zhenyu/0F_E0_2-K5/极柱反面
+  - name: 0F_E0_2-K5_极柱定位孔
+    root: data/datasets/zhenyu/0F_E0_2-K5/极柱定位孔
+  - name: 0F_E0_2-K5_极柱正面
+    root: data/datasets/zhenyu/0F_E0_2-K5/极柱正面
+  - name: 0F_E0_2-K5_极柱焊接
+    root: data/datasets/zhenyu/0F_E0_2-K5/极柱焊接
+  - name: 0F_E0_2-K5_防爆阀
+    root: data/datasets/zhenyu/0F_E0_2-K5/防爆阀
+  - name: 0F_E0_2-K5_顶盖正面
+    root: data/datasets/zhenyu/0F_E0_2-K5/顶盖正面
+  - name: 0F_E0_2-K5_顶盖注液孔
+    root: data/datasets/zhenyu/0F_E0_2-K5/顶盖注液孔
+  - name: 0F_E0_2-L0_PET贴膜
+    root: data/datasets/zhenyu/0F_E0_2-L0/PET贴膜
+  - name: 0F_E0_2-L0_下塑胶
+    root: data/datasets/zhenyu/0F_E0_2-L0/下塑胶
+  - name: 0F_E0_2-L0_客户刻码区
+    root: data/datasets/zhenyu/0F_E0_2-L0/客户刻码区
+  - name: 0F_E0_2-L0_极柱上塑胶
+    root: data/datasets/zhenyu/0F_E0_2-L0/极柱上塑胶
+  - name: 0F_E0_2-L0_极柱反面
+    root: data/datasets/zhenyu/0F_E0_2-L0/极柱反面
+  - name: 0F_E0_2-L0_极柱定位孔
+    root: data/datasets/zhenyu/0F_E0_2-L0/极柱定位孔
+  - name: 0F_E0_2-L0_极柱正面
+    root: data/datasets/zhenyu/0F_E0_2-L0/极柱正面
+  - name: 0F_E0_2-L0_极柱焊接
+    root: data/datasets/zhenyu/0F_E0_2-L0/极柱焊接
+  - name: 0F_E0_2-L0_防爆阀
+    root: data/datasets/zhenyu/0F_E0_2-L0/防爆阀
+  - name: 0F_E0_2-L0_顶盖正面
+    root: data/datasets/zhenyu/0F_E0_2-L0/顶盖正面
+  - name: 0F_E0_2-L0_顶盖注液孔
+    root: data/datasets/zhenyu/0F_E0_2-L0/顶盖注液孔
+  - name: 3F-28220_28220-CCD1-极柱
+    root: data/datasets/zhenyu/3F-28220/28220-CCD1-极柱
+  - name: 3F-28220_28220-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F-28220/28220-CCD1-极柱压印
+  - name: 3F-28220_28220-CCD1-注液孔
+    root: data/datasets/zhenyu/3F-28220/28220-CCD1-注液孔
+  - name: 3F-28220_28220-CCD1-蓝膜
+    root: data/datasets/zhenyu/3F-28220/28220-CCD1-蓝膜
+  - name: 3F-28220_28220-CCD1-铝板
+    root: data/datasets/zhenyu/3F-28220/28220-CCD1-铝板
+  - name: 3F-28220_28220-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F-28220/28220-CCD1-铝板压印
+  - name: 3F-28220_28220-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F-28220/28220-CCD1-防爆阀变形
+  - name: 3F-28220_28220-CCD1-飞翼
+    root: data/datasets/zhenyu/3F-28220/28220-CCD1-飞翼
+  - name: 3F-28220_28220-CCD2&3-上塑胶
+    root: data/datasets/zhenyu/3F-28220/28220-CCD2&3-上塑胶
+  - name: 3F-28220_28220-CCD2&3-极柱
+    root: data/datasets/zhenyu/3F-28220/28220-CCD2&3-极柱
+  - name: 3F-28220_28220-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F-28220/28220-CCD2&3-铝板
+  - name: 3F-28220_28220-CCD4&5-上塑胶
+    root: data/datasets/zhenyu/3F-28220/28220-CCD4&5-上塑胶
+  - name: 3F-28220_28220-CCD4&5-极柱
+    root: data/datasets/zhenyu/3F-28220/28220-CCD4&5-极柱
+  - name: 3F-28220_28220-CCD4&5-铝板
+    root: data/datasets/zhenyu/3F-28220/28220-CCD4&5-铝板
+  - name: 3F-28220_28220-CCD4&5-飞翼
+    root: data/datasets/zhenyu/3F-28220/28220-CCD4&5-飞翼
+  - name: 3F-28220_28220-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F-28220/28220-CCD6-下塑胶
+  - name: 3F-28220_28220-CCD6-极柱压印
+    root: data/datasets/zhenyu/3F-28220/28220-CCD6-极柱压印
+  - name: 3F-28220_28220-CCD6-极柱字符检测
+    root: data/datasets/zhenyu/3F-28220/28220-CCD6-极柱字符检测
+  - name: 3F-28220_28220-CCD6-正极高亮
+    root: data/datasets/zhenyu/3F-28220/28220-CCD6-正极高亮
+  - name: 3F-28220_28220-CCD6-负极高亮
+    root: data/datasets/zhenyu/3F-28220/28220-CCD6-负极高亮
+  - name: 3F-28220_28220-CCD6-飞翼
+    root: data/datasets/zhenyu/3F-28220/28220-CCD6-飞翼
+  - name: 3F-33200_33200-CCD1-二维码
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-二维码
+  - name: 3F-33200_33200-CCD1-双膜检测
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-双膜检测
+  - name: 3F-33200_33200-CCD1-极柱
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-极柱
+  - name: 3F-33200_33200-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-极柱压印
+  - name: 3F-33200_33200-CCD1-正极焊道
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-正极焊道
+  - name: 3F-33200_33200-CCD1-注液孔
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-注液孔
+  - name: 3F-33200_33200-CCD1-蓝膜脏污
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-蓝膜脏污
+  - name: 3F-33200_33200-CCD1-负极焊道
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-负极焊道
+  - name: 3F-33200_33200-CCD1-铝板
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-铝板
+  - name: 3F-33200_33200-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-铝板压印
+  - name: 3F-33200_33200-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F-33200/33200-CCD1-防爆阀变形
+  - name: 3F-33200_33200-CCD2&3-极柱
+    root: data/datasets/zhenyu/3F-33200/33200-CCD2&3-极柱
+  - name: 3F-33200_33200-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F-33200/33200-CCD2&3-铝板
+  - name: 3F-33200_33200-CCD4&5-正极
+    root: data/datasets/zhenyu/3F-33200/33200-CCD4&5-正极
+  - name: 3F-33200_33200-CCD4&5-负极
+    root: data/datasets/zhenyu/3F-33200/33200-CCD4&5-负极
+  - name: 3F-33200_33200-CCD4&5-铝板
+    root: data/datasets/zhenyu/3F-33200/33200-CCD4&5-铝板
+  - name: 3F-33200_33200-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F-33200/33200-CCD6-下塑胶
+  - name: 3F-33200_33200-CCD6-正极
+    root: data/datasets/zhenyu/3F-33200/33200-CCD6-正极
+  - name: 3F-33200_33200-CCD6-正极柱压印
+    root: data/datasets/zhenyu/3F-33200/33200-CCD6-正极柱压印
+  - name: 3F-33200_33200-CCD6-负极
+    root: data/datasets/zhenyu/3F-33200/33200-CCD6-负极
+  - name: 3F-33200_33200-CCD6-负极柱压印
+    root: data/datasets/zhenyu/3F-33200/33200-CCD6-负极柱压印
+  - name: 3F-33200_33200-CCD6-防爆阀变形
+    root: data/datasets/zhenyu/3F-33200/33200-CCD6-防爆阀变形
+  - name: 3F-33220_33220-L8-CCD1-S1-负极焊道
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD1-S1-负极焊道
+  - name: 3F-33220_33220-L8-CCD1-S3-蓝膜脏污
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD1-S3-蓝膜脏污
+  - name: 3F-33220_33220-L8-CCD1-S4-二维码
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD1-S4-二维码
+  - name: 3F-33220_33220-L8-CCD1-S5-正极焊道
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD1-S5-正极焊道
+  - name: 3F-33220_33220-L8-CCD1-极柱
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD1-极柱
+  - name: 3F-33220_33220-L8-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD1-极柱压印
+  - name: 3F-33220_33220-L8-CCD1-注液孔
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD1-注液孔
+  - name: 3F-33220_33220-L8-CCD1-铝板
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD1-铝板
+  - name: 3F-33220_33220-L8-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD1-铝板压印
+  - name: 3F-33220_33220-L8-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD1-防爆阀变形
+  - name: 3F-33220_33220-L8-CCD2&3-极柱
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD2&3-极柱
+  - name: 3F-33220_33220-L8-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD2&3-铝板
+  - name: 3F-33220_33220-L8-CCD4&5-S1-负极
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD4&5-S1-负极
+  - name: 3F-33220_33220-L8-CCD4&5-S2-正极
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD4&5-S2-正极
+  - name: 3F-33220_33220-L8-CCD6-S1-负极
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD6-S1-负极
+  - name: 3F-33220_33220-L8-CCD6-S3-正极
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD6-S3-正极
+  - name: 3F-33220_33220-L8-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD6-下塑胶
+  - name: 3F-33220_33220-L8-CCD6-极柱压印
+    root: data/datasets/zhenyu/3F-33220/33220-L8-CCD6-极柱压印
+  - name: 3F-33220_33220-焊道
+    root: data/datasets/zhenyu/3F-33220/33220-焊道
+  - name: 3F-33220_33220-焊道-backup
+    root: data/datasets/zhenyu/3F-33220/33220-焊道-backup
+  - name: 3F-33220_33220_007
+    root: data/datasets/zhenyu/3F-33220/33220_007
+  - name: 3F-63281_63281_CCD1_PET贴膜
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_PET贴膜
+  - name: 3F-63281_63281_CCD1_客户刻码区
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_客户刻码区
+  - name: 3F-63281_63281_CCD1_极柱
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_极柱
+  - name: 3F-63281_63281_CCD1_极柱定位孔
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_极柱定位孔
+  - name: 3F-63281_63281_CCD1_极柱铝丝检
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_极柱铝丝检
+  - name: 3F-63281_63281_CCD1_极柱铝丝检-E2
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_极柱铝丝检-E2
+  - name: 3F-63281_63281_CCD1_正极
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_正极
+  - name: 3F-63281_63281_CCD1_注液孔
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_注液孔
+  - name: 3F-63281_63281_CCD1_负极
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_负极
+  - name: 3F-63281_63281_CCD1_铝板
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_铝板
+  - name: 3F-63281_63281_CCD1_铝板压印
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_铝板压印
+  - name: 3F-63281_63281_CCD1_防爆阀变形
+    root: data/datasets/zhenyu/3F-63281/63281_CCD1_防爆阀变形
+  - name: 3F-63281_63281_CCD2&3_极柱
+    root: data/datasets/zhenyu/3F-63281/63281_CCD2&3_极柱
+  - name: 3F-63281_63281_CCD2&3_铝板
+    root: data/datasets/zhenyu/3F-63281/63281_CCD2&3_铝板
+  - name: 3F-63281_63281_CCD4&5_极柱
+    root: data/datasets/zhenyu/3F-63281/63281_CCD4&5_极柱
+  - name: 3F-63281_63281_CCD4&5_注液孔
+    root: data/datasets/zhenyu/3F-63281/63281_CCD4&5_注液孔
+  - name: 3F-63281_63281_CCD4&5_铝板
+    root: data/datasets/zhenyu/3F-63281/63281_CCD4&5_铝板
+  - name: 3F-63281_63281_CCD6_下塑胶
+    root: data/datasets/zhenyu/3F-63281/63281_CCD6_下塑胶
+  - name: 3F-63281_63281_CCD6_正极
+    root: data/datasets/zhenyu/3F-63281/63281_CCD6_正极
+  - name: 3F-63281_63281_CCD6_注液孔
+    root: data/datasets/zhenyu/3F-63281/63281_CCD6_注液孔
+  - name: 3F-63281_63281_CCD6_负极
+    root: data/datasets/zhenyu/3F-63281/63281_CCD6_负极
+  - name: 3F-64201_64201-CCD1--极柱R角
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1--极柱R角
+  - name: 3F-64201_64201-CCD1-上塑胶
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-上塑胶
+  - name: 3F-64201_64201-CCD1-二维码
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-二维码
+  - name: 3F-64201_64201-CCD1-双膜
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-双膜
+  - name: 3F-64201_64201-CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-客户喷码区
+  - name: 3F-64201_64201-CCD1-极柱R角
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-极柱R角
+  - name: 3F-64201_64201-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-极柱压印
+  - name: 3F-64201_64201-CCD1-正极
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-正极
+  - name: 3F-64201_64201-CCD1-正极高亮定位孔
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-正极高亮定位孔
+  - name: 3F-64201_64201-CCD1-正极高亮极柱
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-正极高亮极柱
+  - name: 3F-64201_64201-CCD1-正极高亮铝板
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-正极高亮铝板
+  - name: 3F-64201_64201-CCD1-注液孔
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-注液孔
+  - name: 3F-64201_64201-CCD1-蓝膜
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-蓝膜
+  - name: 3F-64201_64201-CCD1-负极
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-负极
+  - name: 3F-64201_64201-CCD1-负极高亮定位孔
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-负极高亮定位孔
+  - name: 3F-64201_64201-CCD1-负极高亮极柱
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-负极高亮极柱
+  - name: 3F-64201_64201-CCD1-负极高亮铝板
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-负极高亮铝板
+  - name: 3F-64201_64201-CCD1-铝板
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-铝板
+  - name: 3F-64201_64201-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-铝板压印
+  - name: 3F-64201_64201-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F-64201/64201-CCD1-防爆阀变形
+  - name: 3F-64201_64201-CCD2-3-极柱
+    root: data/datasets/zhenyu/3F-64201/64201-CCD2-3-极柱
+  - name: 3F-64201_64201-CCD2-3-铝板
+    root: data/datasets/zhenyu/3F-64201/64201-CCD2-3-铝板
+  - name: 3F-64201_64201-CCD4-5-正极
+    root: data/datasets/zhenyu/3F-64201/64201-CCD4-5-正极
+  - name: 3F-64201_64201-CCD4-5-负极
+    root: data/datasets/zhenyu/3F-64201/64201-CCD4-5-负极
+  - name: 3F-64201_64201-CCD4-5-铝板
+    root: data/datasets/zhenyu/3F-64201/64201-CCD4-5-铝板
+  - name: 3F-64201_64201-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F-64201/64201-CCD6-下塑胶
+  - name: 3F-64201_64201-CCD6-正极
+    root: data/datasets/zhenyu/3F-64201/64201-CCD6-正极
+  - name: 3F-64201_64201-CCD6-负极
+    root: data/datasets/zhenyu/3F-64201/64201-CCD6-负极
+  - name: 3F-71173_71173_RP_CCD1_二维码
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD1_二维码
+  - name: 3F-71173_71173_RP_CCD1_客码区
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD1_客码区
+  - name: 3F-71173_71173_RP_CCD1_客码区压印
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD1_客码区压印
+  - name: 3F-71173_71173_RP_CCD1_极柱压印
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD1_极柱压印
+  - name: 3F-71173_71173_RP_CCD1_极柱铝板
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD1_极柱铝板
+  - name: 3F-71173_71173_RP_CCD1_注液孔
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD1_注液孔
+  - name: 3F-71173_71173_RP_CCD1_蓝膜
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD1_蓝膜
+  - name: 3F-71173_71173_RP_CCD1_铝板压印
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD1_铝板压印
+  - name: 3F-71173_71173_RP_CCD1_防爆阀
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD1_防爆阀
+  - name: 3F-71173_71173_RP_CCD1_防爆阀变形
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD1_防爆阀变形
+  - name: 3F-71173_71173_RP_CCD2&3_铝板
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD2&3_铝板
+  - name: 3F-71173_71173_RP_CCD4&5_铝板
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD4&5_铝板
+  - name: 3F-71173_71173_RP_CCD6_下塑胶
+    root: data/datasets/zhenyu/3F-71173/71173_RP_CCD6_下塑胶
+  - name: 3F-K8_K8_P1_ring(正极)
+    root: data/datasets/zhenyu/3F-K8/K8_P1_ring(正极)
+  - name: 3F-K8_K8_P1_ring(负级）
+    root: data/datasets/zhenyu/3F-K8/K8_P1_ring(负级）
+  - name: 3F-K8_K8_P1_刻码区
+    root: data/datasets/zhenyu/3F-K8/K8_P1_刻码区
+  - name: 3F-K8_K8_P1_刻码区铝板
+    root: data/datasets/zhenyu/3F-K8/K8_P1_刻码区铝板
+  - name: 3F-K8_K8_P1_定位孔
+    root: data/datasets/zhenyu/3F-K8/K8_P1_定位孔
+  - name: 3F-K8_K8_P1_极柱_down
+    root: data/datasets/zhenyu/3F-K8/K8_P1_极柱_down
+  - name: 3F-K8_K8_P1_注液孔
+    root: data/datasets/zhenyu/3F-K8/K8_P1_注液孔
+  - name: 3F-K8_K8_P1_铝板_ud
+    root: data/datasets/zhenyu/3F-K8/K8_P1_铝板_ud
+  - name: 3F-K8_K8_P1_铝板压印
+    root: data/datasets/zhenyu/3F-K8/K8_P1_铝板压印
+  - name: 3F-K8_K8_P1_防爆膜2
+    root: data/datasets/zhenyu/3F-K8/K8_P1_防爆膜2
+  - name: 3F-K8_K8_P1_防爆阀
+    root: data/datasets/zhenyu/3F-K8/K8_P1_防爆阀
+  - name: 3F-K8_K8_P2_3R角
+    root: data/datasets/zhenyu/3F-K8/K8_P2_3R角
+  - name: 3F-K8_K8_P2_3极柱
+    root: data/datasets/zhenyu/3F-K8/K8_P2_3极柱
+  - name: 3F-K8_K8_P2_3铝板
+    root: data/datasets/zhenyu/3F-K8/K8_P2_3铝板
+  - name: 3F-K8_K8_P4_5侧边
+    root: data/datasets/zhenyu/3F-K8/K8_P4_5侧边
+  - name: 3F-K8_K8_P4_5注液孔
+    root: data/datasets/zhenyu/3F-K8/K8_P4_5注液孔
+  - name: 3F-K8_K8_P6_下塑胶注液孔
+    root: data/datasets/zhenyu/3F-K8/K8_P6_下塑胶注液孔
+  - name: 3F-K8_K8_P6_底部下塑胶
+    root: data/datasets/zhenyu/3F-K8/K8_P6_底部下塑胶
+  - name: 3F-K8_K8_P6_底部正级
+    root: data/datasets/zhenyu/3F-K8/K8_P6_底部正级
+  - name: 3F-K8_K8_P6_底部负级
+    root: data/datasets/zhenyu/3F-K8/K8_P6_底部负级
+  - name: 3F-L3_L3_P1_刻码区
+    root: data/datasets/zhenyu/3F-L3/L3_P1_刻码区
+  - name: 3F-L3_L3_P1_刻码区铝板
+    root: data/datasets/zhenyu/3F-L3/L3_P1_刻码区铝板
+  - name: 3F-L3_L3_P1_定位孔
+    root: data/datasets/zhenyu/3F-L3/L3_P1_定位孔
+  - name: 3F-L3_L3_P1_极柱_down
+    root: data/datasets/zhenyu/3F-L3/L3_P1_极柱_down
+  - name: 3F-L3_L3_P1_正极高亮
+    root: data/datasets/zhenyu/3F-L3/L3_P1_正极高亮
+  - name: 3F-L3_L3_P1_注液孔
+    root: data/datasets/zhenyu/3F-L3/L3_P1_注液孔
+  - name: 3F-L3_L3_P1_注液孔铝板
+    root: data/datasets/zhenyu/3F-L3/L3_P1_注液孔铝板
+  - name: 3F-L3_L3_P1_负级高亮
+    root: data/datasets/zhenyu/3F-L3/L3_P1_负级高亮
+  - name: 3F-L3_L3_P1_防爆膜2
+    root: data/datasets/zhenyu/3F-L3/L3_P1_防爆膜2
+  - name: 3F-L3_L3_P1_防爆阀
+    root: data/datasets/zhenyu/3F-L3/L3_P1_防爆阀
+  - name: 3F-L3_L3_P2_3R角
+    root: data/datasets/zhenyu/3F-L3/L3_P2_3R角
+  - name: 3F-L3_L3_P2_3极柱
+    root: data/datasets/zhenyu/3F-L3/L3_P2_3极柱
+  - name: 3F-L3_L3_P2_3铝板
+    root: data/datasets/zhenyu/3F-L3/L3_P2_3铝板
+  - name: 3F-L3_L3_P4_5侧边
+    root: data/datasets/zhenyu/3F-L3/L3_P4_5侧边
+  - name: 3F-L3_L3_P4_5铝板
+    root: data/datasets/zhenyu/3F-L3/L3_P4_5铝板
+  - name: 3F-L3_L3_P6_下塑胶注液孔
+    root: data/datasets/zhenyu/3F-L3/L3_P6_下塑胶注液孔
+  - name: 3F-L3_L3_P6_底部下塑胶
+    root: data/datasets/zhenyu/3F-L3/L3_P6_底部下塑胶
+  - name: 3F-L3_L3_P6_底部正级
+    root: data/datasets/zhenyu/3F-L3/L3_P6_底部正级
+  - name: 3F-L3_L3_P6_底部负级
+    root: data/datasets/zhenyu/3F-L3/L3_P6_底部负级
+  - name: 3F_E0_1-28220_28220-CCD1-双膜检测
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-双膜检测
+  - name: 3F_E0_1-28220_28220-CCD1-定位孔
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-定位孔
+  - name: 3F_E0_1-28220_28220-CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-客户喷码区
+  - name: 3F_E0_1-28220_28220-CCD1-极柱
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-极柱
+  - name: 3F_E0_1-28220_28220-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-极柱压印
+  - name: 3F_E0_1-28220_28220-CCD1-极柱毛刺
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-极柱毛刺
+  - name: 3F_E0_1-28220_28220-CCD1-极柱装反
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-极柱装反
+  - name: 3F_E0_1-28220_28220-CCD1-正极上塑胶错装
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-正极上塑胶错装
+  - name: 3F_E0_1-28220_28220-CCD1-正极极铝块错装
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-正极极铝块错装
+  - name: 3F_E0_1-28220_28220-CCD1-正极高亮
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-正极高亮
+  - name: 3F_E0_1-28220_28220-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-注液孔
+  - name: 3F_E0_1-28220_28220-CCD1-蓝膜脏污
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-蓝膜脏污
+  - name: 3F_E0_1-28220_28220-CCD1-负极上塑胶错装
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-负极上塑胶错装
+  - name: 3F_E0_1-28220_28220-CCD1-负极铝块错装
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-负极铝块错装
+  - name: 3F_E0_1-28220_28220-CCD1-负极高亮
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-负极高亮
+  - name: 3F_E0_1-28220_28220-CCD1-铝块装反
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-铝块装反
+  - name: 3F_E0_1-28220_28220-CCD1-铝板
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-铝板
+  - name: 3F_E0_1-28220_28220-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD1-防爆阀变形
+  - name: 3F_E0_1-28220_28220-CCD2&3-上塑胶
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD2&3-上塑胶
+  - name: 3F_E0_1-28220_28220-CCD2&3-极柱
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD2&3-极柱
+  - name: 3F_E0_1-28220_28220-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD2&3-铝板
+  - name: 3F_E0_1-28220_28220-CCD4&5-上塑胶
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD4&5-上塑胶
+  - name: 3F_E0_1-28220_28220-CCD4&5-极柱
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD4&5-极柱
+  - name: 3F_E0_1-28220_28220-CCD4&5-铝板
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD4&5-铝板
+  - name: 3F_E0_1-28220_28220-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD6-下塑胶
+  - name: 3F_E0_1-28220_28220-CCD6-极柱压印
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD6-极柱压印
+  - name: 3F_E0_1-28220_28220-CCD6-正极
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD6-正极
+  - name: 3F_E0_1-28220_28220-CCD6-负极
+    root: data/datasets/zhenyu/3F_E0_1-28220/28220-CCD6-负极
+  - name: 3F_E0_1-38208_38208-CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-客户喷码区
+  - name: 3F_E0_1-38208_38208-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-极柱压印
+  - name: 3F_E0_1-38208_38208-CCD1-正极
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-正极
+  - name: 3F_E0_1-38208_38208-CCD1-正极高亮定位孔
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-正极高亮定位孔
+  - name: 3F_E0_1-38208_38208-CCD1-正极高亮极柱
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-正极高亮极柱
+  - name: 3F_E0_1-38208_38208-CCD1-正极高亮铝板
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-正极高亮铝板
+  - name: 3F_E0_1-38208_38208-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-注液孔
+  - name: 3F_E0_1-38208_38208-CCD1-蓝膜
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-蓝膜
+  - name: 3F_E0_1-38208_38208-CCD1-蓝膜铝板
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-蓝膜铝板
+  - name: 3F_E0_1-38208_38208-CCD1-负极
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-负极
+  - name: 3F_E0_1-38208_38208-CCD1-负极高亮定位孔
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-负极高亮定位孔
+  - name: 3F_E0_1-38208_38208-CCD1-负极高亮极柱
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-负极高亮极柱
+  - name: 3F_E0_1-38208_38208-CCD1-负极高亮铝板
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-负极高亮铝板
+  - name: 3F_E0_1-38208_38208-CCD1-铝板
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-铝板
+  - name: 3F_E0_1-38208_38208-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-铝板压印
+  - name: 3F_E0_1-38208_38208-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD1-防爆阀变形
+  - name: 3F_E0_1-38208_38208-CCD2-3-极柱
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD2-3-极柱
+  - name: 3F_E0_1-38208_38208-CCD2-3-铝板
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD2-3-铝板
+  - name: 3F_E0_1-38208_38208-CCD4-5-正极
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD4-5-正极
+  - name: 3F_E0_1-38208_38208-CCD4-5-注液孔
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD4-5-注液孔
+  - name: 3F_E0_1-38208_38208-CCD4-5-负极
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD4-5-负极
+  - name: 3F_E0_1-38208_38208-CCD4-5-铝板
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD4-5-铝板
+  - name: 3F_E0_1-38208_38208-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD6-下塑胶
+  - name: 3F_E0_1-38208_38208-CCD6-正极
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD6-正极
+  - name: 3F_E0_1-38208_38208-CCD6-负极
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-CCD6-负极
+  - name: 3F_E0_1-38208_38208-下塑胶装反
+    root: data/datasets/zhenyu/3F_E0_1-38208/38208-下塑胶装反
+  - name: 3F_E0_1-41260_41260-CCD1-二维码检测-K0
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-二维码检测-K0
+  - name: 3F_E0_1-41260_41260-CCD1-客户刻码区
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-客户刻码区
+  - name: 3F_E0_1-41260_41260-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-极柱压印
+  - name: 3F_E0_1-41260_41260-CCD1-正极
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-正极
+  - name: 3F_E0_1-41260_41260-CCD1-正极高亮定位孔
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-正极高亮定位孔
+  - name: 3F_E0_1-41260_41260-CCD1-正极高亮极柱
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-正极高亮极柱
+  - name: 3F_E0_1-41260_41260-CCD1-正极高亮铝板
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-正极高亮铝板
+  - name: 3F_E0_1-41260_41260-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-注液孔
+  - name: 3F_E0_1-41260_41260-CCD1-蓝膜
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-蓝膜
+  - name: 3F_E0_1-41260_41260-CCD1-蓝膜脏污
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-蓝膜脏污
+  - name: 3F_E0_1-41260_41260-CCD1-负极高亮极柱
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-负极高亮极柱
+  - name: 3F_E0_1-41260_41260-CCD1-负极高亮铝板
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-负极高亮铝板
+  - name: 3F_E0_1-41260_41260-CCD1-铝板
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-铝板
+  - name: 3F_E0_1-41260_41260-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-铝板压印
+  - name: 3F_E0_1-41260_41260-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD1-防爆阀变形
+  - name: 3F_E0_1-41260_41260-CCD2-3-极柱
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD2-3-极柱
+  - name: 3F_E0_1-41260_41260-CCD2-3-铝板
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD2-3-铝板
+  - name: 3F_E0_1-41260_41260-CCD4-5-正极
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD4-5-正极
+  - name: 3F_E0_1-41260_41260-CCD4-5-注液孔
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD4-5-注液孔
+  - name: 3F_E0_1-41260_41260-CCD4-5-负极
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD4-5-负极
+  - name: 3F_E0_1-41260_41260-CCD4-5-铝板
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD4-5-铝板
+  - name: 3F_E0_1-41260_41260-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD6-下塑胶
+  - name: 3F_E0_1-41260_41260-CCD6-正极
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD6-正极
+  - name: 3F_E0_1-41260_41260-CCD6-负极
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CCD6-负极
+  - name: 3F_E0_1-41260_41260-CDD1-负极
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CDD1-负极
+  - name: 3F_E0_1-41260_41260-CDD1-负极高亮定位孔
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-CDD1-负极高亮定位孔
+  - name: 3F_E0_1-41260_41260-下塑胶装反
+    root: data/datasets/zhenyu/3F_E0_1-41260/41260-下塑胶装反
+  - name: 3F_E0_1-48200_48200-下塑胶装反
+    root: data/datasets/zhenyu/3F_E0_1-48200/48200-下塑胶装反
+  - name: 3F_E0_1-50208_50208-CCD1-双膜检测
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-双膜检测
+  - name: 3F_E0_1-50208_50208-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-极柱压印
+  - name: 3F_E0_1-50208_50208-CCD1-正极
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-正极
+  - name: 3F_E0_1-50208_50208-CCD1-正极高亮定位孔
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-正极高亮定位孔
+  - name: 3F_E0_1-50208_50208-CCD1-正极高亮极柱
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-正极高亮极柱
+  - name: 3F_E0_1-50208_50208-CCD1-正极高亮铝板
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-正极高亮铝板
+  - name: 3F_E0_1-50208_50208-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-注液孔
+  - name: 3F_E0_1-50208_50208-CCD1-蓝膜脏污
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-蓝膜脏污
+  - name: 3F_E0_1-50208_50208-CCD1-负极
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-负极
+  - name: 3F_E0_1-50208_50208-CCD1-负极高亮定位孔
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-负极高亮定位孔
+  - name: 3F_E0_1-50208_50208-CCD1-负极高亮极柱
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-负极高亮极柱
+  - name: 3F_E0_1-50208_50208-CCD1-负极高亮铝板
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-负极高亮铝板
+  - name: 3F_E0_1-50208_50208-CCD1-铝板
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-铝板
+  - name: 3F_E0_1-50208_50208-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-铝板压印
+  - name: 3F_E0_1-50208_50208-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD1-防爆阀变形
+  - name: 3F_E0_1-50208_50208-CCD2-3-极柱
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD2-3-极柱
+  - name: 3F_E0_1-50208_50208-CCD2-3-铝板
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD2-3-铝板
+  - name: 3F_E0_1-50208_50208-CCD4-5-正极
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD4-5-正极
+  - name: 3F_E0_1-50208_50208-CCD4-5-负极
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD4-5-负极
+  - name: 3F_E0_1-50208_50208-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD6-下塑胶
+  - name: 3F_E0_1-50208_50208-CCD6-极柱压印
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD6-极柱压印
+  - name: 3F_E0_1-50208_50208-CCD6-正极
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD6-正极
+  - name: 3F_E0_1-50208_50208-CCD6-正极1
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD6-正极1
+  - name: 3F_E0_1-50208_50208-CCD6-负极
+    root: data/datasets/zhenyu/3F_E0_1-50208/50208-CCD6-负极
+  - name: 3F_E0_1-78203_78203-CCD1-二维码
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-二维码
+  - name: 3F_E0_1-78203_78203-CCD1-双膜检测
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-双膜检测
+  - name: 3F_E0_1-78203_78203-CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-客户喷码区
+  - name: 3F_E0_1-78203_78203-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-极柱压印
+  - name: 3F_E0_1-78203_78203-CCD1-正极
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-正极
+  - name: 3F_E0_1-78203_78203-CCD1-正极1
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-正极1
+  - name: 3F_E0_1-78203_78203-CCD1-正极1定位孔
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-正极1定位孔
+  - name: 3F_E0_1-78203_78203-CCD1-正极柱虚焊
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-正极柱虚焊
+  - name: 3F_E0_1-78203_78203-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-注液孔
+  - name: 3F_E0_1-78203_78203-CCD1-蓝膜
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-蓝膜
+  - name: 3F_E0_1-78203_78203-CCD1-负极
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-负极
+  - name: 3F_E0_1-78203_78203-CCD1-负极1
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-负极1
+  - name: 3F_E0_1-78203_78203-CCD1-负极1定位孔
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-负极1定位孔
+  - name: 3F_E0_1-78203_78203-CCD1-负极柱虚焊
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-负极柱虚焊
+  - name: 3F_E0_1-78203_78203-CCD1-铝板
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-铝板
+  - name: 3F_E0_1-78203_78203-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-铝板压印
+  - name: 3F_E0_1-78203_78203-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD1-防爆阀变形
+  - name: 3F_E0_1-78203_78203-CCD2&3-极柱
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD2&3-极柱
+  - name: 3F_E0_1-78203_78203-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD2&3-铝板
+  - name: 3F_E0_1-78203_78203-CCD4&5-正极
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD4&5-正极
+  - name: 3F_E0_1-78203_78203-CCD4&5-注液孔
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD4&5-注液孔
+  - name: 3F_E0_1-78203_78203-CCD4&5-负极
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD4&5-负极
+  - name: 3F_E0_1-78203_78203-CCD4&5-铝板
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD4&5-铝板
+  - name: 3F_E0_1-78203_78203-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD6-下塑胶
+  - name: 3F_E0_1-78203_78203-CCD6-极柱压印
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD6-极柱压印
+  - name: 3F_E0_1-78203_78203-CCD6-正极
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD6-正极
+  - name: 3F_E0_1-78203_78203-CCD6-负极
+    root: data/datasets/zhenyu/3F_E0_1-78203/78203-CCD6-负极
+  - name: 3F_E0_1-E0_E0-CCD4-5-正极
+    root: data/datasets/zhenyu/3F_E0_1-E0/E0-CCD4-5-正极
+  - name: 3F_E0_1-E0_E0-CCD4-5-注液孔
+    root: data/datasets/zhenyu/3F_E0_1-E0/E0-CCD4-5-注液孔
+  - name: 3F_E0_1-E0_E0-CCD4-5-负极
+    root: data/datasets/zhenyu/3F_E0_1-E0/E0-CCD4-5-负极
+  - name: 3F_E0_1-E0_E0-CCD4-5-铝板
+    root: data/datasets/zhenyu/3F_E0_1-E0/E0-CCD4-5-铝板
+  - name: 3F_E1-30194_30194-CCD1-双膜检测-0910-K6
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-双膜检测-0910-K6
+  - name: 3F_E1-30194_30194-CCD1-双膜检测-0911-E8
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-双膜检测-0911-E8
+  - name: 3F_E1-30194_30194-CCD1-双膜检测-0911-L6
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-双膜检测-0911-L6
+  - name: 3F_E1-30194_30194-CCD1-双膜检测-0911-M1
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-双膜检测-0911-M1
+  - name: 3F_E1-30194_30194-CCD1-定位孔-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-定位孔-003
+  - name: 3F_E1-30194_30194-CCD1-定位孔高亮-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-定位孔高亮-003
+  - name: 3F_E1-30194_30194-CCD1-客户喷码区-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-客户喷码区-003
+  - name: 3F_E1-30194_30194-CCD1-极柱-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-极柱-003
+  - name: 3F_E1-30194_30194-CCD1-极柱压印-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-极柱压印-003
+  - name: 3F_E1-30194_30194-CCD1-极柱毛刺-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-极柱毛刺-003
+  - name: 3F_E1-30194_30194-CCD1-正极高亮-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-正极高亮-003
+  - name: 3F_E1-30194_30194-CCD1-正极高亮1-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-正极高亮1-003
+  - name: 3F_E1-30194_30194-CCD1-注液孔-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-注液孔-003
+  - name: 3F_E1-30194_30194-CCD1-蓝膜-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-蓝膜-003
+  - name: 3F_E1-30194_30194-CCD1-蓝膜脏污-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-蓝膜脏污-003
+  - name: 3F_E1-30194_30194-CCD1-负极高亮-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-负极高亮-003
+  - name: 3F_E1-30194_30194-CCD1-负极高亮-003-复合铝块歪斜
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-负极高亮-003-复合铝块歪斜
+  - name: 3F_E1-30194_30194-CCD1-负极高亮1-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-负极高亮1-003
+  - name: 3F_E1-30194_30194-CCD1-铝板-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-铝板-003
+  - name: 3F_E1-30194_30194-CCD1-防爆阀变形-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-防爆阀变形-003
+  - name: 3F_E1-30194_30194-CCD1-顶盖R角-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-顶盖R角-003
+  - name: 3F_E1-30194_30194-CCD1-顶盖压印-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD1-顶盖压印-003
+  - name: 3F_E1-30194_30194-CCD2&3-极柱-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD2&3-极柱-003
+  - name: 3F_E1-30194_30194-CCD2&3-铝板-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD2&3-铝板-003
+  - name: 3F_E1-30194_30194-CCD4&5-R角-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD4&5-R角-003
+  - name: 3F_E1-30194_30194-CCD4&5-上塑胶-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD4&5-上塑胶-003
+  - name: 3F_E1-30194_30194-CCD4&5-极柱-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD4&5-极柱-003
+  - name: 3F_E1-30194_30194-CCD4&5-铝板-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD4&5-铝板-003
+  - name: 3F_E1-30194_30194-CCD6-下塑胶-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD6-下塑胶-003
+  - name: 3F_E1-30194_30194-CCD6-正极-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD6-正极-003
+  - name: 3F_E1-30194_30194-CCD6-负极-003
+    root: data/datasets/zhenyu/3F_E1-30194/30194-CCD6-负极-003
+  - name: 3F_E1-50166_50166-CCD1-双膜检测-E1
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-双膜检测-E1
+  - name: 3F_E1-50166_50166-CCD1-双膜检测-E6
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-双膜检测-E6
+  - name: 3F_E1-50166_50166-CCD1-双膜检测-L7
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-双膜检测-L7
+  - name: 3F_E1-50166_50166-CCD1-双膜检测-M6
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-双膜检测-M6
+  - name: 3F_E1-50166_50166-CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-客户喷码区
+  - name: 3F_E1-50166_50166-CCD1-客户喷码区压印
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-客户喷码区压印
+  - name: 3F_E1-50166_50166-CCD1-极柱
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-极柱
+  - name: 3F_E1-50166_50166-CCD1-极柱(高亮焊道)
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-极柱(高亮焊道)
+  - name: 3F_E1-50166_50166-CCD1-正极(高亮)
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-正极(高亮)
+  - name: 3F_E1-50166_50166-CCD1-正极定位孔
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-正极定位孔
+  - name: 3F_E1-50166_50166-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-注液孔
+  - name: 3F_E1-50166_50166-CCD1-蓝膜
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-蓝膜
+  - name: 3F_E1-50166_50166-CCD1-负极(高亮)
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-负极(高亮)
+  - name: 3F_E1-50166_50166-CCD1-负极定位孔
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-负极定位孔
+  - name: 3F_E1-50166_50166-CCD1-铝板
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-铝板
+  - name: 3F_E1-50166_50166-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD1-防爆阀变形
+  - name: 3F_E1-50166_50166-CCD2&3-正极
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD2&3-正极
+  - name: 3F_E1-50166_50166-CCD2&3-负极
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD2&3-负极
+  - name: 3F_E1-50166_50166-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD2&3-铝板
+  - name: 3F_E1-50166_50166-CCD4&5-正极
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD4&5-正极
+  - name: 3F_E1-50166_50166-CCD4&5-负极
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD4&5-负极
+  - name: 3F_E1-50166_50166-CCD4&5-铝板
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD4&5-铝板
+  - name: 3F_E1-50166_50166-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD6-下塑胶
+  - name: 3F_E1-50166_50166-CCD6-正极
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD6-正极
+  - name: 3F_E1-50166_50166-CCD6-负极
+    root: data/datasets/zhenyu/3F_E1-50166/50166-CCD6-负极
+  - name: 3F_E1-50166_50166-二维码识别
+    root: data/datasets/zhenyu/3F_E1-50166/50166-二维码识别
+  - name: 3F_E1-50166_50166-极柱压印
+    root: data/datasets/zhenyu/3F_E1-50166/50166-极柱压印
+  - name: 3F_E1-K6_30194-CCD1-双膜检测-0910-K6
+    root: data/datasets/zhenyu/3F_E1-K6/30194-CCD1-双膜检测-0910-K6
+  - name: 3F_E1-K6_K6-CCD1-定位孔焊渣-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD1-定位孔焊渣-001
+  - name: 3F_E1-K6_K6-CCD1-客户喷码区-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD1-客户喷码区-001
+  - name: 3F_E1-K6_K6-CCD1-极柱-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD1-极柱-001
+  - name: 3F_E1-K6_K6-CCD1-注液孔-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD1-注液孔-001
+  - name: 3F_E1-K6_K6-CCD2&3-极柱-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD2&3-极柱-001
+  - name: 3F_E1-K6_K6-CCD2&3-铝板-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD2&3-铝板-001
+  - name: 3F_E1-K6_K6-CCD4&5-上塑胶-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD4&5-上塑胶-001
+  - name: 3F_E1-K6_K6-CCD4&5-极柱-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD4&5-极柱-001
+  - name: 3F_E1-K6_K6-CCD4&5-铝板-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD4&5-铝板-001
+  - name: 3F_E1-K6_K6-CCD6-下塑胶-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD6-下塑胶-001
+  - name: 3F_E1-K6_K6-CCD6-正极-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD6-正极-001
+  - name: 3F_E1-K6_K6-CCD6-注液孔-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD6-注液孔-001
+  - name: 3F_E1-K6_K6-CCD6-负极-001
+    root: data/datasets/zhenyu/3F_E1-K6/K6-CCD6-负极-001
+  - name: 3F_E1-k6_k6-CCD1-定位孔-001
+    root: data/datasets/zhenyu/3F_E1-k6/k6-CCD1-定位孔-001
+  - name: 3F_E1-k6_k6-CCD1-极柱压印-001
+    root: data/datasets/zhenyu/3F_E1-k6/k6-CCD1-极柱压印-001
+  - name: 3F_E1-k6_k6-CCD1-极柱毛刺-001
+    root: data/datasets/zhenyu/3F_E1-k6/k6-CCD1-极柱毛刺-001
+  - name: 3F_E1-k6_k6-CCD1-极柱高亮-001
+    root: data/datasets/zhenyu/3F_E1-k6/k6-CCD1-极柱高亮-001
+  - name: 3F_E1-k6_k6-CCD1-正极高亮-001
+    root: data/datasets/zhenyu/3F_E1-k6/k6-CCD1-正极高亮-001
+  - name: 3F_E1-k6_k6-CCD1-蓝膜-001
+    root: data/datasets/zhenyu/3F_E1-k6/k6-CCD1-蓝膜-001
+  - name: 3F_E1-k6_k6-CCD1-蓝膜脏污-001
+    root: data/datasets/zhenyu/3F_E1-k6/k6-CCD1-蓝膜脏污-001
+  - name: 3F_E1-k6_k6-CCD1-负极高亮-001
+    root: data/datasets/zhenyu/3F_E1-k6/k6-CCD1-负极高亮-001
+  - name: 3F_E1-k6_k6-CCD1-铝板-001
+    root: data/datasets/zhenyu/3F_E1-k6/k6-CCD1-铝板-001
+  - name: 3F_E1-k6_k6-CCD1-防爆阀变形-001
+    root: data/datasets/zhenyu/3F_E1-k6/k6-CCD1-防爆阀变形-001
+  - name: 3F_H4-26220_26220-CCD1-R角
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-R角
+  - name: 3F_H4-26220_26220-CCD1-R角压印
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-R角压印
+  - name: 3F_H4-26220_26220-CCD1-定位孔
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-定位孔
+  - name: 3F_H4-26220_26220-CCD1-定位孔焊渣
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-定位孔焊渣
+  - name: 3F_H4-26220_26220-CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-客户喷码区
+  - name: 3F_H4-26220_26220-CCD1-极柱
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-极柱
+  - name: 3F_H4-26220_26220-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-极柱压印
+  - name: 3F_H4-26220_26220-CCD1-正极高亮
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-正极高亮
+  - name: 3F_H4-26220_26220-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-注液孔
+  - name: 3F_H4-26220_26220-CCD1-蓝膜脏污
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-蓝膜脏污
+  - name: 3F_H4-26220_26220-CCD1-负极高亮
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-负极高亮
+  - name: 3F_H4-26220_26220-CCD1-铝板
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-铝板
+  - name: 3F_H4-26220_26220-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-铝板压印
+  - name: 3F_H4-26220_26220-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD1-防爆阀变形
+  - name: 3F_H4-26220_26220-CCD2&3-正极柱
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD2&3-正极柱
+  - name: 3F_H4-26220_26220-CCD2&3-负极柱
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD2&3-负极柱
+  - name: 3F_H4-26220_26220-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD2&3-铝板
+  - name: 3F_H4-26220_26220-CCD4&5-R角
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD4&5-R角
+  - name: 3F_H4-26220_26220-CCD4&5-上塑胶
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD4&5-上塑胶
+  - name: 3F_H4-26220_26220-CCD4&5-正极柱
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD4&5-正极柱
+  - name: 3F_H4-26220_26220-CCD4&5-负极柱
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD4&5-负极柱
+  - name: 3F_H4-26220_26220-CCD4&5-铝板
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD4&5-铝板
+  - name: 3F_H4-26220_26220-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD6-下塑胶
+  - name: 3F_H4-26220_26220-CCD6-正极
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD6-正极
+  - name: 3F_H4-26220_26220-CCD6-负极
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD6-负极
+  - name: 3F_H4-26220_26220-CCD6-负极高亮
+    root: data/datasets/zhenyu/3F_H4-26220/26220-CCD6-负极高亮
+  - name: 3F_H4-29148_29148-CCD1-PET贴膜
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-PET贴膜
+  - name: 3F_H4-29148_29148-CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-客户喷码区
+  - name: 3F_H4-29148_29148-CCD1-极柱
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-极柱
+  - name: 3F_H4-29148_29148-CCD1-正极定位孔
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-正极定位孔
+  - name: 3F_H4-29148_29148-CCD1-正极高亮
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-正极高亮
+  - name: 3F_H4-29148_29148-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-注液孔
+  - name: 3F_H4-29148_29148-CCD1-负极定位孔
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-负极定位孔
+  - name: 3F_H4-29148_29148-CCD1-负极高亮
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-负极高亮
+  - name: 3F_H4-29148_29148-CCD1-铝板
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-铝板
+  - name: 3F_H4-29148_29148-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-铝板压印
+  - name: 3F_H4-29148_29148-CCD1-防爆阀
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD1-防爆阀
+  - name: 3F_H4-29148_29148-CCD2&3-正极
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD2&3-正极
+  - name: 3F_H4-29148_29148-CCD2&3-负极
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD2&3-负极
+  - name: 3F_H4-29148_29148-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD2&3-铝板
+  - name: 3F_H4-29148_29148-CCD4&5-正极
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD4&5-正极
+  - name: 3F_H4-29148_29148-CCD4&5-注液孔
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD4&5-注液孔
+  - name: 3F_H4-29148_29148-CCD4&5-负极
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD4&5-负极
+  - name: 3F_H4-29148_29148-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD6-下塑胶
+  - name: 3F_H4-29148_29148-CCD6-正极
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD6-正极
+  - name: 3F_H4-29148_29148-CCD6-注液孔
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD6-注液孔
+  - name: 3F_H4-29148_29148-CCD6-负极
+    root: data/datasets/zhenyu/3F_H4-29148/29148-CCD6-负极
+  - name: 3F_H4-44220_44220-CCD1-二维码解码
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-二维码解码
+  - name: 3F_H4-44220_44220-CCD1-定位孔
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-定位孔
+  - name: 3F_H4-44220_44220-CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-客户喷码区
+  - name: 3F_H4-44220_44220-CCD1-客户喷码区压印
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-客户喷码区压印
+  - name: 3F_H4-44220_44220-CCD1-极柱
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-极柱
+  - name: 3F_H4-44220_44220-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-极柱压印
+  - name: 3F_H4-44220_44220-CCD1-正极高亮
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-正极高亮
+  - name: 3F_H4-44220_44220-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-注液孔
+  - name: 3F_H4-44220_44220-CCD1-蓝膜
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-蓝膜
+  - name: 3F_H4-44220_44220-CCD1-负极高亮
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-负极高亮
+  - name: 3F_H4-44220_44220-CCD1-铝板
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-铝板
+  - name: 3F_H4-44220_44220-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD1-防爆阀变形
+  - name: 3F_H4-44220_44220-CCD2&3-极柱
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD2&3-极柱
+  - name: 3F_H4-44220_44220-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD2&3-铝板
+  - name: 3F_H4-44220_44220-CCD4&5-极柱
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD4&5-极柱
+  - name: 3F_H4-44220_44220-CCD4&5-铝板
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD4&5-铝板
+  - name: 3F_H4-44220_44220-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD6-下塑胶
+  - name: 3F_H4-44220_44220-CCD6-底部正极焊道
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD6-底部正极焊道
+  - name: 3F_H4-44220_44220-CCD6-底部负极焊道
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD6-底部负极焊道
+  - name: 3F_H4-44220_44220-CCD6-正极
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD6-正极
+  - name: 3F_H4-44220_44220-CCD6-负极
+    root: data/datasets/zhenyu/3F_H4-44220/44220-CCD6-负极
+  - name: 3F_H4-45196_45196-CCD1-R角
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-R角
+  - name: 3F_H4-45196_45196-CCD1-R角变形
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-R角变形
+  - name: 3F_H4-45196_45196-CCD1-定位孔
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-定位孔
+  - name: 3F_H4-45196_45196-CCD1-定位孔高亮
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-定位孔高亮
+  - name: 3F_H4-45196_45196-CCD1-极柱
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-极柱
+  - name: 3F_H4-45196_45196-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-极柱压印
+  - name: 3F_H4-45196_45196-CCD1-极柱高亮
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-极柱高亮
+  - name: 3F_H4-45196_45196-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-注液孔
+  - name: 3F_H4-45196_45196-CCD1-蓝膜
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-蓝膜
+  - name: 3F_H4-45196_45196-CCD1-铝板
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-铝板
+  - name: 3F_H4-45196_45196-CCD1-铝板高亮
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-铝板高亮
+  - name: 3F_H4-45196_45196-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD1-防爆阀变形
+  - name: 3F_H4-45196_45196-CCD2&3-极柱
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD2&3-极柱
+  - name: 3F_H4-45196_45196-CCD2&3-极柱上塑胶
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD2&3-极柱上塑胶
+  - name: 3F_H4-45196_45196-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD2&3-铝板
+  - name: 3F_H4-45196_45196-CCD4&5-塑胶高亮
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD4&5-塑胶高亮
+  - name: 3F_H4-45196_45196-CCD4&5-极柱
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD4&5-极柱
+  - name: 3F_H4-45196_45196-CCD4&5-正极上塑胶
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD4&5-正极上塑胶
+  - name: 3F_H4-45196_45196-CCD4&5-负极上塑胶
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD4&5-负极上塑胶
+  - name: 3F_H4-45196_45196-CCD4&5-铝板
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD4&5-铝板
+  - name: 3F_H4-45196_45196-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD6-下塑胶
+  - name: 3F_H4-45196_45196-CCD6-正极
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD6-正极
+  - name: 3F_H4-45196_45196-CCD6-正极压印
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD6-正极压印
+  - name: 3F_H4-45196_45196-CCD6-正极高亮
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD6-正极高亮
+  - name: 3F_H4-45196_45196-CCD6-负极对称脏污
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD6-负极对称脏污
+  - name: 3F_H4-45196_45196-CCD6-负极脏污
+    root: data/datasets/zhenyu/3F_H4-45196/45196-CCD6-负极脏污
+  - name: 3F_H4-52148_52148-CCD1-PET贴膜-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-PET贴膜-003
+  - name: 3F_H4-52148_52148-CCD1-RP-PET贴膜
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-PET贴膜
+  - name: 3F_H4-52148_52148-CCD1-RP-客户喷码区
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-客户喷码区
+  - name: 3F_H4-52148_52148-CCD1-RP-客户喷码区压印
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-客户喷码区压印
+  - name: 3F_H4-52148_52148-CCD1-RP-极柱
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-极柱
+  - name: 3F_H4-52148_52148-CCD1-RP-极柱压印
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-极柱压印
+  - name: 3F_H4-52148_52148-CCD1-RP-极柱发黄
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-极柱发黄
+  - name: 3F_H4-52148_52148-CCD1-RP-正极-高亮
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-正极-高亮
+  - name: 3F_H4-52148_52148-CCD1-RP-正极定位孔
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-正极定位孔
+  - name: 3F_H4-52148_52148-CCD1-RP-注液孔
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-注液孔
+  - name: 3F_H4-52148_52148-CCD1-RP-负极-高亮
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-负极-高亮
+  - name: 3F_H4-52148_52148-CCD1-RP-负极塑胶错装
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-负极塑胶错装
+  - name: 3F_H4-52148_52148-CCD1-RP-负极定位孔
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-负极定位孔
+  - name: 3F_H4-52148_52148-CCD1-RP-铝板
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-铝板
+  - name: 3F_H4-52148_52148-CCD1-RP-防爆阀
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-RP-防爆阀
+  - name: 3F_H4-52148_52148-CCD1-R角-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-R角-003
+  - name: 3F_H4-52148_52148-CCD1-客户喷码区-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-客户喷码区-003
+  - name: 3F_H4-52148_52148-CCD1-客户喷码区压印-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-客户喷码区压印-003
+  - name: 3F_H4-52148_52148-CCD1-极柱-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-极柱-003
+  - name: 3F_H4-52148_52148-CCD1-极柱压印-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-极柱压印-003
+  - name: 3F_H4-52148_52148-CCD1-正极-高亮-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-正极-高亮-003
+  - name: 3F_H4-52148_52148-CCD1-正极定位孔-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-正极定位孔-003
+  - name: 3F_H4-52148_52148-CCD1-注液孔-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-注液孔-003
+  - name: 3F_H4-52148_52148-CCD1-负极-高亮-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-负极-高亮-003
+  - name: 3F_H4-52148_52148-CCD1-负极定位孔-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-负极定位孔-003
+  - name: 3F_H4-52148_52148-CCD1-铝板-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-铝板-003
+  - name: 3F_H4-52148_52148-CCD1-防爆阀-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD1-防爆阀-003
+  - name: 3F_H4-52148_52148-CCD2&3-RP-正极
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD2&3-RP-正极
+  - name: 3F_H4-52148_52148-CCD2&3-RP-负极
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD2&3-RP-负极
+  - name: 3F_H4-52148_52148-CCD2&3-RP-铝板
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD2&3-RP-铝板
+  - name: 3F_H4-52148_52148-CCD2&3-极柱-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD2&3-极柱-003
+  - name: 3F_H4-52148_52148-CCD2&3-铝板-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD2&3-铝板-003
+  - name: 3F_H4-52148_52148-CCD4&5-RP-定位孔深浅
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD4&5-RP-定位孔深浅
+  - name: 3F_H4-52148_52148-CCD4&5-RP-正极
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD4&5-RP-正极
+  - name: 3F_H4-52148_52148-CCD4&5-RP-负极
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD4&5-RP-负极
+  - name: 3F_H4-52148_52148-CCD4&5-RP-铝板
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD4&5-RP-铝板
+  - name: 3F_H4-52148_52148-CCD4&5-正极-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD4&5-正极-003
+  - name: 3F_H4-52148_52148-CCD4&5-负极-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD4&5-负极-003
+  - name: 3F_H4-52148_52148-CCD4&5-铝板-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD4&5-铝板-003
+  - name: 3F_H4-52148_52148-CCD6-RP-下塑胶
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD6-RP-下塑胶
+  - name: 3F_H4-52148_52148-CCD6-RP-下塑胶换型
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD6-RP-下塑胶换型
+  - name: 3F_H4-52148_52148-CCD6-RP-下塑胶破损
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD6-RP-下塑胶破损
+  - name: 3F_H4-52148_52148-CCD6-RP-下塑胶装反检测
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD6-RP-下塑胶装反检测
+  - name: 3F_H4-52148_52148-CCD6-RP-正极
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD6-RP-正极
+  - name: 3F_H4-52148_52148-CCD6-RP-负极
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD6-RP-负极
+  - name: 3F_H4-52148_52148-CCD6-下塑胶-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD6-下塑胶-003
+  - name: 3F_H4-52148_52148-CCD6-极柱压印-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD6-极柱压印-003
+  - name: 3F_H4-52148_52148-CCD6-正极-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD6-正极-003
+  - name: 3F_H4-52148_52148-CCD6-负极-003
+    root: data/datasets/zhenyu/3F_H4-52148/52148-CCD6-负极-003
+  - name: 3F_K3_02-A34_A34_CCD1_PET贴膜
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_PET贴膜
+  - name: 3F_K3_02-A34_A34_CCD1_PET贴膜防呆
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_PET贴膜防呆
+  - name: 3F_K3_02-A34_A34_CCD1_极柱
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_极柱
+  - name: 3F_K3_02-A34_A34_CCD1_极柱压印
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_极柱压印
+  - name: 3F_K3_02-A34_A34_CCD1_极柱定位孔
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_极柱定位孔
+  - name: 3F_K3_02-A34_A34_CCD1_极柱焊道
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_极柱焊道
+  - name: 3F_K3_02-A34_A34_CCD1_正极高亮
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_正极高亮
+  - name: 3F_K3_02-A34_A34_CCD1_注液孔
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_注液孔
+  - name: 3F_K3_02-A34_A34_CCD1_负极高亮
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_负极高亮
+  - name: 3F_K3_02-A34_A34_CCD1_铝板
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_铝板
+  - name: 3F_K3_02-A34_A34_CCD1_铝板压印
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_铝板压印
+  - name: 3F_K3_02-A34_A34_CCD1_防爆阀变形
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_防爆阀变形
+  - name: 3F_K3_02-A34_A34_CCD1_防爆阀铝板
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD1_防爆阀铝板
+  - name: 3F_K3_02-A34_A34_CCD2&3_上塑胶
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD2&3_上塑胶
+  - name: 3F_K3_02-A34_A34_CCD2&3_极柱
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD2&3_极柱
+  - name: 3F_K3_02-A34_A34_CCD2&3_正极塑胶错装
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD2&3_正极塑胶错装
+  - name: 3F_K3_02-A34_A34_CCD2&3_负极塑胶错装
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD2&3_负极塑胶错装
+  - name: 3F_K3_02-A34_A34_CCD2&3_铝板
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD2&3_铝板
+  - name: 3F_K3_02-A34_A34_CCD4&5_上塑胶
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD4&5_上塑胶
+  - name: 3F_K3_02-A34_A34_CCD4&5_极柱
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD4&5_极柱
+  - name: 3F_K3_02-A34_A34_CCD4&5_铝板
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD4&5_铝板
+  - name: 3F_K3_02-A34_A34_CCD6_下塑胶
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD6_下塑胶
+  - name: 3F_K3_02-A34_A34_CCD6_极柱压印
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD6_极柱压印
+  - name: 3F_K3_02-A34_A34_CCD6_正极
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD6_正极
+  - name: 3F_K3_02-A34_A34_CCD6_正极高亮
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD6_正极高亮
+  - name: 3F_K3_02-A34_A34_CCD6_负极
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD6_负极
+  - name: 3F_K3_02-A34_A34_CCD6_负极高亮
+    root: data/datasets/zhenyu/3F_K3_02-A34/A34_CCD6_负极高亮
+  - name: 3F_k3_03-45181_45181-CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-客户喷码区
+  - name: 3F_k3_03-45181_45181-CCD1-客户喷码区压印
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-客户喷码区压印
+  - name: 3F_k3_03-45181_45181-CCD1-极柱
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-极柱
+  - name: 3F_k3_03-45181_45181-CCD1-极柱压印
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-极柱压印
+  - name: 3F_k3_03-45181_45181-CCD1-正极(高亮)
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-正极(高亮)
+  - name: 3F_k3_03-45181_45181-CCD1-正极定位孔
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-正极定位孔
+  - name: 3F_k3_03-45181_45181-CCD1-注液孔
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-注液孔
+  - name: 3F_k3_03-45181_45181-CCD1-蓝膜
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-蓝膜
+  - name: 3F_k3_03-45181_45181-CCD1-蓝膜歪斜
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-蓝膜歪斜
+  - name: 3F_k3_03-45181_45181-CCD1-负极(高亮)
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-负极(高亮)
+  - name: 3F_k3_03-45181_45181-CCD1-负极定位孔
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-负极定位孔
+  - name: 3F_k3_03-45181_45181-CCD1-铝板
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-铝板
+  - name: 3F_k3_03-45181_45181-CCD1-铝板压印
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-铝板压印
+  - name: 3F_k3_03-45181_45181-CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD1-防爆阀变形
+  - name: 3F_k3_03-45181_45181-CCD2&3-正极
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD2&3-正极
+  - name: 3F_k3_03-45181_45181-CCD2&3-负极
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD2&3-负极
+  - name: 3F_k3_03-45181_45181-CCD2&3-铝板
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD2&3-铝板
+  - name: 3F_k3_03-45181_45181-CCD4&5-正极
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD4&5-正极
+  - name: 3F_k3_03-45181_45181-CCD4&5-注液孔
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD4&5-注液孔
+  - name: 3F_k3_03-45181_45181-CCD4&5-负极
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD4&5-负极
+  - name: 3F_k3_03-45181_45181-CCD4&5-铝板
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD4&5-铝板
+  - name: 3F_k3_03-45181_45181-CCD6-下塑胶
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD6-下塑胶
+  - name: 3F_k3_03-45181_45181-CCD6-极柱压印
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD6-极柱压印
+  - name: 3F_k3_03-45181_45181-CCD6-正极高亮
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD6-正极高亮
+  - name: 3F_k3_03-45181_45181-CCD6-负极高亮
+    root: data/datasets/zhenyu/3F_k3_03-45181/45181-CCD6-负极高亮
+  - name: 3F_k3_03-47213_47213-CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213-CCD1-客户喷码区
+  - name: 3F_k3_03-47213_47213-CCD1-模号检测-001
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213-CCD1-模号检测-001
+  - name: 3F_k3_03-47213_47213-CCD1-模号检测-007
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213-CCD1-模号检测-007
+  - name: 3F_k3_03-47213_47213-CCD1-防爆阀变形改善
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213-CCD1-防爆阀变形改善
+  - name: 3F_k3_03-47213_47213_CCD1_PET膜
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_PET膜
+  - name: 3F_k3_03-47213_47213_CCD1_二维码
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_二维码
+  - name: 3F_k3_03-47213_47213_CCD1_极柱压印
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_极柱压印
+  - name: 3F_k3_03-47213_47213_CCD1_正极
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_正极
+  - name: 3F_k3_03-47213_47213_CCD1_正极焊道
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_正极焊道
+  - name: 3F_k3_03-47213_47213_CCD1_正极高亮
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_正极高亮
+  - name: 3F_k3_03-47213_47213_CCD1_注液孔
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_注液孔
+  - name: 3F_k3_03-47213_47213_CCD1_绿膜双膜
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_绿膜双膜
+  - name: 3F_k3_03-47213_47213_CCD1_蓝膜双膜
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_蓝膜双膜
+  - name: 3F_k3_03-47213_47213_CCD1_负极
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_负极
+  - name: 3F_k3_03-47213_47213_CCD1_负极焊道
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_负极焊道
+  - name: 3F_k3_03-47213_47213_CCD1_负极高亮
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_负极高亮
+  - name: 3F_k3_03-47213_47213_CCD1_铝板
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_铝板
+  - name: 3F_k3_03-47213_47213_CCD1_防爆阀
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD1_防爆阀
+  - name: 3F_k3_03-47213_47213_CCD2&3_正极塑胶
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD2&3_正极塑胶
+  - name: 3F_k3_03-47213_47213_CCD2&3_正极焊道
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD2&3_正极焊道
+  - name: 3F_k3_03-47213_47213_CCD2&3_负极塑胶
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD2&3_负极塑胶
+  - name: 3F_k3_03-47213_47213_CCD2&3_负极焊道
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD2&3_负极焊道
+  - name: 3F_k3_03-47213_47213_CCD2&3_铝板
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD2&3_铝板
+  - name: 3F_k3_03-47213_47213_CCD4&5_正极塑胶
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD4&5_正极塑胶
+  - name: 3F_k3_03-47213_47213_CCD4&5_正极焊道
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD4&5_正极焊道
+  - name: 3F_k3_03-47213_47213_CCD4&5_注液孔
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD4&5_注液孔
+  - name: 3F_k3_03-47213_47213_CCD4&5_负极塑胶
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD4&5_负极塑胶
+  - name: 3F_k3_03-47213_47213_CCD4&5_负极焊道
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD4&5_负极焊道
+  - name: 3F_k3_03-47213_47213_CCD6_下塑胶
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD6_下塑胶
+  - name: 3F_k3_03-47213_47213_CCD6_下塑胶错装
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD6_下塑胶错装
+  - name: 3F_k3_03-47213_47213_CCD6_正极
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD6_正极
+  - name: 3F_k3_03-47213_47213_CCD6_正极压印
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD6_正极压印
+  - name: 3F_k3_03-47213_47213_CCD6_负极
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD6_负极
+  - name: 3F_k3_03-47213_47213_CCD6_负极压印
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_CCD6_负极压印
+  - name: 3F_k3_03-47213_47213_双码检测
+    root: data/datasets/zhenyu/3F_k3_03-47213/47213_双码检测
 
 
 
@@ -82,22 +1309,62 @@ scenes:
     root: data/datasets/zhenyu/2025-1201-5.x/val
   - name: zhenyu_2025-1219
     root: data/datasets/zhenyu/2025-1219/val
-  # 
-  - name: L5_crop_PET贴膜
-    root: data/datasets/zhenyu/E0_2/L5_crop/PET贴膜
-  - name: L5_crop_下塑胶
-    root: data/datasets/zhenyu/E0_2/L5_crop/下塑胶
-  - name: L5_crop_极柱反面
-    root: data/datasets/zhenyu/E0_2/L5_crop/极柱反面
-  - name: L5_crop_极柱正面
-    root: data/datasets/zhenyu/E0_2/L5_crop/极柱正面
-  - name: L5_crop_极柱焊接
-    root: data/datasets/zhenyu/E0_2/L5_crop/极柱焊接
-  - name: L5_crop_防爆阀
-    root: data/datasets/zhenyu/E0_2/L5_crop/防爆阀
-  - name: L5_crop_顶盖正面
-    root: data/datasets/zhenyu/E0_2/L5_crop/顶盖正面
-  - name: L5_crop_顶盖注液孔
-    root: data/datasets/zhenyu/E0_2/L5_crop/顶盖注液孔
+    ### 以下是以模型为单位的裁剪数据集
+  - name: 0F_E0_2-L5_PET贴膜
+    root: data/datasets/zhenyu/0F_E0_2-L5/PET贴膜
+  - name: 0F_E0_2-L5_下塑胶
+    root: data/datasets/zhenyu/0F_E0_2-L5/下塑胶
+  - name: 0F_E0_2-L5_极柱反面
+    root: data/datasets/zhenyu/0F_E0_2-L5/极柱反面
+  - name: 0F_E0_2-L5_极柱正面
+    root: data/datasets/zhenyu/0F_E0_2-L5/极柱正面
+  - name: 0F_E0_2-L5_极柱焊接
+    root: data/datasets/zhenyu/0F_E0_2-L5/极柱焊接
+  - name: 0F_E0_2-L5_防爆阀
+    root: data/datasets/zhenyu/0F_E0_2-L5/防爆阀
+  - name: 0F_E0_2-L5_顶盖正面
+    root: data/datasets/zhenyu/0F_E0_2-L5/顶盖正面
+  - name: 0F_E0_2-L5_顶盖注液孔
+    root: data/datasets/zhenyu/0F_E0_2-L5/顶盖注液孔
+  - name: 3F_k3_03-79148_79148_CCD1-二维码
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-二维码
+  - name: 3F_k3_03-79148_79148_CCD1-客户喷码区
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-客户喷码区
+  - name: 3F_k3_03-79148_79148_CCD1-极柱
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-极柱
+  - name: 3F_k3_03-79148_79148_CCD1-极柱虚焊
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-极柱虚焊
+  - name: 3F_k3_03-79148_79148_CCD1-极柱高亮
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-极柱高亮
+  - name: 3F_k3_03-79148_79148_CCD1-注液孔
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-注液孔
+  - name: 3F_k3_03-79148_79148_CCD1-注液孔高亮
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-注液孔高亮
+  - name: 3F_k3_03-79148_79148_CCD1-蓝膜脏污
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-蓝膜脏污
+  - name: 3F_k3_03-79148_79148_CCD1-蓝膜脏污高亮
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-蓝膜脏污高亮
+  - name: 3F_k3_03-79148_79148_CCD1-防爆阀变形
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-防爆阀变形
+  - name: 3F_k3_03-79148_79148_CCD1-顶盖片脏污
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD1-顶盖片脏污
+  - name: 3F_k3_03-79148_79148_CCD2&3-极柱
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD2&3-极柱
+  - name: 3F_k3_03-79148_79148_CCD2&3-铝板
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD2&3-铝板
+  - name: 3F_k3_03-79148_79148_CCD4&5-极柱
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD4&5-极柱
+  - name: 3F_k3_03-79148_79148_CCD4&5-注液孔
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD4&5-注液孔
+  - name: 3F_k3_03-79148_79148_CCD4&5-脏污
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD4&5-脏污
+  - name: 3F_k3_03-79148_79148_CCD4-防爆阀铝丝
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD4-防爆阀铝丝
+  - name: 3F_k3_03-79148_79148_CCD6_下塑胶
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD6_下塑胶
+  - name: 3F_k3_03-79148_79148_CCD6_正极
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD6_正极
+  - name: 3F_k3_03-79148_79148_CCD6_负极
+    root: data/datasets/zhenyu/3F_k3_03-79148/79148_CCD6_负极
 
 debug_mode: false

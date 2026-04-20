@@ -4,7 +4,7 @@ setup(
     name="embedding-model",
     version="0.1.0",
     description="Industrial Defect Embedding Model with SSL and SupCon",
-    author="Your Name",
+    author="huang junhong",
     packages=find_packages(),
     install_requires=[
         "torch>=2.0.0",
@@ -22,6 +22,7 @@ setup(
         "seaborn>=0.12.0",
         "tqdm>=4.65.0",
         "scipy>=1.11.0",
+        "transformers==4.57.3",
     ],
     python_requires=">=3.8",
 )

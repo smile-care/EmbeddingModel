@@ -19,8 +19,8 @@ supcon:
       layer_idx: 0  # 用于分割的FPN层索引（0为最高分辨率层）
   
   data:
-    image_size: [224, 320, 448]  # 支持单个整数或整数列表，如: 224 或 [224, 320, 448]
-    batch_size: 32
+    image_size: [224]  # 支持单个整数或整数列表，如: 224 或 [224, 320, 448]
+    batch_size: 64
     num_workers: 4
     pin_memory: true
     # Mask软膨胀配置
@@ -47,7 +47,7 @@ supcon:
     margin: 0.0  # 正负样本margin（0表示不使用margin，建议0.0-0.2，确保正样本相似度至少比负样本高margin）
     # 语义分割损失配置（综合分割损失）
     segmentation:
-      weight: 0.5  # 分割损失在总损失中的权重
+      weight: 0.3  # 分割损失在总损失中的权重
       bce_weight: 0.25  # BCE损失权重
       dice_weight: 0.25  # Dice损失权重
       ratio_weight: 0.5  # 前景比例约束权重
@@ -63,8 +63,8 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/0413"
-    log_dir: "logs/supcon_logs/0413"
+    checkpoint_dir: "checkpoints/supcon_models/0420"
+    log_dir: "logs/supcon_logs/0420"
     use_wandb: true
     wandb_project: "supcon_moco"
 
