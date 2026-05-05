@@ -36,11 +36,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.supcon_train.datasets.supcon_dataset import (MultiScaleBatchSampler, SupConDataset,
                                                       multi_scale_collate_fn)
 from src.supcon_train.models.backbone.dinov3_convnext import DINOv3ConvNextConfig
+from src.supcon_train.models.backbone.dinov3_vit import DINOv3ViTConfig
+from src.supcon_train.models.convnext_model import ConvNeXtModel
 from src.supcon_train.models.losses import ComprehensiveSegmentationLoss, SupervisedContrastiveLoss
 from src.supcon_train.models.moco_loss import MoCoLoss
 from src.supcon_train.models.moco_model import MoCoModel
 from src.supcon_train.models.moco_queue import MoCoQueue
-from src.supcon_train.models.supcon_model import SupConModel
+from src.supcon_train.models.vit_model import ViTModel
 from src.utils.config_loader import load_config
 from src.utils.logging import setup_logger
 from src.utils.metrics import knn_evaluation, similarity_distribution_stats
@@ -440,58 +442,72 @@ def build_model(
     Returns:
         (model, moco_queue): 模型和MoCo队列（如果不使用MoCo则为None）
     """
-    # 加载backbone配置和预训练权重路径
-    backbone_cfg_path = model_config.get('backbone_cfg_path')
-    backbone_ckpt_path = model_config.get('backbone_ckpt_path')
-    if backbone_cfg_path:
-        backbone_cfg = DINOv3ConvNextConfig.from_yaml(backbone_cfg_path)
-        logger.info(f"加载backbone配置: {backbone_cfg_path}")
+    # 解析 backbone 名称，加载对应架构配置和预训练权重
+    import yaml as _yaml
+    backbone_name = model_config.get('backbone')
+    if not backbone_name:
+        raise ValueError("model_config 中必须指定 backbone 字段")
+    backbone_cfg_path  = f"configs/backbone/{backbone_name}.yaml"
+    backbone_ckpt_path = f"pretrain_ckpts/{backbone_name}.pth"
+    logger.info(f"Backbone: {backbone_name}")
+
+    with open(backbone_cfg_path) as _f:
+        _raw_cfg = _yaml.safe_load(_f)
+    model_type = _raw_cfg.get('model_type', 'dinov3_convnext')
+    is_vit     = (model_type == 'dinov3_vit')
+
+    if is_vit:
+        backbone_cfg = DINOv3ViTConfig.from_dict(_raw_cfg)
+        logger.info("管线: ViT → MaskWeightedPooling → ProjectionHead")
     else:
-        backbone_cfg = None
-    if backbone_ckpt_path:
-        logger.info(f"加载backbone预训练权重: {backbone_ckpt_path}")
+        backbone_cfg = DINOv3ConvNextConfig.from_dict(_raw_cfg)
+        logger.info("管线: ConvNeXt → PA-FPN → FeatureFusion → ProjectionHead")
 
-    # 获取分割相关配置
-    seg_config = model_config.get('segmentation', {})
-    enable_segmentation = seg_config.get('enabled', True)
-    seg_layer_idx = seg_config.get('layer_idx', 0)
+    # 分割配置
+    seg_cfg             = model_config.get('segmentation', {})
+    enable_segmentation = seg_cfg.get('enabled', True)
     if enable_segmentation:
-        logger.info(f"启用语义分割分支，使用FPN第{seg_layer_idx}层特征")
+        logger.info("启用语义分割辅助分支")
 
-    shared_kwargs = dict(
+    # 公共参数（两条管线均有效）
+    common_kwargs = dict(
         backbone_cfg=backbone_cfg,
         ckpt_path=backbone_ckpt_path,
         embedding_dim=model_config['embedding_dim'],
         projection_hidden_dims=model_config['projection_head']['hidden_dims'],
         image_size=image_size,
         freeze_backbone=freeze_backbone,
-        use_layers=model_config.get('use_layers', None),
-        fpn_out_channels=model_config.get('fpn_out_channels', 256),
         fusion_dim=model_config.get('fusion_dim', 512),
         enable_segmentation=enable_segmentation,
-        seg_layer_idx=seg_layer_idx,
     )
 
+    # 管线专用参数
+    if is_vit:
+        vit_cfg = model_config.get('vit', {})
+        common_kwargs['cls_weight'] = vit_cfg.get('cls_weight', 0.3)
+    else:
+        cnx_cfg = model_config.get('convnext', {})
+        common_kwargs.update(dict(
+            use_layers=cnx_cfg.get('use_layers', [0, 1, 2, 3]),
+            fpn_out_channels=cnx_cfg.get('fpn_out_channels', 256),
+            seg_layer_idx=cnx_cfg.get('seg_layer_idx', 0),
+        ))
+
     if use_moco:
-        logger.info("使用MoCo模型（动量对比学习）")
         momentum = moco_config.get('momentum', 0.999)
-        logger.info(f"MoCo动量系数: {momentum}")
+        logger.info(f"MoCo 动量对比学习，momentum={momentum}")
+        model = MoCoModel(**common_kwargs, momentum=momentum).to(device)
 
-        model = MoCoModel(
-            **shared_kwargs,
-            momentum=momentum,
-        ).to(device)
-
-        # 创建MoCo队列
         queue_size = moco_config.get('queue_size', 16384)
-        logger.info(f"MoCo队列大小: {queue_size}")
+        logger.info(f"MoCo 队列大小: {queue_size}")
         moco_queue = MoCoQueue(
             queue_size=queue_size,
-            embedding_dim=model_config['embedding_dim']
+            embedding_dim=model_config['embedding_dim'],
         ).to(device)
     else:
-        logger.info("使用标准SupCon模型")
-        model = SupConModel(**shared_kwargs).to(device)
+        model_cls = ViTModel if is_vit else ConvNeXtModel
+        logger.info(f"标准 SupCon 模型: {model_cls.__name__}")
+        model      = model_cls(**common_kwargs).to(device)
         moco_queue = None
 
     return model, moco_queue
@@ -796,7 +812,7 @@ def main():
     else:
         moco_queues = None
 
-    # 创建Loss（传入相似度矩阵和默认相似度）
+    # 创建Loss函数
     loss_config = supcon_config['supcon']['loss']
     enable_segmentation = model_config.get('segmentation', {}).get('enabled', True)
     criterion, seg_criterion = build_loss_func(

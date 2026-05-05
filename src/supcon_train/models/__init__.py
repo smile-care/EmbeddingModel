@@ -1,14 +1,24 @@
 """
 监督对比学习模型
 """
-from .supcon_model import SupConModel
-from .components import FeaturePyramidNetwork, PathAggregationFPN, FeatureFusion, ProjectionHead
+from .convnext_model import ConvNeXtModel
+from .vit_model import ViTModel
+from .moco_model import MoCoModel
+from .components import (
+    FeaturePyramidNetwork,
+    PathAggregationFPN,
+    FeatureFusion,
+    MaskWeightedPooling,
+    ProjectionHead,
+)
 
 __all__ = [
-    'SupConModel',
-    'FeaturePyramidNetwork',
-    'PathAggregationFPN',
-    'FeatureFusion',
-    'ProjectionHead',
+    "ConvNeXtModel",
+    "ViTModel",
+    "MoCoModel",
+    "FeaturePyramidNetwork",
+    "PathAggregationFPN",
+    "FeatureFusion",
+    "MaskWeightedPooling",
+    "ProjectionHead",
 ]
-

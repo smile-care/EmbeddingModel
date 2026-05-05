@@ -1,72 +1,95 @@
-# 监督对比学习配置（SupCon）
-# "facebook/dinov3-convnext-tiny-pretrain-lvd1689m"
-# "facebook/dinov3-convnext-small-pretrain-lvd1689m"
-# "facebook/dinov3-convnext-base-pretrain-lvd1689m",
-# "facebook/dinov3-convnext-large-pretrain-lvd1689m",
+# ============================================================
+# 监督对比学习训练配置（SupCon / MoCo）
+# ============================================================
+#
+# 切换 backbone 只需修改下方 model.backbone 一个字段：
+#
+#   ConvNeXt 系列：
+#     convnext_tiny   convnext_small   convnext_base   convnext_large
+#
+#   ViT 系列：
+#     vits16   vits16plus   vitb16   vitl16   vith16plus   vit7b16
+#
+# backbone 对应的架构参数文件：configs/backbone/<backbone>.yaml
+# backbone 对应的预训练权重文件：pretrain_ckpts/<backbone>.pth
+# ============================================================
 
 supcon:
   model:
-    backbone_cfg_path: "configs/configs/convnext_tiny.yaml"
-    backbone_ckpt_path: "pretrain_ckpts/convnext_tiny.pth"
-    embedding_dim: 128
+    backbone: "vits16"   # ← 只改这里来切换 backbone
+
+    embedding_dim: 256
     projection_head:
-      hidden_dims: [256, 128]
-    use_layers: [0, 1, 2, 3]  # 4x, 8x, 16x, 32x 下采样层的输出特征
-    fpn_out_channels: 256
-    fusion_dim: 512
-    # 语义分割分支配置
+      # ViT 管线：建议与 backbone hidden_size 对齐
+      #   vits16 / vits16plus → [384, 384]
+      #   vitb16              → [768, 768]
+      #   vitl16              → [1024, 1024]
+      #   vith16plus          → [1280, 1280]
+      # ConvNeXt 管线：跟着 fusion_dim 走，如 [256, 128]
+      hidden_dims: [384, 384]
+    fusion_dim: 512             # ConvNeXt 管线专用（ViT 管线不使用此参数）
+
     segmentation:
-      enabled: true  # 是否启用语义分割分支
-      layer_idx: 0  # 用于分割的FPN层索引（0为最高分辨率层）
-  
+      enabled: false             # 是否启用语义分割辅助分支
+
+    # ----------------------------------------------------------
+    # ConvNeXt 管线专用参数（backbone 为 convnext_* 时生效）
+    # ----------------------------------------------------------
+    convnext:
+      use_layers: [0, 1, 2, 3]  # FPN 使用的 stage 索引（0=4x, 1=8x, 2=16x, 3=32x）
+      fpn_out_channels: 256     # FPN 统一输出通道数
+      seg_layer_idx: 0          # 分割头使用的 FPN 层（0 为最高分辨率）
+
+    # ----------------------------------------------------------
+    # ViT 管线专用参数（backbone 为 vit* 时生效）
+    # ----------------------------------------------------------
+    vit:
+      cls_weight: 0.7           # CLS token 混合比例（0=纯 patch pooling, 1=纯 CLS）
+
   data:
     data_config_path: "configs/data_config_bc.yaml"
-    image_size: [224]  # 支持单个整数或整数列表，如: 224 或 [224, 320, 448]
+    image_size: [224]           # 支持单值或列表（多尺度随机采样），如 [224, 320, 448]
     batch_size: 64
     num_workers: 4
     pin_memory: true
-    # Mask软膨胀配置
     mask_dilation:
-      enabled: false  # 是否启用mask软膨胀处理
-  
+      enabled: false
+
   training:
     epochs: 300
-    learning_rate: 1e-4
+    learning_rate: 1.0e-4
     weight_decay: 0.05
-    backbone_lr_ratio: 0.1  # backbone学习率比例
+    backbone_lr_ratio: 0.1     # backbone 学习率 = learning_rate × backbone_lr_ratio
     lr_scheduler: "cosine"
-    save_interval: 50  # 每隔多少epoch保存一次模型
-  
+    save_interval: 50
+
   training_strategy:
-    freeze_backbone_epochs: 10000  # 冻结backbone的epoch数（0表示不冻结）
-  
+    # 0 = 全程微调（推荐，backbone 用低学习率 backbone_lr_ratio 保护）
+    # N > 0 = 先冻 N 个 epoch 训练 head，再整体微调（适合数据量极少时）
+    freeze_backbone_epochs: 0
+
   loss:
     supcon:
       weight: 1.0
-      temperature: 0.07
-    # 负样本惩罚配置（用于优化负样本分离）
-    neg_weight: 0.5  # 负样本惩罚权重（0-1之间，越大负样本分离越强，建议0.3-0.7）
-    margin: 0.0  # 正负样本margin（0表示不使用margin，建议0.0-0.2，确保正样本相似度至少比负样本高margin）
-    # 语义分割损失配置（综合分割损失）
+      temperature: 0.1         # batch 较小时用 0.1 更稳定，稳定后可尝试降到 0.07
+    neg_weight: 0.2            # 额外负样本惩罚权重，标准对比 loss 已隐式推开负样本，不宜过高
+    margin: 0.0                # 固定 margin 在训练初期有副作用，建议保持 0
     segmentation:
-      weight: 0.3  # 分割损失在总损失中的权重
-      bce_weight: 0.25  # BCE损失权重
-      dice_weight: 0.25  # Dice损失权重
-      ratio_weight: 0.5  # 前景比例约束权重
-      target_foreground_ratio: 0.1  # 目标前景比例（保留用于未来扩展）
-      max_foreground_ratio: 0.25  # 最大允许的前景比例（超过此值会触发比例惩罚），目前crop策略前景占比最大为1/4
+      weight: 0.1              # 分割损失总权重
+      bce_weight: 0.25
+      dice_weight: 0.25
+      ratio_weight: 0.5        # 前景比例约束权重
+      target_foreground_ratio: 0.1
+      max_foreground_ratio: 0.25
 
-  # MoCo配置（动量对比学习，适合小batch size）
   moco:
-    enabled: true  # 是否启用MoCo（true: 使用MoCo，false: 使用标准SupCon）
-    momentum: 0.995  # 动量系数（默认0.999，越大更新越慢）
-    queue_size: 16384  # 负样本队列大小（默认16384，适合显存受限；可设置为32768或65536）
-    loss_type: "supervised"  # loss类型："supervised"（使用相似度矩阵）或 "standard"（标准MoCo InfoNCE）
-  
-  # 输出配置
+    enabled: true              # true: MoCo 动量对比学习；false: 标准 SupCon
+    momentum: 0.995            # 动量系数（越大 key encoder 更新越慢）
+    queue_size: 16384          # 负样本队列大小 （建议 1024~65536，越大内存占用越高）
+    loss_type: "supervised"    # "supervised"（相似度矩阵）或 "standard"（InfoNCE）
+
   output:
     checkpoint_dir: "checkpoints/supcon_models/debug"
     log_dir: "logs/supcon_logs/debug"
     use_wandb: false
     wandb_project: "supcon_moco"
-

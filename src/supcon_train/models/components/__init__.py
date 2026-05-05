@@ -4,11 +4,13 @@
 """
 from .fpn import FeaturePyramidNetwork, PathAggregationFPN
 from .feature_fusion import FeatureFusion
+from .mask_pooling import MaskWeightedPooling
 from .projection_head import ProjectionHead
 
 __all__ = [
     'FeaturePyramidNetwork',
     'PathAggregationFPN',
     'FeatureFusion',
+    'MaskWeightedPooling',
     'ProjectionHead',
 ]

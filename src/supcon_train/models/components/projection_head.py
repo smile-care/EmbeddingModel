@@ -1,6 +1,4 @@
-"""
-Projection Head模块
-"""
+"""Projection Head for contrastive learning."""
 from typing import List
 
 import torch
@@ -8,65 +6,68 @@ import torch.nn as nn
 
 
 class ProjectionHead(nn.Module):
-    """Projection Head：将backbone特征映射到embedding空间"""
-    
+    """MLP projection head.
+
+    Standard design following SimCLR v2 / MoCo v3:
+      - Each hidden layer: Linear → BN → ReLU  (no Dropout)
+      - Output layer:      Linear only          (no activation, no BN)
+
+    Rationale:
+      - No Dropout: contrastive loss is sensitive to embedding L2 norm
+        stability; Dropout causes per-sample norm variance that degrades
+        cosine similarity computation, especially for MoCo queue embeddings.
+      - No activation on the last layer: ReLU would restrict the embedding
+        space to the positive orthant, halving the effective cosine space.
+    """
+
     def __init__(
         self,
         input_dim: int,
-        hidden_dims: List[int] = [256, 128],
+        hidden_dims: List[int] = [384, 384],
         output_dim: int = 128,
-        dropout: float = 0.1
     ):
         """
-        初始化Projection Head
-        
         Args:
-            input_dim: 输入维度（backbone输出维度）
-            hidden_dims: 隐藏层维度列表
-            output_dim: 输出维度（embedding维度）
-            dropout: Dropout比例
+            input_dim:   Input dimension (backbone hidden size for ViT,
+                         fusion_dim for ConvNeXt).
+            hidden_dims: Hidden layer widths. Recommended: match backbone
+                         hidden size for ViT (e.g. [384, 384] for ViT-S).
+            output_dim:  Final embedding dimension.
         """
         super().__init__()
-        
-        layers = []
+
+        layers: List[nn.Module] = []
         prev_dim = input_dim
-        
-        # 构建隐藏层
+
         for hidden_dim in hidden_dims:
-            layers.append(nn.Linear(prev_dim, hidden_dim))
-            layers.append(nn.BatchNorm1d(hidden_dim))
-            layers.append(nn.ReLU(inplace=True))
-            layers.append(nn.Dropout(dropout))
+            layers += [
+                nn.Linear(prev_dim, hidden_dim),
+                nn.BatchNorm1d(hidden_dim),
+                nn.ReLU(inplace=True),
+            ]
             prev_dim = hidden_dim
-        
-        # 输出层
+
+        # Output layer: no activation, no BN
         layers.append(nn.Linear(prev_dim, output_dim))
-        
+
         self.projection = nn.Sequential(*layers)
-        
-        # 初始化权重
-        self._initialize_weights()
-    
-    def _initialize_weights(self):
-        """初始化权重"""
+        self._init_weights()
+
+    def _init_weights(self) -> None:
         for m in self.projection.modules():
             if isinstance(m, nn.Linear):
-                # 使用Xavier初始化
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
             elif isinstance(m, nn.BatchNorm1d):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        前向传播
-        
         Args:
-            x: 输入特征 (B, input_dim)
-            
+            x: (B, input_dim)
         Returns:
-            Embedding (B, output_dim)
+            (B, output_dim)
         """
         return self.projection(x)

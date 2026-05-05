@@ -23,8 +23,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.supcon_train.datasets.supcon_dataset import MaskSoftDilation, SupConDataset
 from src.supcon_train.models.backbone.dinov3_convnext import DINOv3ConvNextConfig
+from src.supcon_train.models.backbone.dinov3_vit import DINOv3ViTConfig
+from src.supcon_train.models.convnext_model import ConvNeXtModel
 from src.supcon_train.models.moco_model import MoCoModel
-from src.supcon_train.models.supcon_model import SupConModel
+from src.supcon_train.models.vit_model import ViTModel
 from src.utils.config_loader import load_config
 from src.utils.logging import setup_logger
 
@@ -190,34 +192,47 @@ class SupConEmbeddingExtractor:
         state_dict = checkpoint.get('model_state_dict', checkpoint)
         is_moco_model = any('query_encoder' in key or 'momentum_encoder' in key for key in state_dict.keys())
         
-        # 加载backbone配置
-        backbone_cfg_path = model_config.get('backbone_cfg_path')
-        backbone_ckpt_path = model_config.get('backbone_ckpt_path')
-        backbone_cfg = DINOv3ConvNextConfig.from_yaml(backbone_cfg_path) if backbone_cfg_path else None
+        # 从 config 读取 backbone 名称，自动定位架构配置和权重
+        import yaml as _yaml
+        backbone_name      = model_config.get('backbone')
+        backbone_cfg_path  = f"configs/backbone/{backbone_name}.yaml"
+        backbone_ckpt_path = f"pretrain_ckpts/{backbone_name}.pth"
 
-        shared_kwargs = dict(
+        with open(backbone_cfg_path) as _f:
+            _raw_cfg = _yaml.safe_load(_f)
+        is_vit = (_raw_cfg.get('model_type', 'dinov3_convnext') == 'dinov3_vit')
+
+        backbone_cfg = DINOv3ViTConfig.from_dict(_raw_cfg) if is_vit \
+                  else DINOv3ConvNextConfig.from_dict(_raw_cfg)
+
+        common_kwargs = dict(
             backbone_cfg=backbone_cfg,
             ckpt_path=backbone_ckpt_path,
             embedding_dim=model_config.get('embedding_dim', 128),
             projection_hidden_dims=model_config.get('projection_head', {}).get('hidden_dims', [256, 128]),
             image_size=model_config.get('image_size', 224),
             freeze_backbone=False,
-            use_layers=model_config.get('use_layers', [0, 1, 2, 3]),
-            fpn_out_channels=model_config.get('fpn_out_channels', 256),
             fusion_dim=model_config.get('fusion_dim', 512),
         )
+        if is_vit:
+            common_kwargs['cls_weight'] = model_config.get('vit', {}).get('cls_weight', 0.3)
+        else:
+            cnx_cfg = model_config.get('convnext', {})
+            common_kwargs.update(dict(
+                use_layers=cnx_cfg.get('use_layers', [0, 1, 2, 3]),
+                fpn_out_channels=cnx_cfg.get('fpn_out_channels', 256),
+                seg_layer_idx=cnx_cfg.get('seg_layer_idx', 0),
+            ))
 
         if is_moco_model:
-            print("检测到MoCo模型，使用MoCoModel")
-            momentum = moco_config.get('momentum', 0.999)
-            self.model = MoCoModel(
-                **shared_kwargs,
-                momentum=momentum,
-            ).to(self.device)
+            print(f"MoCo 模型 ({'ViT' if is_vit else 'ConvNeXt'})")
+            momentum   = moco_config.get('momentum', 0.999)
+            self.model = MoCoModel(**common_kwargs, momentum=momentum).to(self.device)
             self.use_moco = True
         else:
-            print("检测到标准SupCon模型，使用SupConModel")
-            self.model = SupConModel(**shared_kwargs).to(self.device)
+            model_cls  = ViTModel if is_vit else ConvNeXtModel
+            print(f"SupCon 模型: {model_cls.__name__}")
+            self.model = model_cls(**common_kwargs).to(self.device)
             self.use_moco = False
         
         # 加载权重
