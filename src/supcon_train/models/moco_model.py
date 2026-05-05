@@ -7,22 +7,24 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 
+from .backbone.dinov3_convnext import DINOv3ConvNextConfig
 from .supcon_model import SupConModel
 
 
 class MoCoModel(nn.Module):
     """
     MoCo模型：使用动量更新的编码器进行对比学习
-    
+
     核心思想：
     - query_encoder: 当前训练的编码器（可训练，通过梯度更新）
     - momentum_encoder: 动量更新的编码器（不训练，通过动量更新）
     - 动量更新：θ_k ← m·θ_k + (1-m)·θ_q
     """
-    
+
     def __init__(
         self,
-        model_name: str = "facebook/dinov3-convnext-small-pretrain-lvd1689m",
+        backbone_cfg: Optional[DINOv3ConvNextConfig] = None,
+        ckpt_path: Optional[str] = None,
         embedding_dim: int = 128,
         projection_hidden_dims: List[int] = [256, 128],
         image_size: int = 448,
@@ -36,9 +38,10 @@ class MoCoModel(nn.Module):
     ):
         """
         初始化MoCo模型
-        
+
         Args:
-            model_name: DINOv3模型名称
+            backbone_cfg: DINOv3ConvNextConfig实例，None时使用默认配置
+            ckpt_path: 预训练权重路径（.pth文件）
             embedding_dim: embedding维度
             projection_hidden_dims: projection head隐藏层维度
             image_size: 输入图像大小
@@ -51,36 +54,28 @@ class MoCoModel(nn.Module):
             seg_layer_idx: 用于分割的FPN层索引
         """
         super().__init__()
-        
+
         self.momentum = momentum
-        
+
+        shared_kwargs = dict(
+            backbone_cfg=backbone_cfg,
+            ckpt_path=ckpt_path,
+            embedding_dim=embedding_dim,
+            projection_hidden_dims=projection_hidden_dims,
+            image_size=image_size,
+            freeze_backbone=freeze_backbone,
+            use_layers=use_layers,
+            fpn_out_channels=fpn_out_channels,
+            fusion_dim=fusion_dim,
+            enable_segmentation=enable_segmentation,
+            seg_layer_idx=seg_layer_idx,
+        )
+
         # Query encoder: 可训练的编码器
-        self.query_encoder = SupConModel(
-            model_name=model_name,
-            embedding_dim=embedding_dim,
-            projection_hidden_dims=projection_hidden_dims,
-            image_size=image_size,
-            freeze_backbone=freeze_backbone,
-            use_layers=use_layers,
-            fpn_out_channels=fpn_out_channels,
-            fusion_dim=fusion_dim,
-            enable_segmentation=enable_segmentation,
-            seg_layer_idx=seg_layer_idx
-        )
-        
+        self.query_encoder = SupConModel(**shared_kwargs)
+
         # Momentum encoder: 动量更新的编码器（不训练）
-        self.momentum_encoder = SupConModel(
-            model_name=model_name,
-            embedding_dim=embedding_dim,
-            projection_hidden_dims=projection_hidden_dims,
-            image_size=image_size,
-            freeze_backbone=freeze_backbone,
-            use_layers=use_layers,
-            fpn_out_channels=fpn_out_channels,
-            fusion_dim=fusion_dim,
-            enable_segmentation=enable_segmentation,
-            seg_layer_idx=seg_layer_idx
-        )
+        self.momentum_encoder = SupConModel(**shared_kwargs)
         
         # 初始化momentum_encoder的参数与query_encoder相同
         self._init_momentum_encoder()

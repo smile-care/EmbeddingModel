@@ -6,7 +6,8 @@
 
 supcon:
   model:
-    model_name: "facebook/dinov3-convnext-tiny-pretrain-lvd1689m"
+    backbone_cfg_path: "configs/configs/convnext_tiny.yaml"
+    backbone_ckpt_path: "pretrain_ckpts/convnext_tiny.pth"
     embedding_dim: 128
     projection_head:
       hidden_dims: [256, 128]
@@ -19,6 +20,7 @@ supcon:
       layer_idx: 0  # 用于分割的FPN层索引（0为最高分辨率层）
   
   data:
+    data_config_path: "configs/data_config_bc.yaml"
     image_size: [224]  # 支持单个整数或整数列表，如: 224 或 [224, 320, 448]
     batch_size: 64
     num_workers: 4
@@ -63,8 +65,8 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/0420"
-    log_dir: "logs/supcon_logs/0420"
-    use_wandb: true
+    checkpoint_dir: "checkpoints/supcon_models/debug"
+    log_dir: "logs/supcon_logs/debug"
+    use_wandb: false
     wandb_project: "supcon_moco"
 

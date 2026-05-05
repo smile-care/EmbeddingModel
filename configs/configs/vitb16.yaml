@@ -1,0 +1,29 @@
+model_name: vitb16
+model_type: dinov3_vit
+hub_id: facebook/dinov3-vitb16-pretrain-lvd1689m
+
+hidden_size: 768
+intermediate_size: 3072
+num_hidden_layers: 12
+num_attention_heads: 12
+num_register_tokens: 4
+use_gated_mlp: false
+
+patch_size: 16
+image_size: 224
+num_channels: 3
+hidden_act: gelu
+attention_dropout: 0.0
+layer_norm_eps: 1.0e-5
+rope_theta: 100.0
+query_bias: true
+key_bias: false
+value_bias: true
+proj_bias: true
+mlp_bias: true
+layerscale_value: 1.0
+drop_path_rate: 0.0
+pos_embed_shift: null
+pos_embed_jitter: null
+pos_embed_rescale: 2.0
+initializer_range: 0.02

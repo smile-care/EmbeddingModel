@@ -35,6 +35,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.supcon_train.datasets.supcon_dataset import (MultiScaleBatchSampler, SupConDataset,
                                                       multi_scale_collate_fn)
+from src.supcon_train.models.backbone.dinov3_convnext import DINOv3ConvNextConfig
 from src.supcon_train.models.losses import ComprehensiveSegmentationLoss, SupervisedContrastiveLoss
 from src.supcon_train.models.moco_loss import MoCoLoss
 from src.supcon_train.models.moco_model import MoCoModel
@@ -439,30 +440,46 @@ def build_model(
     Returns:
         (model, moco_queue): 模型和MoCo队列（如果不使用MoCo则为None）
     """
+    # 加载backbone配置和预训练权重路径
+    backbone_cfg_path = model_config.get('backbone_cfg_path')
+    backbone_ckpt_path = model_config.get('backbone_ckpt_path')
+    if backbone_cfg_path:
+        backbone_cfg = DINOv3ConvNextConfig.from_yaml(backbone_cfg_path)
+        logger.info(f"加载backbone配置: {backbone_cfg_path}")
+    else:
+        backbone_cfg = None
+    if backbone_ckpt_path:
+        logger.info(f"加载backbone预训练权重: {backbone_ckpt_path}")
+
+    # 获取分割相关配置
+    seg_config = model_config.get('segmentation', {})
+    enable_segmentation = seg_config.get('enabled', True)
+    seg_layer_idx = seg_config.get('layer_idx', 0)
+    if enable_segmentation:
+        logger.info(f"启用语义分割分支，使用FPN第{seg_layer_idx}层特征")
+
+    shared_kwargs = dict(
+        backbone_cfg=backbone_cfg,
+        ckpt_path=backbone_ckpt_path,
+        embedding_dim=model_config['embedding_dim'],
+        projection_hidden_dims=model_config['projection_head']['hidden_dims'],
+        image_size=image_size,
+        freeze_backbone=freeze_backbone,
+        use_layers=model_config.get('use_layers', None),
+        fpn_out_channels=model_config.get('fpn_out_channels', 256),
+        fusion_dim=model_config.get('fusion_dim', 512),
+        enable_segmentation=enable_segmentation,
+        seg_layer_idx=seg_layer_idx,
+    )
+
     if use_moco:
         logger.info("使用MoCo模型（动量对比学习）")
         momentum = moco_config.get('momentum', 0.999)
         logger.info(f"MoCo动量系数: {momentum}")
-        # 获取分割相关配置
-        seg_config = model_config.get('segmentation', {})
-        enable_segmentation = seg_config.get('enabled', True)
-        seg_layer_idx = seg_config.get('layer_idx', 0)
-
-        if enable_segmentation:
-            logger.info(f"启用语义分割分支，使用FPN第{seg_layer_idx}层特征")
 
         model = MoCoModel(
-            model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
-            embedding_dim=model_config['embedding_dim'],
-            projection_hidden_dims=model_config['projection_head']['hidden_dims'],
-            image_size=image_size,
-            freeze_backbone=freeze_backbone,
-            use_layers=model_config.get('use_layers', None),
-            fpn_out_channels=model_config.get('fpn_out_channels', 256),
-            fusion_dim=model_config.get('fusion_dim', 512),
+            **shared_kwargs,
             momentum=momentum,
-            enable_segmentation=enable_segmentation,
-            seg_layer_idx=seg_layer_idx
         ).to(device)
 
         # 创建MoCo队列
@@ -474,26 +491,7 @@ def build_model(
         ).to(device)
     else:
         logger.info("使用标准SupCon模型")
-        # 获取分割相关配置
-        seg_config = model_config.get('segmentation', {})
-        enable_segmentation = seg_config.get('enabled', True)
-        seg_layer_idx = seg_config.get('layer_idx', 0)
-
-        if enable_segmentation:
-            logger.info(f"启用语义分割分支，使用FPN第{seg_layer_idx}层特征")
-
-        model = SupConModel(
-            model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
-            embedding_dim=model_config['embedding_dim'],
-            projection_hidden_dims=model_config['projection_head']['hidden_dims'],
-            image_size=image_size,
-            freeze_backbone=freeze_backbone,
-            use_layers=model_config.get('use_layers', None),
-            fpn_out_channels=model_config.get('fpn_out_channels', 256),
-            fusion_dim=model_config.get('fusion_dim', 512),
-            enable_segmentation=enable_segmentation,
-            seg_layer_idx=seg_layer_idx
-        ).to(device)
+        model = SupConModel(**shared_kwargs).to(device)
         moco_queue = None
 
     return model, moco_queue
@@ -587,9 +585,6 @@ def main():
     parser = argparse.ArgumentParser(description='SupCon监督对比学习训练')
     parser.add_argument('--config', type=str, default='configs/supcon_config.yaml',
                        help='训练配置文件路径')
-    parser.add_argument('--data_config', type=str,
-                       default= 'configs/data_config.yaml',
-                       help='数据配置文件路径')
     parser.add_argument('--use_eval', action='store_true', default=True, help='是否进行验证')
     parser.add_argument('--no_eval', dest='use_eval', action='store_false', help='禁用验证')
     parser.add_argument('--resume', type=str, default=None,
@@ -598,7 +593,7 @@ def main():
 
     # 加载配置
     supcon_config = load_config(args.config)
-    data_config_path = args.data_config
+    data_config_path = supcon_config['supcon']['data']['data_config_path']
 
     # 设置日志（仅主进程输出）
     if is_main:

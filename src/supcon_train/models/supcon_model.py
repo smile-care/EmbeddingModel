@@ -6,16 +6,17 @@ from typing import List, Optional
 import torch
 import torch.nn as nn
 
-from .backbone.dinov3_convnext import DINOv3ConvNext
+from .backbone.dinov3_convnext import DINOv3ConvNext, DINOv3ConvNextConfig
 from .components import FeatureFusion, FeaturePyramidNetwork, PathAggregationFPN, ProjectionHead
 
 
 class SupConModel(nn.Module):
     """SupCon模型（使用DINOv3 backbone）"""
-    
+
     def __init__(
         self,
-        model_name: str = "facebook/dinov3-convnext-small-pretrain-lvd1689m",
+        backbone_cfg: Optional[DINOv3ConvNextConfig] = None,
+        ckpt_path: Optional[str] = None,
         embedding_dim: int = 128,
         projection_hidden_dims: List[int] = [256, 128],
         image_size: int = 448,
@@ -28,9 +29,10 @@ class SupConModel(nn.Module):
     ):
         """
         初始化SupCon模型
-        
+
         Args:
-            model_name: DINOv3模型名称
+            backbone_cfg: DINOv3ConvNextConfig实例，None时使用默认small配置
+            ckpt_path: 预训练权重路径（.pth文件，格式为 {"model": state_dict, ...}）
             embedding_dim: embedding维度
             projection_hidden_dims: projection head隐藏层维度
             image_size: 输入图像大小
@@ -41,11 +43,12 @@ class SupConModel(nn.Module):
             seg_layer_idx: 用于分割的FPN层索引（0为最高分辨率层）
         """
         super().__init__()
-        
+
         # DINOv3 Backbone
         self.backbone = DINOv3ConvNext(
-            model_name=model_name,
-            freeze_backbone=freeze_backbone
+            cfg=backbone_cfg,
+            ckpt_path=ckpt_path,
+            freeze_backbone=freeze_backbone,
         )
         
         # 获取backbone各层的特征维度

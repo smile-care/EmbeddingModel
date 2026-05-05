@@ -3,6 +3,12 @@ docs/
 checkpoints/
 logs/
 wandb/
+pretrain_ckpts
+
+
+.codex
+.cursor
+.claude
 
 *.bak
 *.log
@@ -13,7 +19,7 @@ __pycache__
 .vscode/
 .idea/
 
-.codex
+
 *.pyc
 *.jpg
 *.png

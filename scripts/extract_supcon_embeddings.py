@@ -22,6 +22,7 @@ from tqdm import tqdm
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from src.supcon_train.datasets.supcon_dataset import MaskSoftDilation, SupConDataset
+from src.supcon_train.models.backbone.dinov3_convnext import DINOv3ConvNextConfig
 from src.supcon_train.models.moco_model import MoCoModel
 from src.supcon_train.models.supcon_model import SupConModel
 from src.utils.config_loader import load_config
@@ -189,35 +190,34 @@ class SupConEmbeddingExtractor:
         state_dict = checkpoint.get('model_state_dict', checkpoint)
         is_moco_model = any('query_encoder' in key or 'momentum_encoder' in key for key in state_dict.keys())
         
+        # 加载backbone配置
+        backbone_cfg_path = model_config.get('backbone_cfg_path')
+        backbone_ckpt_path = model_config.get('backbone_ckpt_path')
+        backbone_cfg = DINOv3ConvNextConfig.from_yaml(backbone_cfg_path) if backbone_cfg_path else None
+
+        shared_kwargs = dict(
+            backbone_cfg=backbone_cfg,
+            ckpt_path=backbone_ckpt_path,
+            embedding_dim=model_config.get('embedding_dim', 128),
+            projection_hidden_dims=model_config.get('projection_head', {}).get('hidden_dims', [256, 128]),
+            image_size=model_config.get('image_size', 224),
+            freeze_backbone=False,
+            use_layers=model_config.get('use_layers', [0, 1, 2, 3]),
+            fpn_out_channels=model_config.get('fpn_out_channels', 256),
+            fusion_dim=model_config.get('fusion_dim', 512),
+        )
+
         if is_moco_model:
             print("检测到MoCo模型，使用MoCoModel")
-            # 创建MoCo模型
             momentum = moco_config.get('momentum', 0.999)
             self.model = MoCoModel(
-                model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
-                embedding_dim=model_config.get('embedding_dim', 128),
-                projection_hidden_dims=model_config.get('projection_head', {}).get('hidden_dims', [256, 128]),
-                image_size=model_config.get('image_size', 224),
-                freeze_backbone=False,  # 提取时不需要冻结
-                use_layers=model_config.get('use_layers', [1, 2, 3, 4]),
-                fpn_out_channels=model_config.get('fpn_out_channels', 256),
-                fusion_dim=model_config.get('fusion_dim', 512),
-                momentum=momentum
+                **shared_kwargs,
+                momentum=momentum,
             ).to(self.device)
             self.use_moco = True
         else:
             print("检测到标准SupCon模型，使用SupConModel")
-            # 创建标准SupCon模型
-            self.model = SupConModel(
-                model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
-                embedding_dim=model_config.get('embedding_dim', 128),
-                projection_hidden_dims=model_config.get('projection_head', {}).get('hidden_dims', [256, 128]),
-                image_size=model_config.get('image_size', 224),
-                freeze_backbone=False,  # 提取时不需要冻结
-                use_layers=model_config.get('use_layers', [1, 2, 3, 4]),
-                fpn_out_channels=model_config.get('fpn_out_channels', 256),
-                fusion_dim=model_config.get('fusion_dim', 512)
-            ).to(self.device)
+            self.model = SupConModel(**shared_kwargs).to(self.device)
             self.use_moco = False
         
         # 加载权重
