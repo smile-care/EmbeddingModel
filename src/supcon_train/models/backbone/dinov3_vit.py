@@ -114,6 +114,10 @@ class _Embeddings(nn.Module):
             cfg.num_channels, cfg.hidden_size,
             kernel_size=cfg.patch_size, stride=cfg.patch_size,
         )
+        # SupCon/MoCo training never passes bool_masked_pos, so mask_token is unused.
+        self.mask_token.requires_grad = False
+        if cfg.num_register_tokens == 0:
+            self.register_tokens.requires_grad = False
 
     def forward(self, x: torch.Tensor, bool_masked_pos=None) -> torch.Tensor:
         B = x.shape[0]

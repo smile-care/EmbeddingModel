@@ -88,7 +88,8 @@ class _ChannelLN(nn.LayerNorm):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = x.permute(0, 2, 3, 1)
         x = super().forward(x)
-        return x.permute(0, 3, 1, 2)
+        # Keep BCHW contiguous to satisfy DDP gradient layout contract.
+        return x.permute(0, 3, 1, 2).contiguous()
 
 
 # ---------------------------------------------------------------------------
@@ -115,7 +116,8 @@ class _ConvNextLayer(nn.Module):
         x = self.activation_fn(x)
         x = self.pointwise_conv2(x)
         x = x * self.gamma
-        x = x.permute(0, 3, 1, 2)          # BHWC → BCHW
+        # Keep BCHW contiguous to avoid stride-mismatch grads under DDP.
+        x = x.permute(0, 3, 1, 2).contiguous()  # BHWC → BCHW
         return residual + self.drop_path(x)
 
 

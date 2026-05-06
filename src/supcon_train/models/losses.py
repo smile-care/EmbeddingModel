@@ -89,8 +89,8 @@ class SupervisedContrastiveLoss(nn.Module):
         
         if valid_mask.sum() == 0:
             print("警告：batch中没有positive pairs，返回小的正loss以保持梯度流动")
-            # 返回一个小的正数而不是0，以保持梯度流动
-            return torch.tensor(1e-6, device=device, requires_grad=True)
+            # 返回与计算图相连的loss，避免DDP出现unused parameter错误
+            return features.sum() * 0.0 + 1e-6
         
         # 加权平均log概率
         weighted_mean_log_prob = (weights * log_prob).sum(1) / (weight_sum + 1e-8)
@@ -102,7 +102,7 @@ class SupervisedContrastiveLoss(nn.Module):
         # 检查loss是否为NaN
         if torch.isnan(loss) or torch.isinf(loss):
             print(f"警告：Loss为NaN或Inf！feature_similarity范围: [{feature_similarity.min():.4f}, {feature_similarity.max():.4f}]")
-            return torch.tensor(0.0, device=device, requires_grad=True)
+            return features.sum() * 0.0
         
         return loss
 
@@ -219,6 +219,6 @@ class ComprehensiveSegmentationLoss(nn.Module):
             print(f"警告：分割损失为NaN或Inf！")
             print(f"  BCE: {bce_loss.item():.4f}, Dice: {dice_loss.item():.4f}, "
                   f"Ratio: {ratio_loss.item():.4f}")
-            return torch.tensor(0.0, device=device, requires_grad=True)
+            return pred_mask.sum() * 0.0
         
         return total_loss

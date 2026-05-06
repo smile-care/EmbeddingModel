@@ -67,6 +67,40 @@ def sanitize_wandb_project_name(project_name: str, default: str = "industrial-su
     return sanitized or default
 
 
+def parse_queue_size_config(queue_size_config) -> tuple[int, int]:
+    """
+    统一解析 MoCo queue_size 配置，支持:
+    - int: 固定队列大小
+    - list/tuple: [min_queue_size, max_queue_size]
+
+    Returns:
+        (min_queue_size, max_queue_size)
+    """
+    if isinstance(queue_size_config, int):
+        values = (queue_size_config, queue_size_config)
+    elif isinstance(queue_size_config, (list, tuple)):
+        if len(queue_size_config) == 1:
+            values = (queue_size_config[0], queue_size_config[0])
+        elif len(queue_size_config) == 2:
+            values = (queue_size_config[0], queue_size_config[1])
+        else:
+            raise ValueError(f"queue_size 列表长度必须为1或2，当前为 {queue_size_config}")
+    else:
+        raise ValueError(
+            f"queue_size 必须是 int 或 List[int]（如 16384 或 [1024, 16384]），当前类型: {type(queue_size_config)}"
+        )
+
+    min_queue_size, max_queue_size = values
+    if not isinstance(min_queue_size, int) or not isinstance(max_queue_size, int):
+        raise ValueError(f"queue_size 元素必须为整数，当前为 {queue_size_config}")
+    if min_queue_size <= 0 or max_queue_size <= 0:
+        raise ValueError(f"queue_size 元素必须 > 0，当前为 {queue_size_config}")
+    if min_queue_size > max_queue_size:
+        raise ValueError(f"queue_size 最小值不能大于最大值，当前为 {queue_size_config}")
+
+    return min_queue_size, max_queue_size
+
+
 def init_distributed():
     """初始化分布式训练，返回 (local_rank, rank, world_size)。"""
     if 'RANK' in os.environ and 'WORLD_SIZE' in os.environ:
@@ -145,14 +179,15 @@ def train_epoch(
             # 3. 获取队列中的负样本
             queue_embeddings, queue_labels = moco_queue.get_queue(device=device)
 
-            # 4. 检查embeddings是否包含NaN或Inf
-            if (torch.isnan(query_embeddings1).any() or torch.isinf(query_embeddings1).any() or
-                torch.isnan(key_embeddings2).any() or torch.isinf(key_embeddings2).any()):
+            # 4. 检查并清理 embeddings 中的 NaN/Inf（DDP 下避免提前 continue 导致各 rank 步数不一致）
+            if (not torch.isfinite(query_embeddings1).all() or
+                not torch.isfinite(key_embeddings2).all()):
                 nan_embedding_count += 1
                 skipped_batches += 1
                 if nan_embedding_count <= 5:
-                    print(f"警告：Epoch {epoch}, Batch {num_batches}: embeddings包含NaN或Inf，跳过此batch")
-                continue
+                    print(f"警告：Epoch {epoch}, Batch {num_batches}: embeddings包含NaN或Inf，已自动清理")
+                query_embeddings1 = torch.nan_to_num(query_embeddings1, nan=0.0, posinf=1.0, neginf=-1.0)
+                key_embeddings2 = torch.nan_to_num(key_embeddings2, nan=0.0, posinf=1.0, neginf=-1.0)
 
             # 5. 计算MoCo loss（结合当前batch和队列中的负样本）
             contrastive_loss = criterion(
@@ -172,13 +207,13 @@ def train_epoch(
             # 总损失
             loss = contrastive_loss + seg_loss_weight * seg_loss
 
-            # 6. 检查loss是否为NaN或Inf
-            if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
+            # 6. 检查loss是否为NaN或Inf（DDP 下不提前 continue，改为零损失保持图连通）
+            if not torch.isfinite(loss):
                 nan_loss_count += 1
                 skipped_batches += 1
                 if nan_loss_count <= 5:
-                    print(f"警告：Epoch {epoch}, Batch {num_batches}: loss为NaN或Inf，跳过此batch")
-                continue
+                    print(f"警告：Epoch {epoch}, Batch {num_batches}: loss为NaN或Inf，使用零损失继续")
+                loss = query_embeddings1.sum() * 0.0
 
             # 7. 反向传播
             optimizer.zero_grad()
@@ -212,13 +247,13 @@ def train_epoch(
             embeddings = torch.cat([embeddings1, embeddings2], dim=0)  # (2B, D)
             labels_duplicated = torch.cat([labels, labels], dim=0)  # (2B,)
 
-            # 检查embeddings是否包含NaN或Inf
-            if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
+            # 检查并清理 embeddings 中的 NaN/Inf（DDP 下避免提前 continue 导致各 rank 步数不一致）
+            if not torch.isfinite(embeddings).all():
                 nan_embedding_count += 1
                 skipped_batches += 1
                 if nan_embedding_count <= 5:  # 只打印前5次警告
-                    print(f"警告：Epoch {epoch}, Batch {num_batches}: embeddings包含NaN或Inf，跳过此batch")
-                continue
+                    print(f"警告：Epoch {epoch}, Batch {num_batches}: embeddings包含NaN或Inf，已自动清理")
+                embeddings = torch.nan_to_num(embeddings, nan=0.0, posinf=1.0, neginf=-1.0)
 
 
             # 计算SupCon loss
@@ -237,13 +272,13 @@ def train_epoch(
             # 总损失
             loss = contrastive_loss + seg_loss_weight * seg_loss
 
-            # 检查loss是否为NaN或Inf
-            if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
+            # 检查loss是否为NaN或Inf（DDP 下不提前 continue，改为零损失保持图连通）
+            if not torch.isfinite(loss):
                 nan_loss_count += 1
                 skipped_batches += 1
                 if nan_loss_count <= 5:  # 只打印前5次警告
-                    print(f"警告：Epoch {epoch}, Batch {num_batches}: loss为NaN或Inf，跳过此batch")
-                continue
+                    print(f"警告：Epoch {epoch}, Batch {num_batches}: loss为NaN或Inf，使用零损失继续")
+                loss = embeddings.sum() * 0.0
 
             # 反向传播
             optimizer.zero_grad()
@@ -514,26 +549,12 @@ def build_model(
         logger.info(f"MoCo 动量对比学习，momentum={momentum}")
         model = MoCoModel(**common_kwargs, momentum=momentum).to(device)
 
-        if enable_segmentation:
-            logger.info(f"启用语义分割分支，使用FPN第{seg_layer_idx}层特征")
-
-        model = MoCoModel(
-            model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
-            embedding_dim=model_config['embedding_dim'],
-            projection_hidden_dims=model_config['projection_head']['hidden_dims'],
-            image_size=image_size,
-            freeze_backbone=freeze_backbone,
-            use_layers=model_config.get('use_layers', None),
-            fpn_out_channels=model_config.get('fpn_out_channels', 256),
-            fusion_dim=model_config.get('fusion_dim', 512),
-            momentum=momentum,
-            enable_segmentation=enable_segmentation,
-            seg_layer_idx=seg_layer_idx
-        ).to(device)
+        if enable_segmentation and not is_vit:
+            logger.info(f"启用语义分割分支，使用FPN第{seg_layer_idx}层特征") # type: ignore
 
         # 创建MoCo队列
         queue_size_config = moco_config.get('queue_size', 16384)
-        queue_size = queue_size_config[1] if isinstance(queue_size_config, list) else queue_size_config
+        _, queue_size = parse_queue_size_config(queue_size_config)
         logger.info(f"MoCo队列大小: {queue_size_config}")
         moco_queue = MoCoQueue(
             queue_size=queue_size,
@@ -745,6 +766,10 @@ def main():
     if dropped and rank == 0:
         logger.warning(f"以下子数据集样本数 < {min_samples}（batch_size×world_size），已跳过: {dropped}")
         logger.warning(f"共有 {len(filtered)} 个子数据集参与训练，{len(dropped)} 个子数据集被跳过")
+    if not filtered:
+        raise ValueError(
+            f"没有可训练的数据集：所有 train 子数据集样本数都小于 {min_samples}（batch_size×world_size）。"
+        )
     train_scene_names = [n for n, _ in filtered]
     train_datasets    = [ds for _, ds in filtered]
 
@@ -832,7 +857,11 @@ def main():
     if is_ddp:
         # 将 BatchNorm 转换为 SyncBatchNorm，避免 DDP 梯度 hook 与 BN inplace 操作冲突
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
+        model = DDP(
+            model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+        )
         logger.info(f"模型已包装为 DDP，GPU 数量: {world_size}")
 
     # raw_model 用于直接访问模型属性（如 query_encoder、momentum_update、unfreeze_all）
@@ -844,10 +873,7 @@ def main():
     queue_on_gpu = moco_config.get('queue_device', 'cpu').lower() == 'gpu'
     if use_moco and moco_queue is not None:
         _queue_size_cfg = moco_config.get('queue_size', 16384)
-        if isinstance(_queue_size_cfg, list):
-            min_queue_size, max_queue_size = _queue_size_cfg[0], _queue_size_cfg[1]
-        else:
-            min_queue_size, max_queue_size = _queue_size_cfg, _queue_size_cfg
+        min_queue_size, max_queue_size = parse_queue_size_config(_queue_size_cfg)
         emb_dim = model_config['embedding_dim']
         if len(train_scene_names) > 1:
             moco_queues = []

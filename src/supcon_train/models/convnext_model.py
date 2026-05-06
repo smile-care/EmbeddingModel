@@ -92,7 +92,6 @@ class ConvNeXtModel(nn.Module):
             input_dim=fusion_dim,
             hidden_dims=projection_hidden_dims,
             output_dim=embedding_dim,
-            dropout=0.1,
         )
 
         # 分割头

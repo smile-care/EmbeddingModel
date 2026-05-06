@@ -179,7 +179,7 @@ class MoCoLoss(nn.Module):
         # 检查loss是否为NaN
         if torch.isnan(loss) or torch.isinf(loss):
             print(f"警告：Loss为NaN或Inf！pos_sim范围: [{pos_sim.min():.4f}, {pos_sim.max():.4f}]")
-            zero_loss = torch.tensor(0.0, device=device, requires_grad=True)
+            zero_loss = query_embeddings.sum() * 0.0
             return zero_loss, zero_loss, None
         
         return loss, pos_loss, neg_loss
@@ -246,7 +246,7 @@ class MoCoLoss(nn.Module):
         
         if valid_mask.sum() == 0:
             print("警告：batch中没有positive pairs，返回小的正loss以保持梯度流动")
-            small_loss = torch.tensor(1e-6, device=device, requires_grad=True)
+            small_loss = query_embeddings.sum() * 0.0 + 1e-6
             return small_loss, small_loss, None
         
         # 加权平均log概率（正样本部分）
@@ -302,10 +302,9 @@ class MoCoLoss(nn.Module):
         # 检查loss是否为NaN
         if torch.isnan(loss) or torch.isinf(loss):
             print(f"警告：Loss为NaN或Inf！batch_similarity范围: [{batch_similarity.min():.4f}, {batch_similarity.max():.4f}]")
-            zero_loss = torch.tensor(0.0, device=device, requires_grad=True)
+            zero_loss = query_embeddings.sum() * 0.0
             return zero_loss, zero_loss, None
         
         # 返回loss, pos_loss, neg_loss
         neg_loss_tensor = neg_loss if (valid_neg_mask.sum() > 0 and self.neg_weight > 0) else None
         return loss, pos_loss, neg_loss_tensor
-

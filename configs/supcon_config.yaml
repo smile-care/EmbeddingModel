@@ -47,7 +47,7 @@ supcon:
       cls_weight: 0.7           # CLS token 混合比例（0=纯 patch pooling, 1=纯 CLS）
 
   data:
-    data_config_path: "configs/data_config_bc.yaml"
+    data_config_path: "configs/data_config.yaml"
     image_size: [224]           # 支持单值或列表（多尺度随机采样），如 [224, 320, 448]
     batch_size: 64
     num_workers: 4
@@ -61,7 +61,7 @@ supcon:
     weight_decay: 0.05
     backbone_lr_ratio: 0.1     # backbone 学习率 = learning_rate × backbone_lr_ratio
     lr_scheduler: "cosine"
-    save_interval: 50
+    save_interval: 20
 
   training_strategy:
     # 0 = 全程微调（推荐，backbone 用低学习率 backbone_lr_ratio 保护）
@@ -91,7 +91,7 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/0424_bs64x4"
-    log_dir: "logs/supcon_logs/0424_bs64x4"
+    checkpoint_dir: "checkpoints/supcon_models/0506_vit_bs64x4"
+    log_dir: "logs/supcon_logs/0506_vit_bs64x4"
     use_wandb: true
-    wandb_project: "supcon_logs-0424_bs64x4"
+    wandb_project: "supcon_logs-0506_vit_bs64x4"
