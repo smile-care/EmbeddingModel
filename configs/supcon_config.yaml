@@ -83,13 +83,15 @@ supcon:
       max_foreground_ratio: 0.25
 
   moco:
-    enabled: true              # true: MoCo 动量对比学习；false: 标准 SupCon
-    momentum: 0.995            # 动量系数（越大 key encoder 更新越慢）
-    queue_size: 16384          # 负样本队列大小 （建议 1024~65536，越大内存占用越高）
-    loss_type: "supervised"    # "supervised"（相似度矩阵）或 "standard"（InfoNCE）
-
+    enabled: true  # 是否启用MoCo（true: 使用MoCo，false: 使用标准SupCon）
+    momentum: 0.995  # 动量系数（默认0.999，越大更新越慢）
+    queue_size: [1024, 16000]  # 负样本队列大小，支持 int 或 [min, max]（自适应时按样本数裁剪到此区间）
+    loss_type: "supervised"  # loss类型："supervised"（使用相似度矩阵）或 "standard"（标准MoCo InfoNCE）
+    queue_device: "gpu"  # 队列存放设备："cpu"（训练时搬到GPU，显存友好）或 "gpu"（常驻GPU，速度更快）
+  
+  # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/debug"
-    log_dir: "logs/supcon_logs/debug"
-    use_wandb: false
-    wandb_project: "supcon_moco"
+    checkpoint_dir: "checkpoints/supcon_models/0424_bs64x4"
+    log_dir: "logs/supcon_logs/0424_bs64x4"
+    use_wandb: true
+    wandb_project: "supcon_logs-0424_bs64x4"

@@ -9,6 +9,7 @@ import argparse
 import logging as _logging
 import os
 import random
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -49,6 +50,21 @@ from src.utils.metrics import knn_evaluation, similarity_distribution_stats
 from src.utils.visualization import plot_loss_curve
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
+
+
+def sanitize_wandb_project_name(project_name: str, default: str = "industrial-supcon") -> str:
+    """
+    清洗 W&B project 名称，避免非法字符导致初始化失败。
+
+    W&B 不允许以下字符：/, \\, #, ?, %, :
+    """
+    if not project_name:
+        return default
+
+    sanitized = re.sub(r"[\/\\#\?%:]+", "-", str(project_name)).strip()
+    sanitized = re.sub(r"\s+", "-", sanitized)
+    sanitized = sanitized.strip("-_.")
+    return sanitized or default
 
 
 def init_distributed():
@@ -498,8 +514,27 @@ def build_model(
         logger.info(f"MoCo 动量对比学习，momentum={momentum}")
         model = MoCoModel(**common_kwargs, momentum=momentum).to(device)
 
-        queue_size = moco_config.get('queue_size', 16384)
-        logger.info(f"MoCo 队列大小: {queue_size}")
+        if enable_segmentation:
+            logger.info(f"启用语义分割分支，使用FPN第{seg_layer_idx}层特征")
+
+        model = MoCoModel(
+            model_name=model_config.get('model_name', 'facebook/dinov3-convnext-small-pretrain-lvd1689m'),
+            embedding_dim=model_config['embedding_dim'],
+            projection_hidden_dims=model_config['projection_head']['hidden_dims'],
+            image_size=image_size,
+            freeze_backbone=freeze_backbone,
+            use_layers=model_config.get('use_layers', None),
+            fpn_out_channels=model_config.get('fpn_out_channels', 256),
+            fusion_dim=model_config.get('fusion_dim', 512),
+            momentum=momentum,
+            enable_segmentation=enable_segmentation,
+            seg_layer_idx=seg_layer_idx
+        ).to(device)
+
+        # 创建MoCo队列
+        queue_size_config = moco_config.get('queue_size', 16384)
+        queue_size = queue_size_config[1] if isinstance(queue_size_config, list) else queue_size_config
+        logger.info(f"MoCo队列大小: {queue_size_config}")
         moco_queue = MoCoQueue(
             queue_size=queue_size,
             embedding_dim=model_config['embedding_dim'],
@@ -639,10 +674,13 @@ def main():
         if wandb is None:
             logger.warning("wandb not installed, skipping wandb logging")
         else:
-            wandb.init(
-                project=supcon_config['supcon']['output'].get('wandb_project', 'industrial-supcon'),
-                config=supcon_config['supcon']
-            )
+            raw_wandb_project = supcon_config['supcon']['output'].get('wandb_project', 'industrial-supcon')
+            wandb_project = sanitize_wandb_project_name(raw_wandb_project)
+            if wandb_project != raw_wandb_project:
+                logger.warning(
+                    f"W&B project 名称包含非法字符，已自动清洗: '{raw_wandb_project}' -> '{wandb_project}'"
+                )
+            wandb.init(project=wandb_project, config=supcon_config['supcon'])
 
     # 创建数据集
     logger.info("加载数据集...")
@@ -696,12 +734,21 @@ def main():
     for name, ds in zip(val_scene_names, val_datasets_raw):
         logger.info(f"  [val]   {name}: {len(ds)} 样本, 类别: {ds.categories}")
 
-    train_datasets = train_datasets_raw
-    val_datasets   = val_datasets_raw
-
     # 创建每个场景的 DataLoader 列表
     # batch_size 为每张卡的 batch 大小，effective total = batch_size * world_size
     batch_size = supcon_config['supcon']['data']['batch_size']
+
+    # 过滤掉样本数不足 batch_size 的子数据集（不足则每卡 0 个 batch，训练无意义）
+    min_samples = batch_size * world_size
+    filtered = [(n, ds) for n, ds in zip(train_scene_names, train_datasets_raw) if len(ds) >= min_samples]
+    dropped = [n for n, ds in zip(train_scene_names, train_datasets_raw) if len(ds) < min_samples]
+    if dropped and rank == 0:
+        logger.warning(f"以下子数据集样本数 < {min_samples}（batch_size×world_size），已跳过: {dropped}")
+        logger.warning(f"共有 {len(filtered)} 个子数据集参与训练，{len(dropped)} 个子数据集被跳过")
+    train_scene_names = [n for n, _ in filtered]
+    train_datasets    = [ds for _, ds in filtered]
+
+    val_datasets = val_datasets_raw
     num_workers = supcon_config['supcon']['data']['num_workers']
     pin_memory = supcon_config['supcon']['data']['pin_memory']
     if rank == 0:
@@ -783,32 +830,39 @@ def main():
     # 包装为 DDP（多GPU时）
     # ------------------------------------------------------------------ #
     if is_ddp:
-        # find_unused_parameters=True 保证 MoCo momentum_encoder 不参与梯度计算时不报错
         # 将 BatchNorm 转换为 SyncBatchNorm，避免 DDP 梯度 hook 与 BN inplace 操作冲突
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank,
-                    find_unused_parameters=False)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank)
         logger.info(f"模型已包装为 DDP，GPU 数量: {world_size}")
 
     # raw_model 用于直接访问模型属性（如 query_encoder、momentum_update、unfreeze_all）
     raw_model = model.module if is_ddp else model
 
     # 多场景时每个场景使用独立的 MoCo 队列，避免跨场景负样本混合
-    # 队列常驻 CPU，训练该场景时才搬到 GPU，训练完搬回 CPU（CPU offload）
+    # queue_device: "cpu" 表示队列常驻CPU，训练时搬到GPU（显存友好）；"gpu" 表示常驻GPU（速度更快）
     # queue_size 按场景样本数自适应：min(num_samples * 2, config_max)，并对齐到 batch_size
+    queue_on_gpu = moco_config.get('queue_device', 'cpu').lower() == 'gpu'
     if use_moco and moco_queue is not None:
-        max_queue_size = moco_config.get('queue_size', 16384)
+        _queue_size_cfg = moco_config.get('queue_size', 16384)
+        if isinstance(_queue_size_cfg, list):
+            min_queue_size, max_queue_size = _queue_size_cfg[0], _queue_size_cfg[1]
+        else:
+            min_queue_size, max_queue_size = _queue_size_cfg, _queue_size_cfg
         emb_dim = model_config['embedding_dim']
         if len(train_scene_names) > 1:
             moco_queues = []
             for ds in train_datasets:
                 adaptive_size = min(len(ds) * 2, max_queue_size)
+                adaptive_size = max(adaptive_size, min_queue_size)
                 adaptive_size = max((adaptive_size // batch_size) * batch_size, batch_size)
-                moco_queues.append(MoCoQueue(queue_size=adaptive_size, embedding_dim=emb_dim))
+                q = MoCoQueue(queue_size=adaptive_size, embedding_dim=emb_dim)
+                if queue_on_gpu:
+                    q = q.to(device)
+                moco_queues.append(q)
             for name, q in zip(train_scene_names, moco_queues):
-                logger.info(f"  MoCo queue [{name}]: size={q.queue_size}")
+                logger.info(f"  MoCo queue [{name}]: size={q.queue_size}, device={'gpu' if queue_on_gpu else 'cpu'}")
         else:
-            moco_queues = [moco_queue]
+            moco_queues = [moco_queue.to(device) if queue_on_gpu else moco_queue]
     else:
         moco_queues = None
 
@@ -921,7 +975,10 @@ def main():
             logger.info(f"训练场景({scene_idx+1}/{len(train_scene_names)}): {scene_name}")
             scene_queue = None
             if moco_queues is not None:
-                scene_queue = moco_queues[scene_idx].to(device)   # CPU → GPU
+                if queue_on_gpu:
+                    scene_queue = moco_queues[scene_idx]          # 已在 GPU，无需搬运
+                else:
+                    scene_queue = moco_queues[scene_idx].to(device)  # CPU → GPU
             metrics = train_epoch(
                 model, train_dl, criterion, optimizer, device, epoch,
                 use_moco=use_moco,
@@ -930,7 +987,7 @@ def main():
                 seg_loss_weight=seg_loss_weight,
                 is_main=is_main,
             )
-            if scene_queue is not None:
+            if scene_queue is not None and not queue_on_gpu:
                 moco_queues[scene_idx] = scene_queue.cpu()        # GPU → CPU
             train_metrics_per_scene.append((scene_name, metrics))
 
