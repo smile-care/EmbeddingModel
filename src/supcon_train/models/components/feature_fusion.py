@@ -42,11 +42,14 @@ class FeatureFusion(nn.Module):
         ])
         
         # 融合层
+        # 注意：不使用 Dropout——对比学习对 embedding 范数稳定性敏感，
+        # Dropout 会导致 per-sample 范数方差，破坏余弦相似度计算；
+        # 且 MoCo 模式下 query/key 编码器的 Dropout 状态不一致会引入噪声梯度。
+        # 已有 BatchNorm + AdamW weight_decay + 数据增强提供充分正则化。
         self.fusion = nn.Sequential(
             nn.Linear(output_dim * self.num_layers, output_dim),
             nn.BatchNorm1d(output_dim),
             nn.ReLU(inplace=True),
-            nn.Dropout(0.1)
         )
         
         # 初始化权重

@@ -49,7 +49,7 @@ supcon:
   data:
     data_config_path: "configs/data_config.yaml"
     image_size: [224]           # 支持单值或列表（多尺度随机采样），如 [224, 320, 448]
-    batch_size: 64
+    batch_size: 32
     num_workers: 4
     pin_memory: true
     mask_dilation:
@@ -91,7 +91,7 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/0506_vit_bs64x4"
-    log_dir: "logs/supcon_logs/0506_vit_bs64x4"
-    use_wandb: true
-    wandb_project: "supcon_logs-0506_vit_bs64x4"
+    checkpoint_dir: "checkpoints/supcon_models/0627_vit_debug"
+    log_dir: "logs/supcon_logs/0627_vit_debug"
+    use_wandb: false
+    wandb_project: "supcon_logs-0627_vit_debug"
