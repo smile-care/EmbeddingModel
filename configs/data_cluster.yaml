@@ -1,0 +1,95 @@
+# ============================================================
+# DataCluster 平台配置文件
+# 此文件为 DataCluster 模块的独立配置，包括：
+#   1. 各 backbone 对应的预训练权重路径
+#   2. 训练/模型/MoCo/损失 默认参数
+#   3. 存储路径
+#
+# 注意：训练默认会加载下方 backbones.<backbone>.pretrained_path 指定的
+#       backbone 预训练权重（除非实验 config 显式提供 pretrainedPath 覆盖）。
+# ============================================================
+
+data_cluster:
+
+  # ---------- Backbone 预训练权重配置 ----------
+  # key 对应 exp config 中的 backbone 参数
+  backbones:
+    convnext_tiny:
+      backbone_config: "configs/backbone/convnext_tiny.yaml"
+      pretrained_path: "checkpoints/supcon_models/0424_bs64x4/checkpoint_epoch_300.pth"
+    convnext_small:
+      backbone_config: "configs/backbone/convnext_small.yaml"
+      pretrained_path: "pretrain_ckpts/dinov3_convnext_small.pth"
+    convnext_base:
+      backbone_config: "configs/backbone/convnext_base.yaml"
+      pretrained_path: "pretrain_ckpts/dinov3_convnext_base.pth"
+    convnext_large:
+      backbone_config: "configs/backbone/convnext_large.yaml"
+      pretrained_path: "pretrain_ckpts/dinov3_convnext_large.pth"
+
+  # ---------- 训练默认参数 ----------
+  # Web UI 创建实验时可覆盖这些值
+  training:
+    default_backbone: "convnext_tiny"
+    epochs: 100
+    learning_rate: 0.0001
+    weight_decay: 0.05
+    backbone_lr_ratio: 0.1
+    save_interval: 5
+    use_amp: false
+    eval_interval: 1
+    lr_scheduler: "cosine"   # 'cosine' | 'step'
+
+  training_strategy:
+    freeze_backbone_epochs: 0
+
+  # ---------- 模型架构参数 ----------
+  model:
+    backbone: "convnext_tiny"
+    embedding_dim: 128
+    projection_hidden_dims: [256, 128]
+    fpn_out_channels: 256
+    fusion_dim: 512
+    use_layers: [0, 1, 2, 3]
+    segmentation:
+      enabled: true
+      layer_idx: 0
+
+  # ---------- MoCo 默认参数 ----------
+  moco:
+    enabled: false
+    momentum: 0.995
+    queue_size: 16384
+    loss_type: "supervised"
+
+  # ---------- 损失默认参数 ----------
+  loss:
+    supcon:
+      temperature: 0.1
+    neg_weight: 0.2
+    margin: 0.0
+    segmentation:
+      weight: 0.5
+      bce_weight: 0.4
+      dice_weight: 0.4
+      ratio_weight: 0.1
+      target_foreground_ratio: 0.1
+      max_foreground_ratio: 0.1
+
+  # ---------- 数据默认参数 ----------
+  data:
+    image_size: 224
+    batch_size: 16
+    num_workers: 4
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2
+    repeat_factor: 1
+    mask_dilation:
+      enabled: true
+      method: "fast_pool"
+      fast_gamma: 0.8
+
+  # ---------- 输出默认 ----------
+  output:
+    log_dir: "logs/data_cluster"

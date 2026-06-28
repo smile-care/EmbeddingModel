@@ -34,20 +34,20 @@ except ImportError:
 # 添加src到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.supcon_train.datasets.supcon_dataset import (MultiScaleBatchSampler, SupConDataset,
-                                                      multi_scale_collate_fn)
-from src.supcon_train.models.backbone.dinov3_convnext import DINOv3ConvNextConfig
-from src.supcon_train.models.backbone.dinov3_vit import DINOv3ViTConfig
-from src.supcon_train.models.convnext_model import ConvNeXtModel
-from src.supcon_train.models.losses import ComprehensiveSegmentationLoss, SupervisedContrastiveLoss
-from src.supcon_train.models.moco_loss import MoCoLoss
-from src.supcon_train.models.moco_model import MoCoModel
-from src.supcon_train.models.moco_queue import MoCoQueue
-from src.supcon_train.models.vit_model import ViTModel
-from src.utils.config_loader import load_config
-from src.utils.logging import setup_logger
-from src.utils.metrics import knn_evaluation, similarity_distribution_stats
-from src.utils.visualization import plot_loss_curve
+from src.embedding_model.supcon.datasets.supcon_dataset import (MultiScaleBatchSampler, SupConDataset,
+                                                             multi_scale_collate_fn)
+from src.embedding_model.supcon.models.backbone.dinov3_convnext import DINOv3ConvNextConfig
+from src.embedding_model.supcon.models.backbone.dinov3_vit import DINOv3ViTConfig
+from src.embedding_model.supcon.models.convnext_model import ConvNeXtModel
+from src.embedding_model.supcon.models.losses import ComprehensiveSegmentationLoss, SupervisedContrastiveLoss
+from src.embedding_model.supcon.models.moco_loss import MoCoLoss
+from src.embedding_model.supcon.models.moco_model import MoCoModel
+from src.embedding_model.supcon.models.moco_queue import MoCoQueue
+from src.embedding_model.supcon.models.vit_model import ViTModel
+from src.embedding_model.utils.config_loader import load_config
+from src.embedding_model.utils.logging import setup_logger
+from src.embedding_model.utils.metrics import knn_evaluation, similarity_distribution_stats
+from src.embedding_model.utils.visualization import plot_loss_curve
 
 os.environ['QT_QPA_PLATFORM'] = 'offscreen'
 

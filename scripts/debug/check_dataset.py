@@ -21,9 +21,9 @@ matplotlib.rc("font",family='AR PL UKai CN')
 
 sys.path.append("./")
 
-from src.supcon_train.datasets.supcon_dataset import MultiConfigDataset, SupConDataset
-from src.utils.config_loader import load_config
-from src.utils.visualization import denormalize_image
+from src.embedding_model.supcon.datasets.supcon_dataset import MultiConfigDataset, SupConDataset
+from src.embedding_model.utils.config_loader import load_config
+from src.embedding_model.utils.visualization import denormalize_image
 
 if __name__ == "__main__":
     config_path = 'configs/supcon_config.yaml'

@@ -9,7 +9,7 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
-from ..supcon_train.models.supcon_model import SupConModel
+from ..supcon.models.convnext_model import ConvNeXtModel
 from ..utils.config_loader import load_config
 
 
@@ -42,13 +42,13 @@ class EmbeddingExtractor:
             model_config = checkpoint.get('config', {}).get('supcon', {}).get('model', {})
         
         # 创建模型
-        self.model = SupConModel(
-            backbone_type=model_config.get('backbone', 'vit_base'),
-            backbone_checkpoint=None,  # 权重已在checkpoint中
+        self.model = ConvNeXtModel(
+            backbone_cfg=None,  # 权重已在checkpoint中
+            ckpt_path=None,
             embedding_dim=model_config.get('embedding_dim', 128),
             projection_hidden_dims=model_config.get('projection_head', {}).get('hidden_dims', [256, 128]),
-            num_classes=None,  # 不需要分类头
-            image_size=224
+            image_size=224,
+            enable_segmentation=False,
         ).to(self.device)
         
         # 加载权重
@@ -103,7 +103,8 @@ class EmbeddingExtractor:
         image_tensor = transform(image).unsqueeze(0).to(self.device)
         
         with torch.no_grad():
-            outputs = self.model(image_tensor, return_features=False)
+            mask = torch.ones(1, 1, 224, 224).to(self.device)
+            outputs = self.model(image_tensor, mask, return_features=False)
             embedding = outputs['embeddings'].cpu().numpy()[0]
         
         return embedding
@@ -194,7 +195,8 @@ class EmbeddingExtractor:
                 instance_ids = batch['instance_id']
                 labels = batch['label']
                 
-                outputs = self.model(images, return_features=False)
+                mask = torch.ones(images.shape[0], 1, images.shape[2], images.shape[3]).to(self.device)
+                outputs = self.model(images, mask, return_features=False)
                 embeddings = outputs['embeddings'].cpu().numpy()
                 
                 for i, instance_id in enumerate(instance_ids):
