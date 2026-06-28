@@ -287,13 +287,33 @@ function openAnnotator(img: DatasetImage) {
   annotatingImage.value = img;
 }
 
-async function onAnnotatorSave(regions: RegionInput[]) {
+// ── Continuous image switching ────────────────────────────────────────────────
+const annotImages = computed<DatasetImage[]>(() => detail.value?.images ?? []);
+const annotIndex = computed(() =>
+  annotatingImage.value ? annotImages.value.findIndex((i) => i.id === annotatingImage.value!.id) : -1,
+);
+const annotHasPrev = computed(() => annotIndex.value > 0);
+const annotHasNext = computed(() => annotIndex.value >= 0 && annotIndex.value < annotImages.value.length - 1);
+
+function navigateAnnotator(dir: -1 | 1) {
+  const next = annotImages.value[annotIndex.value + dir];
+  if (next) annotatingImage.value = next;
+}
+
+async function onAnnotatorSave(regions: RegionInput[], advance = false) {
   if (!annotatingImage.value) return;
+  const currentId = annotatingImage.value.id;
   annotatorSaving.value = true;
   try {
-    await DatasetsApi.saveAnnotation(annotatingImage.value.id, regions, true);
-    annotatingImage.value = null;
+    await DatasetsApi.saveAnnotation(currentId, regions, true);
     await refreshDetail();
+    if (advance) {
+      const list = detail.value?.images ?? [];
+      const idx = list.findIndex((i) => i.id === currentId);
+      annotatingImage.value = idx >= 0 ? (list[idx + 1] ?? null) : null;
+    } else {
+      annotatingImage.value = null;
+    }
   } catch (e) {
     window.alert(e instanceof ApiError ? e.message : 'Save failed.');
   } finally {
@@ -596,7 +616,12 @@ function onPreviewWheel(e: WheelEvent) {
     :initial-regions="annotatorRegions"
     :saving="annotatorSaving"
     :create-class="createClassInline"
+    :index="annotIndex + 1"
+    :total="annotImages.length"
+    :has-prev="annotHasPrev"
+    :has-next="annotHasNext"
     @save="onAnnotatorSave"
+    @navigate="navigateAnnotator"
     @cancel="annotatingImage = null"
   />
 

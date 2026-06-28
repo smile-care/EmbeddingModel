@@ -1,8 +1,9 @@
 <script setup lang="ts">
 import {computed, onBeforeUnmount, onMounted, ref, watch} from 'vue';
-import {Check, Hand, Minus, MousePointer2, Plus, Redo2, RotateCcw, Trash2, Undo2, X, ZoomIn, ZoomOut} from 'lucide-vue-next';
+import {Check, ChevronLeft, ChevronRight, Hand, Minus, MousePointer2, Plus, Redo2, RotateCcw, Sparkles, Trash2, Undo2, Wand2, X, ZoomIn, ZoomOut} from 'lucide-vue-next';
 import {classColor, type AnnotationRegion, type DefectClass, type RegionInput} from '../../lib/api';
 import {clientToNorm, clonePoints, dist, toSvgPoints, type Point} from './geometry';
+import {buildWandSource, magicWandPolygon, type WandSource} from './magicWand';
 
 interface EditRegion {
   id: string;
@@ -19,18 +20,33 @@ const props = defineProps<{
   saving?: boolean;
   /** Optional async hook to create a new defect class; returns the created class. */
   createClass?: (name: string, color: string) => Promise<DefectClass>;
+  /** 1-based position of the current image within the dataset (for navigation). */
+  index?: number;
+  total?: number;
+  hasPrev?: boolean;
+  hasNext?: boolean;
 }>();
 
 const emit = defineEmits<{
-  (e: 'save', regions: RegionInput[]): void;
+  (e: 'save', regions: RegionInput[], advance: boolean): void;
   (e: 'cancel'): void;
+  (e: 'navigate', dir: -1 | 1): void;
 }>();
 
 // ── State ────────────────────────────────────────────────────────────────────
-type Tool = 'draw' | 'pan';
+type Tool = 'draw' | 'wand' | 'pan';
 const tool = ref<Tool>('draw');
 const subtractMode = ref(false);
 const currentClassId = ref<string | null>(null);
+
+// magic-wand
+const wandTolerance = ref(28);
+const wandSource = ref<WandSource | null>(null);
+const wandBusy = ref(false);
+
+// dirty tracking (for navigation guard)
+const dirty = ref(false);
+function markDirty() { dirty.value = true; }
 
 const regions = ref<EditRegion[]>([]);
 const draft = ref<Point[]>([]);
@@ -41,6 +57,8 @@ const hoverNorm = ref<Point | null>(null);
 const scale = ref(1);
 const tx = ref(0);
 const ty = ref(0);
+/** natural image size (px), used to keep vertex markers a constant screen size */
+const nat = ref({w: 0, h: 0});
 
 const viewport = ref<HTMLElement | null>(null);
 const imgEl = ref<HTMLImageElement | null>(null);
@@ -56,6 +74,7 @@ function pushHistory() {
   past.push(snapshot());
   if (past.length > 100) past.shift();
   future.length = 0;
+  markDirty();
 }
 
 const uid = () => `r_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -71,9 +90,10 @@ function loadInitial() {
   past.length = 0;
   future.length = 0;
   selectedRegionId.value = null;
+  dirty.value = false;
 }
 
-watch(() => props.imageUrl, () => { resetView(); loadInitial(); });
+watch(() => props.imageUrl, () => { resetView(); loadInitial(); wandSource.value = null; });
 watch(
   () => props.classes,
   (cls) => {
@@ -112,7 +132,12 @@ function onPointerDown(e: PointerEvent) {
     return;
   }
   if (e.button !== 0) return;
-  if (tool.value !== 'draw' || !imgEl.value) return;
+  if (!imgEl.value) return;
+  if (tool.value === 'wand') {
+    runMagicWand(clientToNorm(imgEl.value, e.clientX, e.clientY));
+    return;
+  }
+  if (tool.value !== 'draw') return;
   const p = clientToNorm(imgEl.value, e.clientX, e.clientY);
   // close polygon if clicking near the first point
   if (draft.value.length >= 3 && dist(p, draft.value[0]) < 0.015) {
@@ -159,6 +184,48 @@ function cancelDraft() {
   draft.value = [];
 }
 
+// ── Magic wand ────────────────────────────────────────────────────────────────
+function onImgLoad() {
+  // (re)capture pixels lazily; rebuilt on first wand use if still null
+  wandSource.value = imgEl.value ? buildWandSource(imgEl.value) : null;
+  fitView();
+}
+
+function runMagicWand(p: Point) {
+  if (!imgEl.value) return;
+  if (!wandSource.value) wandSource.value = buildWandSource(imgEl.value);
+  const src = wandSource.value;
+  if (!src) {
+    window.alert('无法读取该图片像素（可能跨域），魔术棒不可用。');
+    return;
+  }
+  wandBusy.value = true;
+  try {
+    const poly = magicWandPolygon(src, p, wandTolerance.value);
+    if (!poly || poly.length < 3) return;
+    pushHistory();
+    regions.value = [
+      ...regions.value,
+      {
+        id: uid(),
+        classId: subtractMode.value ? null : currentClassId.value,
+        points: poly,
+        isSubtract: subtractMode.value,
+      },
+    ];
+  } finally {
+    wandBusy.value = false;
+  }
+}
+
+// ── Image navigation ──────────────────────────────────────────────────────────
+function requestNavigate(dir: -1 | 1) {
+  if (dir === -1 && !props.hasPrev) return;
+  if (dir === 1 && !props.hasNext) return;
+  if (dirty.value && !window.confirm('当前图片有未保存的修改，确定切换并放弃？')) return;
+  emit('navigate', dir);
+}
+
 function undoVertex() {
   if (draft.value.length > 0) {
     draft.value = draft.value.slice(0, -1);
@@ -203,7 +270,7 @@ function applyZoom(factor: number, originClientX?: number, originClientY?: numbe
   const rect = vp.getBoundingClientRect();
   const ox = (originClientX ?? rect.left + rect.width / 2) - rect.left;
   const oy = (originClientY ?? rect.top + rect.height / 2) - rect.top;
-  const newScale = Math.min(8, Math.max(0.2, scale.value * factor));
+  const newScale = Math.min(8, Math.max(0.05, scale.value * factor));
   const ratio = newScale / scale.value;
   // keep the point under cursor stationary
   tx.value = ox - (ox - tx.value) * ratio;
@@ -216,10 +283,30 @@ function onWheel(e: WheelEvent) {
   applyZoom(e.deltaY < 0 ? 1.12 : 1 / 1.12, e.clientX, e.clientY);
 }
 
+/** Scale the image to fit the viewport and center it. */
+function fitView() {
+  const vp = viewport.value;
+  const img = imgEl.value;
+  const iw = img?.naturalWidth ?? 0;
+  const ih = img?.naturalHeight ?? 0;
+  if (!vp || !iw || !ih) {
+    scale.value = 1;
+    tx.value = 0;
+    ty.value = 0;
+    return;
+  }
+  nat.value = {w: iw, h: ih};
+  const rect = vp.getBoundingClientRect();
+  const pad = 32;
+  const s = Math.min((rect.width - pad) / iw, (rect.height - pad) / ih);
+  const fit = Math.min(8, Math.max(0.05, s));
+  scale.value = fit;
+  tx.value = (rect.width - iw * fit) / 2;
+  ty.value = (rect.height - ih * fit) / 2;
+}
+
 function resetView() {
-  scale.value = 1;
-  tx.value = 0;
-  ty.value = 0;
+  fitView();
 }
 
 // ── Keyboard ─────────────────────────────────────────────────────────────────
@@ -236,6 +323,10 @@ function onKeyDown(e: KeyboardEvent) {
     if (e.ctrlKey || e.metaKey) { e.shiftKey ? redo() : undo(); }
     else undoVertex();
   }
+  else if (e.key === 'b' || e.key === 'B') tool.value = 'draw';
+  else if (e.key === 'w' || e.key === 'W') tool.value = 'wand';
+  else if (e.key === '[') requestNavigate(-1);
+  else if (e.key === ']') requestNavigate(1);
 }
 function onKeyUp(e: KeyboardEvent) {
   if (e.code === 'Space') spaceHeld.value = false;
@@ -244,11 +335,15 @@ function onKeyUp(e: KeyboardEvent) {
 onMounted(() => {
   window.addEventListener('keydown', onKeyDown);
   window.addEventListener('keyup', onKeyUp);
+  window.addEventListener('resize', fitView);
   loadInitial();
+  // image may already be decoded (cached) before @load was attached
+  if (imgEl.value?.complete && imgEl.value.naturalWidth) onImgLoad();
 });
 onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKeyDown);
   window.removeEventListener('keyup', onKeyUp);
+  window.removeEventListener('resize', fitView);
 });
 
 // ── New class form ───────────────────────────────────────────────────────────
@@ -270,14 +365,14 @@ async function addClass() {
 
 // ── Save ─────────────────────────────────────────────────────────────────────
 const canSave = computed(() => regions.value.some((r) => !r.isSubtract));
-function onSave() {
+function onSave(advance = false) {
   finishDraft();
   const payload: RegionInput[] = regions.value.map((r) => ({
     classId: r.isSubtract ? null : r.classId,
     points: r.points,
     isSubtract: r.isSubtract,
   }));
-  emit('save', payload);
+  emit('save', payload, advance);
 }
 
 const stageStyle = computed(() => ({
@@ -292,6 +387,18 @@ const draftPreview = computed<Point[]>(() => {
 
 const regionCount = computed(() => regions.value.filter((r) => !r.isSubtract).length);
 const subtractCount = computed(() => regions.value.filter((r) => r.isSubtract).length);
+
+// Vertex markers are SVG circles in a 0-100 viewBox stretched over the image and
+// then scaled by the stage transform, so their on-screen size would grow with
+// zoom. Counter that by deriving rx/ry (per axis, since aspect may differ) that
+// resolve to a constant ~4.5px radius regardless of zoom / image size.
+const MARKER_PX = 4.5;
+const markerRx = computed(() =>
+  nat.value.w ? (100 * MARKER_PX) / (nat.value.w * scale.value) : 0.6,
+);
+const markerRy = computed(() =>
+  nat.value.h ? (100 * MARKER_PX) / (nat.value.h * scale.value) : 0.6,
+);
 </script>
 
 <template>
@@ -302,6 +409,20 @@ const subtractCount = computed(() => regions.value.filter((r) => r.isSubtract).l
         <span class="text-sm font-semibold truncate">{{ imageName || 'Annotate image' }}</span>
         <span class="text-xs text-muted-foreground">{{ regionCount }} regions · {{ subtractCount }} holes</span>
       </div>
+
+      <!-- Image navigation -->
+      <div v-if="total && total > 1" class="flex items-center gap-1.5">
+        <button
+          class="inline-flex items-center justify-center rounded-md border border-border p-1.5 text-muted-foreground hover:bg-accent disabled:opacity-40"
+          title="上一张 ( [ )" :disabled="!hasPrev" @click="requestNavigate(-1)"
+        ><ChevronLeft class="h-4 w-4" /></button>
+        <span class="min-w-[3.5rem] text-center text-xs tabular-nums text-muted-foreground">{{ index ?? '?' }} / {{ total }}</span>
+        <button
+          class="inline-flex items-center justify-center rounded-md border border-border p-1.5 text-muted-foreground hover:bg-accent disabled:opacity-40"
+          title="下一张 ( ] )" :disabled="!hasNext" @click="requestNavigate(1)"
+        ><ChevronRight class="h-4 w-4" /></button>
+      </div>
+
       <div class="flex items-center gap-2">
         <button
           class="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm hover:bg-accent"
@@ -310,9 +431,18 @@ const subtractCount = computed(() => regions.value.filter((r) => r.isSubtract).l
           <X class="h-4 w-4" /> Cancel
         </button>
         <button
+          v-if="hasNext"
+          class="inline-flex items-center gap-1.5 rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent disabled:opacity-50"
+          :disabled="!canSave || saving"
+          title="保存并切到下一张"
+          @click="onSave(true)"
+        >
+          <Check class="h-4 w-4" /> 保存并下一张
+        </button>
+        <button
           class="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
           :disabled="!canSave || saving"
-          @click="onSave"
+          @click="onSave(false)"
         >
           <Check class="h-4 w-4" /> {{ saving ? 'Saving…' : 'Save & crop' }}
         </button>
@@ -326,8 +456,12 @@ const subtractCount = computed(() => regions.value.filter((r) => r.isSubtract).l
         <div class="absolute left-3 top-3 z-10 flex flex-col gap-1 rounded-lg border border-border bg-card/90 p-1 shadow">
           <button
             class="rounded-md p-2 hover:bg-accent" :class="tool === 'draw' ? 'bg-accent text-foreground' : 'text-muted-foreground'"
-            title="Draw polygon" @click="tool = 'draw'"
+            title="Draw polygon (B)" @click="tool = 'draw'"
           ><MousePointer2 class="h-4 w-4" /></button>
+          <button
+            class="rounded-md p-2 hover:bg-accent" :class="tool === 'wand' ? 'bg-accent text-foreground' : 'text-muted-foreground'"
+            title="Magic wand (W) — 点击相近颜色区域自动勾勒" @click="tool = 'wand'"
+          ><Wand2 class="h-4 w-4" /></button>
           <button
             class="rounded-md p-2 hover:bg-accent" :class="tool === 'pan' ? 'bg-accent text-foreground' : 'text-muted-foreground'"
             title="Pan (or hold Space)" @click="tool = 'pan'"
@@ -341,10 +475,32 @@ const subtractCount = computed(() => regions.value.filter((r) => r.isSubtract).l
           <button class="rounded-md p-2 text-muted-foreground hover:bg-accent" title="Redo (Ctrl+Shift+Z)" @click="redo"><Redo2 class="h-4 w-4" /></button>
         </div>
 
+        <!-- Magic-wand tolerance -->
+        <div
+          v-if="tool === 'wand'"
+          class="absolute left-16 top-3 z-10 w-56 rounded-lg border border-border bg-card/95 p-3 shadow"
+        >
+          <div class="mb-1.5 flex items-center justify-between text-xs">
+            <span class="inline-flex items-center gap-1 font-medium text-foreground"><Sparkles class="h-3.5 w-3.5 text-amber-400" /> 魔术棒容差</span>
+            <span class="tabular-nums text-muted-foreground">{{ wandTolerance }}</span>
+          </div>
+          <input
+            v-model.number="wandTolerance"
+            type="range" min="2" max="120" step="1"
+            class="w-full accent-primary"
+          />
+          <p class="mt-1.5 text-[11px] leading-snug text-muted-foreground">
+            点击图片中颜色相近的区域，自动生成多边形。容差越大，选区越宽松。
+          </p>
+        </div>
+
         <div
           ref="viewport"
           class="h-full w-full overflow-hidden bg-[#0b0b0d]"
-          :class="tool === 'pan' || spaceHeld ? 'cursor-grab' : 'cursor-crosshair'"
+          :class="[
+            tool === 'pan' || spaceHeld ? 'cursor-grab' : 'cursor-crosshair',
+            wandBusy ? 'cursor-wait' : '',
+          ]"
           @wheel="onWheel"
           @pointerdown="onPointerDown"
           @pointermove="onPointerMove"
@@ -359,6 +515,7 @@ const subtractCount = computed(() => regions.value.filter((r) => r.isSubtract).l
               alt="annotation target"
               draggable="false"
               class="block max-w-none select-none"
+              @load="onImgLoad"
             />
             <svg
               class="pointer-events-none absolute inset-0 h-full w-full"
@@ -387,13 +544,16 @@ const subtractCount = computed(() => regions.value.filter((r) => r.isSubtract).l
                 stroke-width="0.5"
                 vector-effect="non-scaling-stroke"
               />
-              <circle
+              <ellipse
                 v-for="(p, i) in draft"
                 :key="i"
                 :cx="p[0] * 100"
                 :cy="p[1] * 100"
-                r="0.8"
-                :fill="i === 0 ? '#fafafa' : (subtractMode ? '#94a3b8' : colorFor(currentClassId, false))"
+                :rx="i === 0 ? markerRx * 1.35 : markerRx"
+                :ry="i === 0 ? markerRy * 1.35 : markerRy"
+                :fill="subtractMode ? '#94a3b8' : colorFor(currentClassId, false)"
+                :stroke="i === 0 ? '#fafafa' : '#0b0b0d'"
+                stroke-width="1.25"
                 vector-effect="non-scaling-stroke"
               />
             </svg>
@@ -401,7 +561,8 @@ const subtractCount = computed(() => regions.value.filter((r) => r.isSubtract).l
         </div>
 
         <div class="absolute bottom-3 left-1/2 -translate-x-1/2 rounded-md border border-border bg-card/90 px-3 py-1.5 text-xs text-muted-foreground shadow">
-          Click to add points · double-click / right-click / Enter to close · Z removes last point · scroll to zoom · Space to pan
+          <template v-if="tool === 'wand'">魔术棒：点击颜色相近区域自动勾勒 · 调节容差 · B 切回画笔 · 滚轮缩放 · 空格平移</template>
+          <template v-else>点击打点 · 双击/右键/Enter 闭合 · Z 撤销点 · W 魔术棒 · 滚轮缩放 · 空格平移<template v-if="total && total > 1"> · [ ] 切换图片</template></template>
         </div>
       </div>
 
