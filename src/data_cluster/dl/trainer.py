@@ -29,7 +29,7 @@ from embedding_model.supcon.datasets.manifest_triplet_dataset import DataCluster
 from embedding_model.supcon.datasets.supcon_dataset import SupConDataset
 from embedding_model.supcon.models.losses import SupervisedContrastiveLoss
 from embedding_model.utils.config_loader import load_config
-from embedding_model.utils.metrics import knn_evaluation, similarity_distribution_stats
+from embedding_model.utils.metrics import similarity_distribution_stats
 from embedding_model.utils.visualization import plot_loss_curve
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -252,7 +252,7 @@ class SupconTrainer:
 
     @torch.no_grad()
     def validate(self) -> dict:
-        """在共用数据上计算相似度分布 (Margin) 与 kNN 评估指标。"""
+        """在共用数据上计算嵌入相似度分布 (PosSim / NegSim / Margin)。"""
         self.model.eval()
         total_loss = 0.0
         num_batches = 0
@@ -276,20 +276,17 @@ class SupconTrainer:
             emb_all = torch.cat(all_embeddings, dim=0).to(self.device)
             lbl_all = torch.cat(all_labels, dim=0).to(self.device)
             sim = similarity_distribution_stats(emb_all, lbl_all)
-            knn = knn_evaluation(emb_all, lbl_all, k=10)
             margin_pos_sim = sim["pos_sim"]
             margin_neg_sim = sim["neg_sim"]
             margin = sim["margin"]
-            knn_accuracy = knn.get("knn_accuracy", 0.0)
         else:
-            margin_pos_sim = margin_neg_sim = margin = knn_accuracy = 0.0
+            margin_pos_sim = margin_neg_sim = margin = 0.0
 
         return {
             "loss": total_loss / num_batches if num_batches > 0 else 0.0,
             "margin_pos_sim": margin_pos_sim,
             "margin_neg_sim": margin_neg_sim,
             "margin": margin,
-            "knn_accuracy": knn_accuracy,
         }
 
     # ------------------------------------------------------------------- run
@@ -361,7 +358,7 @@ class SupconTrainer:
                     f"\n  [val] loss={val_metrics['loss']:.4f}, "
                     f"PosSim={val_metrics['margin_pos_sim']:.4f}, "
                     f"NegSim={val_metrics['margin_neg_sim']:.4f}, "
-                    f"Margin={val_metrics['margin']:.4f}, kNN={val_metrics['knn_accuracy']:.4f}"
+                    f"Margin={val_metrics['margin']:.4f}"
                 )
             self.logger.info(log_msg)
 

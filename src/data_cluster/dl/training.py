@@ -24,6 +24,7 @@ TRAINING_INFO_FILENAME = "training_info.csv"
 DATASET_CSV_FILENAME = "dataset.csv"
 DEFAULT_VAL_RATIO = 0.2
 MIN_CLASSES_FOR_TRAINING = 2
+MIN_CROPS_PER_CLASS = 2
 # DataCluster 自有配置文件
 DC_CONFIG_PATH = (
     Path(__file__).resolve().parents[3] / "configs" / "data_cluster.yaml"
@@ -242,7 +243,18 @@ def _build_experiment_samples(
         grouped[str(meta["category_name"])].append(crop)
 
     if len(grouped) < MIN_CLASSES_FOR_TRAINING:
-        raise ValueError("训练至少需要 2 个类别的 crop 样本")
+        raise ValueError(f"训练至少需要 {MIN_CLASSES_FOR_TRAINING} 个类别的 crop 样本")
+
+    too_few = {
+        name: len(crops_in_cat)
+        for name, crops_in_cat in grouped.items()
+        if len(crops_in_cat) < MIN_CROPS_PER_CLASS
+    }
+    if too_few:
+        detail = "，".join(f"{name}: {n} 张" for name, n in sorted(too_few.items()))
+        raise ValueError(
+            f"每个类别至少需要 {MIN_CROPS_PER_CLASS} 张训练样本，以下类别不足（{detail}）"
+        )
 
     samples: list[ExperimentSample] = []
     sort_order = 0
@@ -574,12 +586,13 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
     return {"supcon": sup}
 
 
-def _format_accuracy(summary: dict[str, Any] | None) -> str:
+def _format_quality(summary: dict[str, Any] | None) -> str:
+    """实验质量摘要（用于列表展示）：以验证集 Margin 为主，缺失时退回训练损失。"""
     if not summary:
         return "---"
     val_metrics = summary.get("last_val_metrics")
-    if isinstance(val_metrics, dict) and val_metrics.get("knn_accuracy") is not None:
-        return f"{float(val_metrics['knn_accuracy']) * 100:.2f}%"
+    if isinstance(val_metrics, dict) and val_metrics.get("margin") is not None:
+        return f"Margin {float(val_metrics['margin']):.4f}"
     train_metrics = summary.get("last_train_metrics")
     if isinstance(train_metrics, dict) and train_metrics.get("loss") is not None:
         return f"loss={float(train_metrics['loss']):.4f}"
@@ -600,9 +613,11 @@ def run_training_job(experiment_id: str) -> None:
         if not exp:
             return
 
-        exp.status = "Running"
-        exp.progress = 0.0
-        exp.metrics = {"stage": "preparing_dataset"}
+        # 只更新「本次运行」字段；结果字段（status/metrics/checkpoint_path）保持上一次成功的值，
+        # 重训进行中/中止/失败都不会清掉上一次成功的 dashboard 与推理可用模型。
+        exp.run_status = "Running"
+        exp.run_progress = 0.0
+        exp.run_metrics = {"stage": "preparing_dataset"}
         db.commit()
 
         if not exp.samples:
@@ -632,7 +647,6 @@ def run_training_job(experiment_id: str) -> None:
         # Accumulate per-epoch series for live chart rendering
         live_train_losses: list[float] = []
         live_val_losses: list[float] = []
-        live_knn_accuracies: list[float] = []
         live_margins: list[float] = []
         live_pos_sims: list[float] = []
         live_neg_sims: list[float] = []
@@ -651,8 +665,6 @@ def run_training_job(experiment_id: str) -> None:
                 live_train_losses.append(float(tm["loss"]))
             if vm.get("loss") is not None:
                 live_val_losses.append(float(vm["loss"]))
-            if vm.get("knn_accuracy") is not None:
-                live_knn_accuracies.append(float(vm["knn_accuracy"]))
             if vm.get("margin") is not None:
                 live_margins.append(float(vm["margin"]))
             if vm.get("PosSim") is not None:
@@ -677,8 +689,8 @@ def run_training_job(experiment_id: str) -> None:
             current = db.get(Experiment, experiment_id)
             if not current:
                 return False
-            current.progress = float(payload.get("progress", 0.0))
-            current.metrics = normalize_experiment_metrics(
+            current.run_progress = float(payload.get("progress", 0.0))
+            current.run_metrics = normalize_experiment_metrics(
                 {
                     "stage": "training",
                     "epoch": epoch,
@@ -688,7 +700,6 @@ def run_training_job(experiment_id: str) -> None:
                     "liveSeries": {
                         "trainLosses": list(live_train_losses),
                         "valLosses": list(live_val_losses),
-                        "knnAccuracies": list(live_knn_accuracies),
                         "margins": list(live_margins),
                         "posSims": list(live_pos_sims),
                         "negSims": list(live_neg_sims),
@@ -717,43 +728,59 @@ def run_training_job(experiment_id: str) -> None:
         checkpoint_path = Path(summary["checkpoint_path"])
 
         # Embed the accumulated live series into the final summary so the
-        # completed dashboard can render per-epoch kNN / margin curves.
+        # completed dashboard can render per-epoch loss / margin curves.
         summary["liveSeries"] = {
             "trainLosses": live_train_losses,
             "valLosses": live_val_losses,
-            "knnAccuracies": live_knn_accuracies,
             "margins": live_margins,
             "posSims": live_pos_sims,
             "negSims": live_neg_sims,
         }
         summary = normalize_experiment_metrics({"summary": summary}, _inplace=True)["summary"]
 
-        final_stage = "stopped" if was_stopped else "completed"
-        exp.status = "Stopped" if was_stopped else "Completed"
-        exp.progress = float(exp.progress or 0.0) if was_stopped else 100.0
-        exp.duration = f"{int(time.time() - started_at)}s"
-        exp.accuracy = _format_accuracy(summary)
-        exp.checkpoint_path = str(checkpoint_path.resolve()) if checkpoint_path.exists() else None
-        exp.metrics = normalize_experiment_metrics(
-            {
-                "stage": final_stage,
-                "summary": summary,
-                "trainSampleCount": sum(1 for sample in exp.samples if sample.split == "train"),
-                "valSampleCount": sum(1 for sample in exp.samples if sample.split == "val"),
-            },
-            _inplace=True,
-        )
-        db.commit()
+        if was_stopped:
+            # 中止视为「未完成」：不提升为结果，仅记录本次运行状态；保留上一次成功的
+            # 结果字段与 checkpoint，使 dashboard 继续显示上一次成功页 + 中止横幅。
+            exp.run_status = "Stopped"
+            exp.run_metrics = normalize_experiment_metrics(
+                {
+                    "stage": "stopped",
+                    "summary": summary,
+                    "epochsRun": len(live_train_losses),
+                },
+                _inplace=True,
+            )
+            db.commit()
+        else:
+            # 成功完成：提升为 last-good 结果，并清空本次运行的实时指标。
+            exp.run_status = "Completed"
+            exp.run_progress = 100.0
+            exp.run_metrics = {"stage": "completed"}
+            exp.status = "Completed"
+            exp.progress = 100.0
+            exp.duration = f"{int(time.time() - started_at)}s"
+            exp.accuracy = _format_quality(summary)
+            if checkpoint_path.exists():
+                exp.checkpoint_path = str(checkpoint_path.resolve())
+            exp.metrics = normalize_experiment_metrics(
+                {
+                    "stage": "completed",
+                    "summary": summary,
+                    "trainSampleCount": sum(1 for sample in exp.samples if sample.split == "train"),
+                    "valSampleCount": sum(1 for sample in exp.samples if sample.split == "val"),
+                },
+                _inplace=True,
+            )
+            db.commit()
 
-        _write_training_info_csv(run_dir / TRAINING_INFO_FILENAME, exp, checkpoint_path, settings)
+            _write_training_info_csv(run_dir / TRAINING_INFO_FILENAME, exp, checkpoint_path, settings)
     except Exception as exc:
         _stop_flags.pop(experiment_id, None)
         exp = db.get(Experiment, experiment_id)
         if exp:
-            exp.status = "Failed"
-            exp.progress = 0.0
-            exp.accuracy = "---"
-            exp.metrics = {
+            # 失败视为「未完成」：只更新本次运行状态，保留上一次成功的结果与 checkpoint。
+            exp.run_status = "Failed"
+            exp.run_metrics = {
                 "stage": "failed",
                 "error": str(exc),
             }

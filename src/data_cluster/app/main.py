@@ -31,11 +31,17 @@ def _reset_stale_running_experiments() -> None:
     from data_cluster.app.models.db import Experiment
     db = SessionLocal()
     try:
-        stale = db.query(Experiment).filter(Experiment.status == "Running").all()
+        # 新模型用 run_status；同时兼容历史数据中遗留的 status == "Running"。
+        stale = (
+            db.query(Experiment)
+            .filter((Experiment.run_status == "Running") | (Experiment.status == "Running"))
+            .all()
+        )
         for exp in stale:
-            exp.status = "Failed"
-            existing = exp.metrics or {}
-            exp.metrics = {
+            # 只标记「本次运行」为失败；上一次成功的结果字段保持不变。
+            exp.run_status = "Failed"
+            existing = exp.run_metrics or {}
+            exp.run_metrics = {
                 **existing,
                 "stage": "failed",
                 "error": "训练进程因后端重启而中断，请重新训练。",

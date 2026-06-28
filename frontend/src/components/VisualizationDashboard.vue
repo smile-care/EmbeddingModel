@@ -1,8 +1,8 @@
 <script setup lang="ts">
-import {computed, onMounted, onUnmounted, ref} from 'vue';
+import {computed, onMounted, onUnmounted, ref, watch} from 'vue';
 import {useRouter} from 'vue-router';
 import VChart from 'vue-echarts';
-import {AlertCircle, ArrowRight, CheckCircle2, Clock, Database, Layers, OctagonX, Tag} from 'lucide-vue-next';
+import {AlertCircle, ArrowRight, CheckCircle2, Clock, Database, Layers, OctagonX, Tag, X} from 'lucide-vue-next';
 import {ExperimentsApi} from '@/lib/api';
 
 const props = defineProps<{experimentId: string}>();
@@ -22,6 +22,9 @@ interface ExperimentDetail {
   valSampleCount: number;
   config: Record<string, any> | null;
   metrics: Record<string, any> | null;
+  runStatus: string | null;
+  runProgress: number;
+  runMetrics: Record<string, any> | null;
 }
 
 const exp = ref<ExperimentDetail | null>(null);
@@ -61,17 +64,65 @@ onUnmounted(() => {
   if (pollTimer) clearTimeout(pollTimer);
 });
 
-// ── Derived state ─────────────────────────────────────────────────────────────
-const stage = computed(() => exp.value?.metrics?.stage ?? null);
-const isActive = computed(() => stage.value === 'training' || stage.value === 'preparing_dataset');
-const summary = computed(() => exp.value?.metrics?.summary ?? null);
+// ── Result vs. live-run separation ─────────────────────────────────────────────
+// `metrics`/`status` = last *successful* result; `runMetrics`/`runStatus` = the
+// most recent training attempt. The dashboard body always renders the last-good
+// result; the current attempt (running / stopped / failed) is shown as a banner.
+const runStatus = computed(() => exp.value?.runStatus ?? null);
+const runMetrics = computed<Record<string, any> | null>(() => exp.value?.runMetrics ?? null);
+const runActive = computed(() => runStatus.value === 'Running');
+const runEnded = computed(() => runStatus.value === 'Failed' || runStatus.value === 'Stopped');
+// A usable last-good result exists if `metrics` holds a completed/stopped payload
+// (with summary). Metrics-based (not status-based) so legacy rows render too, and
+// so a failed/stopped re-train — which never overwrites `metrics` — still shows it.
+const hasResult = computed(() => {
+  const m = exp.value?.metrics;
+  return !!m && (m.stage === 'completed' || m.stage === 'stopped' || !!m.summary);
+});
+const runError = computed<string | null>(() => runMetrics.value?.error ?? null);
+
+// Keep polling while a training attempt is in flight.
+const isActive = computed(() => runActive.value);
+
+// Banner (run notice) dismissal — re-shown whenever the run status changes.
+const noticeDismissed = ref(false);
+
+// Top-level render mode.
+//  - 进行中（含重训）→ 'live'：实时训练视图，实时展示 loss/margin 曲线；
+//  - 已结束且本次失败/中止 → 'result'：回退显示上一次成功结果 + 顶部提示横幅；
+//  - 从未成功 → 首训失败/中止卡片或空态。
+const mode = computed<'live' | 'failedFirst' | 'stoppedFirst' | 'result' | 'empty'>(() => {
+  if (runActive.value) return 'live';
+  if (hasResult.value) return 'result';
+  if (runStatus.value === 'Failed') return 'failedFirst';
+  if (runStatus.value === 'Stopped') return 'stoppedFirst';
+  return 'empty';
+});
+const showRunBanner = computed(
+  () => mode.value === 'result' && runEnded.value && !noticeDismissed.value,
+);
+
+// Re-show the run notice whenever the attempt transitions to a new state.
+watch(runStatus, () => {
+  noticeDismissed.value = false;
+});
+
+// ── Derived state (dashboard body) ──────────────────────────────────────────────
+// 进行中渲染实时运行数据（含实时曲线）；否则渲染上一次成功结果；都没有则用本次运行数据。
+const bodyMetrics = computed<Record<string, any> | null>(() => {
+  if (runActive.value) return runMetrics.value;
+  if (hasResult.value) return exp.value?.metrics ?? null;
+  return runMetrics.value;
+});
+const stage = computed(() => bodyMetrics.value?.stage ?? null);
+const summary = computed(() => bodyMetrics.value?.summary ?? null);
 const config = computed(() => exp.value?.config ?? null);
 const categories = computed<string[]>(() => config.value?.resolvedCategoryNames ?? []);
 
-// Live series — available during training in metrics.liveSeries,
-// and after completion in metrics.summary.liveSeries
+// Live series — available during training in liveSeries,
+// and after completion in summary.liveSeries
 const liveSeries = computed(
-  () => exp.value?.metrics?.liveSeries ?? exp.value?.metrics?.summary?.liveSeries ?? null,
+  () => bodyMetrics.value?.liveSeries ?? bodyMetrics.value?.summary?.liveSeries ?? null,
 );
 
 // Final series (available after completion/stopped)
@@ -81,16 +132,15 @@ const trainLosses = computed<number[]>(() =>
 const valLosses = computed<number[]>(() =>
   liveSeries.value?.valLosses ?? summary.value?.val_losses ?? [],
 );
-const liveKnn = computed<number[]>(() => liveSeries.value?.knnAccuracies ?? []);
 const liveMargins = computed<number[]>(() => liveSeries.value?.margins ?? []);
 const livePosSims = computed<number[]>(() => liveSeries.value?.posSims ?? []);
 const liveNegSims = computed<number[]>(() => liveSeries.value?.negSims ?? []);
 
 const lastValMetrics = computed(() =>
-  exp.value?.metrics?.val ?? summary.value?.last_val_metrics ?? null,
+  bodyMetrics.value?.val ?? summary.value?.last_val_metrics ?? null,
 );
 const lastTrainMetrics = computed(() =>
-  exp.value?.metrics?.train ?? summary.value?.last_train_metrics ?? null,
+  bodyMetrics.value?.train ?? summary.value?.last_train_metrics ?? null,
 );
 
 const epochs = computed(() => {
@@ -108,14 +158,9 @@ function getNumericMetric(source: Record<string, any> | null | undefined, ...key
   return null;
 }
 
-const knnEpochs = computed(() =>
-  Array.from({length: liveKnn.value.length}, (_, i) => i + 1),
+const marginEpochs = computed(() =>
+  Array.from({length: liveMargins.value.length}, (_, i) => i + 1),
 );
-
-const knnAccuracy = computed(() => {
-  const v = lastValMetrics.value?.knn_accuracy;
-  return v != null ? (v * 100).toFixed(1) : null;
-});
 
 const valMargin = computed(() => {
   const v = getNumericMetric(lastValMetrics.value, 'Margin', 'margin');
@@ -147,10 +192,12 @@ const finalValLoss = computed(() => {
   return v != null ? Number(v).toFixed(4) : null;
 });
 
-// Current epoch info
-const currentEpoch = computed(() => exp.value?.metrics?.epoch ?? null);
-const totalEpochs = computed(() => exp.value?.metrics?.totalEpochs ?? null);
+// Current epoch info — describes the *live run* (from runMetrics/runProgress).
+const currentEpoch = computed(() => runMetrics.value?.epoch ?? null);
+const totalEpochs = computed(() => runMetrics.value?.totalEpochs ?? null);
 const progressPct = computed(() => {
+  const p = exp.value?.runProgress;
+  if (typeof p === 'number' && p > 0) return Math.round(p);
   if (!currentEpoch.value || !totalEpochs.value) return 0;
   return Math.round((currentEpoch.value / totalEpochs.value) * 100);
 });
@@ -266,27 +313,6 @@ const lossChartOption = computed(() => ({
   ],
 }));
 
-const knnChartOption = computed(() => ({
-  ...CHART_STYLE,
-  tooltip: {
-    ...TOOLTIP_STYLE,
-    formatter: (params: any[]) => {
-      const epoch = params[0].dataIndex + 1;
-      return `<div style="font-size:11px;color:#71717a;margin-bottom:2px">Epoch ${epoch}</div>` +
-        `<div style="margin-top:4px">${params[0].marker}<b>${(Number(params[0].value) * 100).toFixed(1)}%</b></div>`;
-    },
-  },
-  xAxis: epochXAxis(knnEpochs.value),
-  yAxis: valueYAxis((v) => `${(v * 100).toFixed(0)}%`),
-  series: [{
-    name: 'kNN Acc', type: 'line', data: liveKnn.value,
-    smooth: 0.3, symbolSize: 4,
-    lineStyle: {color: '#3b82f6', width: 2},
-    itemStyle: {color: '#3b82f6'},
-    areaStyle: {color: 'rgba(59,130,246,0.08)'},
-  }],
-}));
-
 const marginChartOption = computed(() => ({
   ...CHART_STYLE,
   legend: {
@@ -307,7 +333,7 @@ const marginChartOption = computed(() => ({
       return `<div style="font-size:11px;color:#71717a;margin-bottom:2px">Epoch ${epoch}</div>${rows}`;
     },
   },
-  xAxis: epochXAxis(knnEpochs.value),
+  xAxis: epochXAxis(marginEpochs.value),
   yAxis: valueYAxis((v) => v.toFixed(2)),
   series: [
     {
@@ -351,17 +377,42 @@ const marginChartOption = computed(() => ({
     </div>
   </div>
 
-  <!-- Training failed -->
-  <div v-else-if="stage === 'failed'" class="flex h-full items-center justify-center p-8">
+  <!-- First-ever training failed (no prior successful result to fall back to) -->
+  <div v-else-if="mode === 'failedFirst'" class="flex h-full items-center justify-center p-8">
     <div class="max-w-md rounded-xl border border-rose-500/20 bg-rose-500/5 p-6 text-center">
       <AlertCircle class="mx-auto mb-3 h-8 w-8 text-rose-400" />
-      <p class="mb-2 text-sm font-medium text-rose-400">Training Failed</p>
-      <p class="text-xs text-muted-foreground">{{ exp?.metrics?.error ?? 'Unknown error' }}</p>
+      <p class="mb-2 text-sm font-medium text-rose-400">训练失败</p>
+      <p class="text-xs text-muted-foreground">{{ runError ?? 'Unknown error' }}</p>
+      <button
+        type="button"
+        :disabled="retraining || runActive"
+        class="mt-4 inline-flex items-center justify-center rounded-md border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+        @click="retrainExperiment"
+      >
+        {{ retraining ? '启动中…' : '重新训练' }}
+      </button>
     </div>
   </div>
 
-  <!-- Training in progress -->
-  <div v-else-if="isActive" class="flex min-h-0 h-full flex-col gap-4 overflow-y-auto p-6">
+  <!-- First-ever training stopped before any success -->
+  <div v-else-if="mode === 'stoppedFirst'" class="flex h-full items-center justify-center p-8">
+    <div class="max-w-md rounded-xl border border-amber-500/20 bg-amber-500/5 p-6 text-center">
+      <OctagonX class="mx-auto mb-3 h-8 w-8 text-amber-400" />
+      <p class="mb-2 text-sm font-medium text-amber-300">训练已中止</p>
+      <p class="text-xs text-muted-foreground">本次训练在完成前被中止，尚无可用模型。</p>
+      <button
+        type="button"
+        :disabled="retraining || runActive"
+        class="mt-4 inline-flex items-center justify-center rounded-md border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+        @click="retrainExperiment"
+      >
+        {{ retraining ? '启动中…' : '重新训练' }}
+      </button>
+    </div>
+  </div>
+
+  <!-- Training in progress (first training or re-training) — live curves -->
+  <div v-else-if="mode === 'live'" class="flex min-h-0 h-full flex-col gap-4 overflow-y-auto p-6">
 
     <!-- Header: status + stop button -->
     <div class="flex items-center justify-between rounded-xl border border-amber-500/20 bg-amber-500/5 px-5 py-4">
@@ -369,11 +420,15 @@ const marginChartOption = computed(() => ({
         <div class="h-5 w-5 animate-spin rounded-full border-2 border-amber-500/30 border-t-amber-400" />
         <div>
           <p class="text-sm font-medium text-amber-300">
-            {{ stage === 'preparing_dataset' ? '正在准备数据集…' : '训练进行中' }}
+            <template v-if="stage === 'preparing_dataset'">{{ hasResult ? '重新训练 · 正在准备数据集…' : '正在准备数据集…' }}</template>
+            <template v-else>{{ hasResult ? '重新训练进行中' : '训练进行中' }}</template>
           </p>
           <p v-if="currentEpoch && totalEpochs" class="mt-0.5 text-xs text-muted-foreground">
             Epoch {{ currentEpoch }} / {{ totalEpochs }}
             <span class="ml-2 text-amber-400/70">{{ progressPct }}%</span>
+          </p>
+          <p v-else-if="hasResult" class="mt-0.5 text-xs text-muted-foreground">
+            若本次训练失败或中止，将自动保留上一次成功的结果。
           </p>
         </div>
       </div>
@@ -397,7 +452,7 @@ const marginChartOption = computed(() => ({
     </div>
 
     <!-- Live metric cards -->
-    <div v-if="trainLosses.length > 0" class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <div v-if="trainLosses.length > 0" class="grid grid-cols-2 gap-3 sm:grid-cols-3">
       <div class="flex flex-col gap-1 rounded-xl border border-border bg-secondary/5 p-4">
         <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">当前 Train Loss</p>
         <p class="text-2xl font-semibold tabular-nums text-purple-400">
@@ -408,12 +463,6 @@ const marginChartOption = computed(() => ({
         <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">当前 Val Loss</p>
         <p class="text-2xl font-semibold tabular-nums text-emerald-400">
           {{ valLosses[valLosses.length - 1]?.toFixed(4) ?? '---' }}
-        </p>
-      </div>
-      <div class="flex flex-col gap-1 rounded-xl border border-border bg-secondary/5 p-4">
-        <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">KNN 精度</p>
-        <p class="text-2xl font-semibold tabular-nums text-blue-400">
-          {{ liveKnn.length ? ((liveKnn[liveKnn.length - 1]) * 100).toFixed(1) + '%' : '---' }}
         </p>
       </div>
       <div class="flex flex-col gap-1 rounded-xl border border-border bg-secondary/5 p-4">
@@ -435,21 +484,12 @@ const marginChartOption = computed(() => ({
         </div>
       </div>
 
-      <!-- kNN + Margin charts side by side -->
-      <div class="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
-        <div v-if="liveKnn.length > 0" class="w-full rounded-xl border border-border bg-secondary/5 p-5">
-          <h3 class="mb-1 text-sm font-semibold">kNN 准确率曲线</h3>
-          <p class="mb-3 text-[11px] text-muted-foreground">验证集 k 近邻分类精度</p>
-          <div class="h-[200px] w-full shrink-0 overflow-hidden">
-            <VChart class="h-full w-full min-h-0" :option="knnChartOption" autoresize />
-          </div>
-        </div>
-        <div v-if="liveMargins.length > 0" class="w-full rounded-xl border border-border bg-secondary/5 p-5">
-          <h3 class="mb-1 text-sm font-semibold">嵌入相似度曲线</h3>
-          <p class="mb-3 text-[11px] text-muted-foreground">Pos Sim / Neg Sim / Margin 变化趋势</p>
-          <div class="h-[200px] w-full shrink-0 overflow-hidden">
-            <VChart class="h-full w-full min-h-0" :option="marginChartOption" autoresize />
-          </div>
+      <!-- Embedding similarity (Pos/Neg/Margin) curve -->
+      <div v-if="liveMargins.length > 0" class="w-full rounded-xl border border-border bg-secondary/5 p-5">
+        <h3 class="mb-1 text-sm font-semibold">特征相似度曲线</h3>
+        <p class="mb-3 text-[11px] text-muted-foreground">Pos Sim / Neg Sim / Margin 变化趋势</p>
+        <div class="h-[200px] w-full shrink-0 overflow-hidden">
+          <VChart class="h-full w-full min-h-0" :option="marginChartOption" autoresize />
         </div>
       </div>
     </template>
@@ -460,8 +500,49 @@ const marginChartOption = computed(() => ({
     </div>
   </div>
 
-  <!-- Completed / Stopped dashboard -->
-  <div v-else-if="exp && (stage === 'completed' || stage === 'stopped')" class="flex min-h-0 h-full flex-col gap-5 overflow-y-auto p-6">
+  <!-- Result dashboard — shows the last *successful* run. While re-training is in
+       progress the live view (mode 'live') takes over; only a finished-but-failed/
+       stopped attempt falls back here with a non-destructive notice banner. -->
+  <div v-else-if="exp && mode === 'result'" class="flex min-h-0 h-full flex-col gap-5 overflow-y-auto p-6">
+
+    <!-- Run notice: last re-train failed / stopped (result below is the previous success) -->
+    <div
+      v-if="showRunBanner"
+      class="flex items-start justify-between gap-4 rounded-xl border px-5 py-4"
+      :class="runStatus === 'Failed' ? 'border-rose-500/20 bg-rose-500/5' : 'border-amber-500/20 bg-amber-500/5'"
+    >
+      <div class="flex items-start gap-3">
+        <AlertCircle v-if="runStatus === 'Failed'" class="mt-0.5 h-5 w-5 shrink-0 text-rose-400" />
+        <OctagonX v-else class="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
+        <div>
+          <p class="text-sm font-medium" :class="runStatus === 'Failed' ? 'text-rose-400' : 'text-amber-300'">
+            {{ runStatus === 'Failed' ? '上一次重新训练失败' : '上一次重新训练已中止' }}
+          </p>
+          <p class="mt-0.5 text-xs text-muted-foreground">
+            下方展示的是上一次成功训练的结果；该模型仍可用于推理。
+            <span v-if="runStatus === 'Failed' && runError" class="text-rose-400/80">（{{ runError }}）</span>
+          </p>
+        </div>
+      </div>
+      <div class="flex shrink-0 items-center gap-2">
+        <button
+          type="button"
+          :disabled="retraining || runActive"
+          class="inline-flex items-center justify-center rounded-md border border-primary/30 bg-primary/10 px-3 py-1.5 text-xs font-medium text-primary transition-colors hover:bg-primary/20 disabled:cursor-not-allowed disabled:opacity-50"
+          @click="retrainExperiment"
+        >
+          {{ retraining ? '启动中…' : '重新训练' }}
+        </button>
+        <button
+          type="button"
+          class="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary/40 hover:text-foreground"
+          title="忽略"
+          @click="noticeDismissed = true"
+        >
+          <X class="h-4 w-4" />
+        </button>
+      </div>
+    </div>
 
     <!-- Config summary banner -->
     <div class="rounded-xl border border-border bg-secondary/5 p-4">
@@ -514,19 +595,12 @@ const marginChartOption = computed(() => ({
     </div>
 
     <!-- Key metric cards -->
-    <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <div class="grid grid-cols-2 gap-3 sm:grid-cols-3">
       <div class="col-span-2 flex flex-col justify-between rounded-xl border border-primary/20 bg-primary/5 p-4 sm:col-span-1">
-        <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">KNN 精度</p>
-        <div class="mt-2">
-          <p class="text-3xl font-bold tabular-nums">{{ knnAccuracy != null ? knnAccuracy + '%' : '---' }}</p>
-          <p class="mt-1 text-[10px] text-muted-foreground">k 近邻分类精度 (验证集)</p>
-        </div>
-      </div>
-      <div class="flex flex-col justify-between rounded-xl border border-border bg-secondary/5 p-4">
         <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Margin</p>
         <div class="mt-2">
-          <p class="text-2xl font-semibold tabular-nums">{{ valMargin ?? '---' }}</p>
-          <p class="mt-1 text-[10px] text-muted-foreground">PosSim − NegSim</p>
+          <p class="text-3xl font-bold tabular-nums">{{ valMargin ?? '---' }}</p>
+          <p class="mt-1 text-[10px] text-muted-foreground">PosSim − NegSim (验证集)</p>
         </div>
       </div>
       <div class="flex flex-col justify-between rounded-xl border border-border bg-secondary/5 p-4">
@@ -559,8 +633,8 @@ const marginChartOption = computed(() => ({
 
       <!-- Similarity sidebar — 1/3 -->
       <div class="flex w-full flex-col rounded-xl border border-border bg-secondary/5 p-5">
-        <h3 class="mb-1 text-sm font-semibold">嵌入相似度分布</h3>
-        <p class="mb-4 text-[11px] text-muted-foreground">Pos Sim 越高、Neg Sim 越低，说明嵌入空间的类间分离度越好。</p>
+        <h3 class="mb-1 text-sm font-semibold">特征相似度分布</h3>
+        <p class="mb-4 text-[11px] text-muted-foreground">Pos Sim 越高、Neg Sim 越低，说明特征空间的类间分离度越好。</p>
         <template v-if="posSim != null">
           <div class="space-y-3">
             <div>
@@ -599,19 +673,11 @@ const marginChartOption = computed(() => ({
       </div>
     </div>
 
-    <!-- kNN + Margin curve (from live series stored in summary) -->
-    <div v-if="liveKnn.length > 1 || liveMargins.length > 1" class="grid grid-cols-1 items-start gap-4 lg:grid-cols-2">
-      <div v-if="liveKnn.length > 1" class="w-full rounded-xl border border-border bg-secondary/5 p-5">
-        <h3 class="mb-1 text-sm font-semibold">kNN 准确率曲线</h3>
-        <div class="mt-3 h-[200px] w-full shrink-0 overflow-hidden">
-          <VChart class="h-full w-full min-h-0" :option="knnChartOption" autoresize />
-        </div>
-      </div>
-      <div v-if="liveMargins.length > 1" class="w-full rounded-xl border border-border bg-secondary/5 p-5">
-        <h3 class="mb-1 text-sm font-semibold">嵌入相似度曲线</h3>
-        <div class="mt-3 h-[200px] w-full shrink-0 overflow-hidden">
-          <VChart class="h-full w-full min-h-0" :option="marginChartOption" autoresize />
-        </div>
+    <!-- Embedding similarity (Pos/Neg/Margin) curve (from live series stored in summary) -->
+    <div v-if="liveMargins.length > 1" class="w-full rounded-xl border border-border bg-secondary/5 p-5">
+      <h3 class="mb-1 text-sm font-semibold">特征相似度曲线</h3>
+      <div class="mt-3 h-[200px] w-full shrink-0 overflow-hidden">
+        <VChart class="h-full w-full min-h-0" :option="marginChartOption" autoresize />
       </div>
     </div>
 

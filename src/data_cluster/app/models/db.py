@@ -255,13 +255,23 @@ class Experiment(Base):
     model: Mapped[str] = mapped_column(String, nullable=False)
     dataset: Mapped[str] = mapped_column(String, nullable=False)
     dataset_id: Mapped[str | None] = mapped_column("datasetId", String, ForeignKey("Dataset.id"), nullable=True)
+    #: 「结果」状态（last-good）：仅在训练**成功完成**时更新。"Pending"=从未成功训练，
+    #: "Completed"=已有可用模型。决定推理页是否列出该模型。一旦 Completed 不会被失败/中止的重训覆盖。
     status: Mapped[str] = mapped_column(String, default="Completed")
     duration: Mapped[str | None] = mapped_column(String, nullable=True)
     accuracy: Mapped[str | None] = mapped_column(String, nullable=True)
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     config: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    #: 「结果」指标（last-good）：上一次成功完成的 completed 负载，dashboard 正文以此渲染。
     metrics: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     checkpoint_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 「本次运行」状态（live）：None/"Running"/"Completed"/"Stopped"/"Failed"，
+    #: 仅反映最近一次训练尝试，不影响上面的结果字段。
+    run_status: Mapped[str | None] = mapped_column("runStatus", String, nullable=True)
+    #: 「本次运行」进度（0-100），实时刷新。
+    run_progress: Mapped[float] = mapped_column("runProgress", Float, default=0.0)
+    #: 「本次运行」实时指标：stage/epoch/totalEpochs/train/val/liveSeries/error。
+    run_metrics: Mapped[dict[str, Any] | None] = mapped_column("runMetrics", JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, default=datetime.utcnow)
     samples: Mapped[list["ExperimentSample"]] = relationship(
         "ExperimentSample", back_populates="experiment", cascade="all, delete-orphan"

@@ -43,10 +43,13 @@ def _serialize_experiment(e: Experiment) -> ExperimentDetail:
         duration=e.duration,
         accuracy=e.accuracy,
         progress=e.progress,
+        run_status=e.run_status,
+        run_progress=e.run_progress,
         created_at=e.created_at,
         dataset_id=e.dataset_id,
         config=e.config,
         metrics=normalize_experiment_metrics(e.metrics),
+        run_metrics=normalize_experiment_metrics(e.run_metrics),
         checkpoint_path=e.checkpoint_path,
         sample_count=total_samples,
         train_sample_count=train_samples,
@@ -64,6 +67,8 @@ def _serialize_summary(e: Experiment) -> ExperimentSummary:
         duration=e.duration,
         accuracy=e.accuracy,
         progress=e.progress,
+        run_status=e.run_status,
+        run_progress=e.run_progress,
         created_at=e.created_at,
     )
 
@@ -158,8 +163,9 @@ async def stop_training(experiment_id: str, db: Session = Depends(get_db)) -> di
     """Request a running training job to stop.
 
     Sets the in-process stop flag (if the trainer is still running in this
-    process) AND immediately marks the experiment as Failed in the DB so the
-    frontend unblocks even if the process was restarted.
+    process) AND immediately marks the *run* as Stopped in the DB so the
+    frontend unblocks even if the process was restarted. The last-good result
+    fields (status/metrics/checkpoint_path) are left untouched.
     """
     loop = asyncio.get_event_loop()
 
@@ -168,10 +174,10 @@ async def stop_training(experiment_id: str, db: Session = Depends(get_db)) -> di
         if not exp:
             raise HTTPException(status_code=404, detail="Experiment not found")
         request_stop(experiment_id)
-        if exp.status == "Running":
-            existing = exp.metrics or {}
-            exp.status = "Stopped"
-            exp.metrics = {**existing, "stage": "stopped"}
+        if exp.run_status == "Running":
+            existing = exp.run_metrics or {}
+            exp.run_status = "Stopped"
+            exp.run_metrics = {**existing, "stage": "stopped"}
             db.commit()
 
     await loop.run_in_executor(None, _stop)
@@ -207,7 +213,7 @@ async def delete_experiment(experiment_id: str, db: Session = Depends(get_db)) -
         exp = db.get(Experiment, experiment_id)
         if not exp:
             raise HTTPException(status_code=404, detail="Experiment not found")
-        if exp.status == "Running":
+        if exp.run_status == "Running":
             request_stop(experiment_id)
         settings = get_settings()
         run_dir = experiment_checkpoint_run_dir(settings, exp.model, experiment_id)

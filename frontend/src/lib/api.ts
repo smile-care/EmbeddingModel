@@ -209,6 +209,8 @@ export interface ExperimentSummary {
   duration?: string | null;
   accuracy?: string | null;
   progress: number;
+  runStatus?: string | null;
+  runProgress?: number;
   createdAt: string;
 }
 

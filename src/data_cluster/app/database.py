@@ -76,6 +76,11 @@ def get_db() -> Generator[Session, None, None]:
 #: avoid wiping existing dev data on schema bumps.
 _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
     "InferenceRun": [("goldenCropIds", "JSON")],
+    "Experiment": [
+        ("runStatus", "VARCHAR"),
+        ("runProgress", "FLOAT DEFAULT 0"),
+        ("runMetrics", "JSON"),
+    ],
 }
 
 

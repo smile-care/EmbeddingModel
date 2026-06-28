@@ -20,7 +20,7 @@ import {
 } from 'lucide-vue-next';
 import VisualizationDashboard from '@/components/VisualizationDashboard.vue';
 import {cn} from '@/lib/utils';
-import {DatasetsApi, ExperimentsApi, staticUrl, type AnnotationRegion, type CropImage as ApiCropImage, type DatasetImage as ApiDatasetImage} from '@/lib/api';
+import {DatasetsApi, ExperimentsApi, staticUrl, type AnnotationRegion, type CropImage as ApiCropImage, type DatasetImage as ApiDatasetImage, type ExperimentSummary} from '@/lib/api';
 
 interface AnnotationLabel {
   label_id: number;
@@ -53,6 +53,10 @@ type CropImage = ApiCropImage;
 const experiments = ref<any[]>([]);
 const selectedExpId = ref<string | null>(null);
 const isCreating = ref(false);
+
+// Training requires at least this many categories, each with at least this many crops.
+const MIN_CATEGORIES = 2;
+const MIN_CROPS_PER_CATEGORY = 2;
 
 const taskName = ref('');
 const selectedDataset = ref<Dataset | null>(null);
@@ -322,6 +326,18 @@ async function fetchExperiments() {
 
 const selectedExp = computed(() => experiments.value.find((e) => e.id === selectedExpId.value));
 
+/**
+ * 列表里展示的状态：优先反映「本次运行」是否进行中；只要曾训练成功（status=Completed）
+ * 即视为可用，本次重训失败/中止不降级。从未成功则显示 Pending/Failed/Stopped。
+ */
+function expDisplay(exp: ExperimentSummary): {label: string; kind: 'completed' | 'running' | 'failed' | 'pending'} {
+  if (exp.runStatus === 'Running') return {label: '训练中', kind: 'running'};
+  if (exp.status === 'Completed') return {label: 'Completed', kind: 'completed'};
+  if (exp.runStatus === 'Failed') return {label: 'Failed', kind: 'failed'};
+  if (exp.runStatus === 'Stopped') return {label: 'Stopped', kind: 'failed'};
+  return {label: exp.status, kind: 'pending'};
+}
+
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 watch(
   [activeExpId, trainingStatus],
@@ -335,8 +351,9 @@ watch(
       try {
         if (!activeExpId.value) return;
         const d = await ExperimentsApi.get(activeExpId.value);
-        progress.value = Math.round(d.progress ?? 0);
-        if (d.status === 'Completed' || d.status === 'Failed' || d.status === 'Stopped') {
+        progress.value = Math.round(d.runProgress ?? d.progress ?? 0);
+        const rs = d.runStatus;
+        if (rs === 'Completed' || rs === 'Failed' || rs === 'Stopped') {
           trainingStatus.value = 'completed';
           activeExpId.value = null;
           if (pollTimer) {
@@ -363,16 +380,15 @@ onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer);
 });
 
-const eachSelectedCategoryHasTrainingCrop = computed(() => {
+const eachSelectedCategoryHasEnoughCrops = computed(() => {
   if (!selectedDataset.value?.categories?.length) return true;
   const picked = new Set(selectedCropIds.value);
   for (const catName of selectedCategories.value) {
     const cat = selectedDataset.value.categories.find((c) => c.name === catName);
     if (!cat) return false;
-    // check against crop IDs
     const crops = getCategoryCrops(cat.id);
-    const hasOne = crops.some((cr) => picked.has(cr.id));
-    if (!hasOne) return false;
+    const count = crops.filter((cr) => picked.has(cr.id)).length;
+    if (count < MIN_CROPS_PER_CATEGORY) return false;
   }
   return true;
 });
@@ -381,9 +397,9 @@ async function handleStartTraining() {
   if (
     !taskName.value ||
     !selectedDataset.value ||
-    selectedCategories.value.length < 2 ||
+    selectedCategories.value.length < MIN_CATEGORIES ||
     selectedCropIds.value.length === 0 ||
-    !eachSelectedCategoryHasTrainingCrop.value
+    !eachSelectedCategoryHasEnoughCrops.value
   ) {
     return;
   }
@@ -541,19 +557,19 @@ function openExperimentMenu(e: MouseEvent, expId: string) {
             !taskName ||
             !selectedDataset ||
             trainingStatus === 'completed' ||
-            selectedCategories.length < 2 ||
+            selectedCategories.length < MIN_CATEGORIES ||
             selectedCropIds.length === 0 ||
-            !eachSelectedCategoryHasTrainingCrop
+            !eachSelectedCategoryHasEnoughCrops
           "
           :title="
             !selectedDataset
               ? undefined
-              : selectedCategories.length < 2
-                ? 'Enable at least two categories'
-                : !eachSelectedCategoryHasTrainingCrop
-                  ? 'Each enabled category must have at least one crop selected, or turn that category off'
+              : selectedCategories.length < MIN_CATEGORIES
+                ? '至少启用两个类别'
+                : !eachSelectedCategoryHasEnoughCrops
+                  ? '每个启用的类别至少选择两张样本，或关闭该类别'
                   : selectedCropIds.length === 0
-                    ? 'Use the corner checkbox on each crop to include it in training'
+                    ? '用缩略图角标勾选要参与训练的裁剪图'
                     : undefined
           "
           class="flex items-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
@@ -647,11 +663,11 @@ function openExperimentMenu(e: MouseEvent, expId: string) {
                 Data Selection
               </h3>
               <p class="text-xs text-muted-foreground">
-                <template v-if="selectedCategories.length < 2">
-                  Enable at least 2 categories ({{ selectedCategories.length }}/2)
+                <template v-if="selectedCategories.length < MIN_CATEGORIES">
+                  至少启用 2 个类别 ({{ selectedCategories.length }}/{{ MIN_CATEGORIES }})
                 </template>
-                <template v-else-if="!eachSelectedCategoryHasTrainingCrop">
-                  Pick ≥1 crop per enabled category, or disable a category
+                <template v-else-if="!eachSelectedCategoryHasEnoughCrops">
+                  每个启用的类别至少选 {{ MIN_CROPS_PER_CATEGORY }} 张样本，或关闭该类别
                 </template>
                 <template v-else-if="selectedCropIds.length > 0">
                   {{ selectedCropIds.length }} crop(s) for training · {{ selectedCategories.length }}
@@ -951,13 +967,13 @@ function openExperimentMenu(e: MouseEvent, expId: string) {
           </div>
           <div class="flex items-center gap-4">
             <div class="flex items-center gap-2">
-              <CheckCircle2 v-if="exp.status === 'Completed'" class="h-4 w-4 text-emerald-500" />
+              <CheckCircle2 v-if="expDisplay(exp).kind === 'completed'" class="h-4 w-4 text-emerald-500" />
               <Clock
-                v-else-if="exp.status === 'Running'"
+                v-else-if="expDisplay(exp).kind === 'running'"
                 class="h-4 w-4 animate-pulse text-amber-500"
               />
-              <AlertCircle v-else-if="exp.status === 'Failed'" class="h-4 w-4 text-rose-500" />
-              <span class="text-xs font-medium">{{ exp.status }}</span>
+              <AlertCircle v-else-if="expDisplay(exp).kind === 'failed'" class="h-4 w-4 text-rose-500" />
+              <span class="text-xs font-medium">{{ expDisplay(exp).label }}</span>
             </div>
             <div class="h-4 w-px bg-border" />
             <div class="flex flex-col items-end">
@@ -983,7 +999,7 @@ function openExperimentMenu(e: MouseEvent, expId: string) {
             <p class="text-sm">{{ exp.dataset }}</p>
           </div>
           <div class="flex flex-col gap-1">
-            <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Accuracy</p>
+            <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Margin</p>
             <p class="text-sm">{{ exp.accuracy }}</p>
           </div>
           <div class="flex min-h-[2rem] items-start justify-end">
