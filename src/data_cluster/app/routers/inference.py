@@ -15,11 +15,12 @@ from data_cluster.app.schemas.inference import (AnalyzeRequest, AnalyzeResponse,
                                                 InferenceRunSummary, ModelInfo, PlotPoint,
                                                 ProjectionOut, UploadCategoryCreate,
                                                 UploadCategoryOut, UploadCategoryPatch)
-from data_cluster.app.services.projection import anomaly_scores_per_class, project_2d
 from data_cluster.app.services.storage import url_to_fs_path
-from data_cluster.app.services.inference import (DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME,
-                                                 compute_default_embeddings,
-                                                 compute_supcon_embeddings)
+from data_cluster.dl.projection import (anomaly_scores_per_class, anomaly_scores_vs_golden,
+                                        project_2d)
+from data_cluster.dl.inference import (DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME,
+                                       compute_default_embeddings,
+                                       compute_supcon_embeddings)
 
 router = APIRouter(tags=["inference"])
 
@@ -131,6 +132,7 @@ def _run_to_summary(run: InferenceRun, db: Session) -> InferenceRunSummary:
         dataset_mode=run.dataset_mode,
         dataset_id=run.dataset_id,
         dataset_name=ds_name,
+        golden_crop_ids=list(run.golden_crop_ids or []),
         algorithm=run.algorithm,
         view_mode=run.view_mode,
         created_at=run.created_at,
@@ -217,6 +219,7 @@ async def create_inference_run(body: InferenceRunCreate, db: Session = Depends(g
             model_id=body.model_id,
             dataset_mode=body.dataset_mode,
             dataset_id=body.dataset_id,
+            golden_crop_ids=list(body.golden_crop_ids or []) or None,
             algorithm=body.algorithm.lower() if body.algorithm else "tsne",
             view_mode=body.view_mode,
             result_json=None,
@@ -260,6 +263,8 @@ async def patch_inference_run(
             row.dataset_mode = data["datasetMode"]
         if "datasetId" in data:
             row.dataset_id = data["datasetId"]
+        if "goldenCropIds" in data:
+            row.golden_crop_ids = list(data["goldenCropIds"] or []) or None
         if "algorithm" in data and data["algorithm"] is not None:
             row.algorithm = str(data["algorithm"]).lower()
         if "viewMode" in data and data["viewMode"] is not None:
@@ -320,6 +325,7 @@ async def execute_inference_run(
                 method=row.algorithm.lower(),
                 experiment_id=row.model_id,
                 model_id=row.model_id,
+                golden_crop_ids=list(row.golden_crop_ids or []),
             )
             # 推理计算（GPU/CPU 密集）放线程池，不阻塞事件循环
             resp = await loop.run_in_executor(None, _analyze_embeddings, req, db)
@@ -411,6 +417,7 @@ async def compute_run_projection(
         method=algo,
         experiment_id=row.model_id,
         model_id=row.model_id,
+        golden_crop_ids=list(row.golden_crop_ids or []),
     )
     resp = await loop.run_in_executor(None, _analyze_embeddings, req, db)
     labels = list(resp.labels)
@@ -502,7 +509,14 @@ def _analyze_embeddings(req: AnalyzeRequest, db: Session) -> AnalyzeResponse:
             exp_config=exp.config if isinstance(exp.config, dict) else None,
         )
     coords = project_2d(emb, req.method)
-    scores = anomaly_scores_per_class(emb, label_arr)
+
+    # Golden-anchored anomaly when reference crops are supplied; else self-anchored.
+    golden_ids = set(req.golden_crop_ids or [])
+    golden_mask = np.array([crop.id in golden_ids for crop, _n, _li in rows], dtype=bool)
+    if golden_mask.any():
+        scores = anomaly_scores_vs_golden(emb, label_arr, golden_mask)
+    else:
+        scores = anomaly_scores_per_class(emb, label_arr)
 
     points: list[PlotPoint] = []
     for i, (crop, label_name, li) in enumerate(rows):
@@ -516,6 +530,7 @@ def _analyze_embeddings(req: AnalyzeRequest, db: Session) -> AnalyzeResponse:
                 url=crop.url,
                 anomaly_score=float(scores[i]),
                 label=label_name,
+                is_golden=bool(golden_mask[i]),
                 source_image_id=crop.source_image_id,
                 instance_index=crop.instance_index,
                 crop_annotation=crop.crop_annotation,

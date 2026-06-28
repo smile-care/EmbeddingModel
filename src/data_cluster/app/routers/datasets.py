@@ -16,7 +16,7 @@ from data_cluster.app.schemas.dataset import (AnnotationRegionOut, AnnotationSav
                                               DatasetDetail, DatasetSummary, DefectClassCreate,
                                               DefectClassOut, DefectClassUpdate, ImageOut,
                                               ImageUploadResponse)
-from data_cluster.app.services.crop import generate_crops_for_image
+from data_cluster.dl.crop import generate_crops_for_image
 from data_cluster.app.services.storage import (dataset_upload_dir_bytes, delete_dataset_files,
                                                ensure_upload_root, extract_zip_to_dataset,
                                                human_size, save_upload_file, url_to_fs_path)

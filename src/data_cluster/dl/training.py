@@ -14,7 +14,7 @@ from data_cluster.app.config import Settings, get_settings
 from data_cluster.app.database import SessionLocal
 from data_cluster.app.models.db import CropImage, Experiment, ExperimentSample
 from data_cluster.app.services.storage import experiment_checkpoint_run_dir
-from embedding_model.supcon.trainer import SupconTrainer
+from data_cluster.dl.trainer import SupconTrainer
 from embedding_model.utils.config_loader import load_config
 from embedding_model.utils.logging import setup_logger
 
@@ -26,7 +26,7 @@ DEFAULT_VAL_RATIO = 0.2
 MIN_CLASSES_FOR_TRAINING = 2
 # DataCluster 自有配置文件
 DC_CONFIG_PATH = (
-    Path(__file__).resolve().parents[4] / "configs" / "data_cluster.yaml"
+    Path(__file__).resolve().parents[3] / "configs" / "data_cluster.yaml"
 )
 
 # Global stop-flag registry: experiment_id -> True means "please stop"

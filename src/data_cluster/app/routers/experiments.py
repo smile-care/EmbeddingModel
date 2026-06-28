@@ -11,10 +11,10 @@ from data_cluster.app.models.db import Dataset, Experiment
 from data_cluster.app.schemas.experiment import (ExperimentCreate, ExperimentDetail,
                                                  ExperimentSummary)
 from data_cluster.app.services.storage import experiment_checkpoint_run_dir
-from data_cluster.app.services.training import (get_experiment_sample_counts,
-                                                normalize_experiment_metrics,
-                                                prepare_experiment_samples, request_stop,
-                                                run_training_job)
+from data_cluster.dl.training import (get_experiment_sample_counts,
+                                      normalize_experiment_metrics,
+                                      prepare_experiment_samples, request_stop,
+                                      run_training_job)
 
 router = APIRouter(prefix="/experiments", tags=["experiments"])
 

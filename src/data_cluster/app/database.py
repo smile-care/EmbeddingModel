@@ -71,7 +71,31 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
+#: Columns added after the initial schema; ``create_all`` only creates missing
+#: *tables*, so for SQLite we additively ``ALTER TABLE`` any missing columns to
+#: avoid wiping existing dev data on schema bumps.
+_ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
+    "InferenceRun": [("goldenCropIds", "JSON")],
+}
+
+
+def _ensure_added_columns() -> None:
+    if engine.dialect.name != "sqlite":
+        return
+    from sqlalchemy import text
+
+    with engine.begin() as conn:
+        for table, columns in _ADDED_COLUMNS.items():
+            existing = {row[1] for row in conn.execute(text(f'PRAGMA table_info("{table}")'))}
+            if not existing:
+                continue  # table not created yet — create_all handles it
+            for name, decl in columns:
+                if name not in existing:
+                    conn.execute(text(f'ALTER TABLE "{table}" ADD COLUMN "{name}" {decl}'))
+
+
 def init_db() -> None:
     import data_cluster.app.models.db  # noqa: F401 — register models
 
     Base.metadata.create_all(bind=engine)
+    _ensure_added_columns()

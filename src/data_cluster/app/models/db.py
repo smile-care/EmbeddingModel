@@ -211,6 +211,9 @@ class InferenceRun(Base):
     model_id: Mapped[str | None] = mapped_column("modelId", String, ForeignKey("Experiment.id"), nullable=True)
     dataset_mode: Mapped[str] = mapped_column("datasetMode", String, default="existing")
     dataset_id: Mapped[str | None] = mapped_column("datasetId", String, ForeignKey("Dataset.id"), nullable=True)
+    #: optional golden/reference crop ids (subset of the analysis dataset) used to
+    #: anchor anomaly scoring; empty/None means "no golden — use the default method".
+    golden_crop_ids: Mapped[list[Any] | None] = mapped_column("goldenCropIds", JSON, nullable=True)
     algorithm: Mapped[str] = mapped_column(String, default="tsne")
     view_mode: Mapped[str] = mapped_column("viewMode", String, default="distribution")
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

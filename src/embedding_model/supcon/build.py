@@ -2,8 +2,10 @@
 
 This is the single place where the embedding model (backbone + FPN + fusion +
 projection head, optionally wrapped in MoCo) is built from a config dict.  Both
-training (``SupconTrainer``) and inference (``compute_supcon_embeddings``) call
-``build_supcon_model`` so the architecture stays in sync.
+the standalone trainer (``scripts/train_supcon.py``) and the platform
+training/inference entry points (``data_cluster.dl.trainer`` /
+``data_cluster.dl.inference``) call ``build_supcon_model`` so the architecture
+stays in sync.
 """
 from __future__ import annotations
 

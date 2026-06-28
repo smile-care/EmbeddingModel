@@ -7,6 +7,7 @@ export type PlotPoint = {
   url?: string;
   anomalyScore?: number;
   label?: string;
+  isGolden?: boolean;
   sourceImageId?: string;
   instanceIndex?: number;
   cropAnnotation?: {points: [number, number][]; isSubtract: boolean}[] | null;
@@ -103,12 +104,24 @@ const chartOption = computed(() => {
   const series = clusters.map((ci) => {
     const pts = props.plotData.filter((p) => p.cluster === ci);
     const label = pts[0]?.label || props.labelList[ci] || `Cluster ${ci + 1}`;
+    const color = COLORS[ci % COLORS.length];
     return {
       name: label,
       type: 'scatter',
       symbolSize: 9,
-      itemStyle: {color: COLORS[ci % COLORS.length], borderColor: 'transparent'},
-      data: pts.map((p) => ({value: [p.x, p.y], raw: p})),
+      itemStyle: {color, borderColor: 'transparent'},
+      // Golden reference crops are drawn larger, as a ringed star, so they pop.
+      data: pts.map((p) => ({
+        value: [p.x, p.y],
+        raw: p,
+        ...(p.isGolden
+          ? {
+              symbol: 'diamond',
+              symbolSize: 15,
+              itemStyle: {color, borderColor: '#fbbf24', borderWidth: 2.5},
+            }
+          : {}),
+      })),
     };
   });
 
@@ -137,12 +150,16 @@ const chartOption = computed(() => {
         const score = Number(d.anomalyScore ?? 0);
         const scoreColor = score > 70 ? '#f43f5e' : '#10b981';
         const img = d.url ? `<img src="${staticUrl(d.url)}" alt="" style="width:128px;height:128px;object-fit:cover;border-radius:4px;border:1px solid #27272a" />` : '';
+        const goldenBadge = d.isGolden
+          ? '<span style="font-size:8px;font-weight:600;color:#fbbf24;border:1px solid #fbbf24;border-radius:4px;padding:0 4px">◆ GOLDEN</span>'
+          : '';
         return `
           <div style="display:flex;flex-direction:column;gap:8px;min-width:150px;padding:4px">
             <div>${img}</div>
             <div style="display:flex;align-items:center;gap:8px">
               <span style="width:8px;height:8px;border-radius:9999px;background:${color}"></span>
               <span style="font-size:10px;font-weight:500">${label}</span>
+              ${goldenBadge}
             </div>
             <div style="font-size:8px;color:#a1a1aa;display:flex;justify-content:space-between">
               <span>Anomaly Score</span>

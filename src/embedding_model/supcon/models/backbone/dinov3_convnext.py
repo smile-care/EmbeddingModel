@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import List, Optional, Tuple, Union
 
 import numpy as np
@@ -196,11 +197,44 @@ class DINOv3ConvNext(nn.Module):
                 param.requires_grad = False
 
     def _load_checkpoint(self, path: str) -> None:
-        ck = torch.load(path, map_location="cpu")
-        sd = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
-        # Keep only keys that belong to stages
-        stages_sd = {k: v for k, v in sd.items() if k.startswith("stages.")}
+        """Load backbone ``stages.*`` weights from a variety of checkpoint formats.
+
+        Supported wrappers (auto-detected):
+          * raw backbone export ``{"model": {"stages.*": ...}}`` or a flat state dict
+          * full ConvNeXtModel checkpoint ``{"model_state_dict": {"backbone.stages.*": ...}}``
+          * full MoCo checkpoint ``{"model_state_dict": {"query_encoder.backbone.stages.*": ...}}``
+
+        The backbone weights are matched by locating the ``stages.`` substring in each
+        key (stripping any ``backbone.`` / ``query_encoder.`` prefix), and the
+        ``momentum_encoder`` copy is ignored in favour of the trainable ``query_encoder``.
+        """
+        ck = torch.load(path, map_location="cpu", weights_only=False)
+
+        sd = ck
+        if isinstance(ck, dict):
+            for key in ("model", "model_state_dict", "state_dict"):
+                if isinstance(ck.get(key), dict):
+                    sd = ck[key]
+                    break
+
+        stages_sd: dict[str, torch.Tensor] = {}
+        if isinstance(sd, dict):
+            for k, v in sd.items():
+                if "momentum_encoder" in k:
+                    continue
+                idx = k.find("stages.")
+                if idx == -1:
+                    continue
+                stages_sd.setdefault(k[idx:], v)
+
+        if not stages_sd:
+            print(f"[DINOv3ConvNext] WARNING: no backbone 'stages.*' weights found in {path}; "
+                  f"backbone stays randomly initialized")
+            return
+
         missing, unexpected = self.load_state_dict(stages_sd, strict=False)
+        loaded = len(stages_sd) - len(unexpected)
+        print(f"[DINOv3ConvNext] loaded {loaded}/{len(stages_sd)} backbone tensors from {Path(path).name}")
         if missing:
             print(f"[DINOv3ConvNext] missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
         if unexpected:

@@ -18,6 +18,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Sparkles,
   Terminal,
   Trash2,
   X,
@@ -25,7 +26,7 @@ import {
 } from 'lucide-vue-next';
 import InferenceScatterChart from '@/components/InferenceScatterChart.vue';
 import type {PlotPoint} from '@/components/InferenceScatterChart.vue';
-import {DatasetsApi, InferenceApi, staticUrl, type AnnotationRegion, type DatasetImage} from '@/lib/api';
+import {DatasetsApi, InferenceApi, staticUrl, type AnnotationRegion, type CropImage, type DatasetImage, type DefectClass} from '@/lib/api';
 
 // ── constants ──────────────────────────────────────────────────────────────
 /** Always-available baseline model (server returns this as the first entry too). */
@@ -72,7 +73,12 @@ const loadingAlgos = ref<Set<AlgoKey>>(new Set());
 const cachedAlgos = ref<Set<AlgoKey>>(new Set());
 const plotData = ref<PlotPoint[]>([]);
 
-const inferenceDatasetDetail = ref<{id: string; images: TraceDatasetImage[]} | null>(null);
+const inferenceDatasetDetail = ref<{id: string; images: TraceDatasetImage[]; defectClasses: DefectClass[]} | null>(null);
+
+// ── golden reference samples (optional) ──────────────────────────────────────
+const goldenCropIds = ref<string[]>([]);
+const showGoldenDialog = ref(false);
+const goldenDraft = ref<Set<string>>(new Set());
 
 const inferenceRuns = ref<InferenceRunSummary[]>([]);
 const selectedRunId = ref<string | null>(null);
@@ -162,6 +168,7 @@ function mapPoints(raw: any[]): PlotPoint[] {
     url: p.url,
     anomalyScore: p.anomalyScore ?? p.anomaly_score ?? 0,
     label: p.label,
+    isGolden: p.isGolden ?? p.is_golden ?? false,
     sourceImageId: p.sourceImageId,
     instanceIndex: p.instanceIndex,
     cropAnnotation: p.cropAnnotation,
@@ -172,10 +179,89 @@ function mapPoints(raw: any[]): PlotPoint[] {
 async function loadInferenceDatasetForTrace(datasetId: string) {
   try {
     const detail = await DatasetsApi.get(datasetId);
-    inferenceDatasetDetail.value = {id: detail.id, images: detail.images};
+    inferenceDatasetDetail.value = {id: detail.id, images: detail.images, defectClasses: detail.defectClasses};
   } catch {
     inferenceDatasetDetail.value = null;
   }
+}
+
+// ── golden helpers ───────────────────────────────────────────────────────────
+/** All crops of the current dataset grouped by their defect class. */
+const goldenCropsByClass = computed(() => {
+  const detail = inferenceDatasetDetail.value;
+  if (!detail) return [] as {cls: DefectClass; crops: CropImage[]}[];
+  const byClass = new Map<string, CropImage[]>();
+  for (const img of detail.images) {
+    for (const crop of img.crops ?? []) {
+      if (!crop.classId) continue;
+      (byClass.get(crop.classId) ?? byClass.set(crop.classId, []).get(crop.classId)!).push(crop);
+    }
+  }
+  return detail.defectClasses
+    .map((cls) => ({cls, crops: byClass.get(cls.id) ?? []}))
+    .filter((g) => g.crops.length > 0);
+});
+
+const goldenClassCount = computed(() => {
+  const detail = inferenceDatasetDetail.value;
+  if (!detail || goldenCropIds.value.length === 0) return 0;
+  const selected = new Set(goldenCropIds.value);
+  const classIds = new Set<string>();
+  for (const img of detail.images) {
+    for (const crop of img.crops ?? []) {
+      if (crop.classId && selected.has(crop.id)) classIds.add(crop.classId);
+    }
+  }
+  return classIds.size;
+});
+
+function openGoldenDialog() {
+  goldenDraft.value = new Set(goldenCropIds.value);
+  showGoldenDialog.value = true;
+}
+
+function toggleGoldenCrop(cropId: string) {
+  const next = new Set(goldenDraft.value);
+  if (next.has(cropId)) next.delete(cropId);
+  else next.add(cropId);
+  goldenDraft.value = next;
+}
+
+function toggleGoldenClass(crops: CropImage[], on: boolean) {
+  const next = new Set(goldenDraft.value);
+  for (const c of crops) {
+    if (on) next.add(c.id);
+    else next.delete(c.id);
+  }
+  goldenDraft.value = next;
+}
+
+function classAllSelected(crops: CropImage[]): boolean {
+  return crops.length > 0 && crops.every((c) => goldenDraft.value.has(c.id));
+}
+
+async function applyGoldenSelection() {
+  goldenCropIds.value = [...goldenDraft.value];
+  showGoldenDialog.value = false;
+  const runId = selectedRunId.value;
+  if (runId) {
+    try {
+      await InferenceApi.patchRun(runId, {goldenCropIds: goldenCropIds.value});
+    } catch { /* ignore */ }
+  }
+}
+
+function clearGoldenSelection() {
+  goldenCropIds.value = [];
+  goldenDraft.value = new Set();
+  const runId = selectedRunId.value;
+  if (runId) void InferenceApi.patchRun(runId, {goldenCropIds: []});
+}
+
+/** Golden crops belong to a specific dataset — reset selection when the user
+ *  picks a different dataset (only on manual change, not on run load). */
+function onDatasetManualChange() {
+  clearGoldenSelection();
 }
 
 async function fetchInferenceRuns() {
@@ -191,6 +277,7 @@ async function loadRunDetail(id: string) {
     const row = await InferenceApi.getRun(id) as {
       modelId?: string | null;
       datasetId?: string | null;
+      goldenCropIds?: string[] | null;
       algorithm: string;
       viewMode: 'distribution' | 'anomaly';
       resultJson?: {labels?: string[]; points?: any[]} | null;
@@ -198,6 +285,7 @@ async function loadRunDetail(id: string) {
     };
     selectedModel.value = row.modelId || DEFAULT_MODEL_ID;
     selectedDataset.value = row.datasetId || '';
+    goldenCropIds.value = row.goldenCropIds ?? [];
     const a = row.algorithm?.toLowerCase() || 'tsne';
     algorithm.value = a === 'umap' ? 'UMAP' : a === 'pca' ? 'PCA' : 'TSNE';
     viewMode.value = row.viewMode;
@@ -442,6 +530,7 @@ async function handleRunAnalysis() {
       modelId: selectedModel.value || null,
       datasetMode: 'existing',
       datasetId: selectedDataset.value,
+      goldenCropIds: goldenCropIds.value,
       algorithm: algorithm.value.toLowerCase(),
       viewMode: viewMode.value,
     });
@@ -840,12 +929,51 @@ watch(imagePreviewZoom, (z) => {
           <div class="flex items-center gap-2 text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
             <Database class="h-3 w-3" />数据集
           </div>
-          <select v-model="selectedDataset" class="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring">
+          <select v-model="selectedDataset" class="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring" @change="onDatasetManualChange">
             <option v-if="!datasetsForSelect.length" value="" disabled>暂无数据集</option>
             <option v-for="d in datasetsForSelect" :key="d.id" :value="d.id">{{ d.name }}</option>
           </select>
           <p class="text-[10px] leading-relaxed text-muted-foreground/70">
             仅分析已有数据集的裁剪图（含对应 mask），请先在数据集页面上传并标注图片。
+          </p>
+        </div>
+
+        <div class="h-px bg-border" />
+
+        <!-- Golden reference samples (optional) -->
+        <div class="space-y-2">
+          <div class="flex items-center gap-2 text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
+            <Sparkles class="h-3 w-3 text-amber-400" />Golden 参考样本
+            <span class="font-normal lowercase tracking-normal text-muted-foreground/60">（可选）</span>
+          </div>
+          <div class="rounded-md border border-border bg-background px-2.5 py-2">
+            <div class="flex items-center justify-between">
+              <span class="text-xs">
+                <template v-if="goldenCropIds.length">
+                  <span class="font-semibold text-amber-500">{{ goldenCropIds.length }}</span> 个 · {{ goldenClassCount }} 类
+                </template>
+                <span v-else class="text-muted-foreground">未选择</span>
+              </span>
+              <button
+                type="button"
+                class="flex items-center gap-1 rounded border border-border px-2 py-0.5 text-[10px] font-medium transition-colors hover:bg-secondary/40 disabled:opacity-50"
+                :disabled="!goldenCropsByClass.length"
+                @click="openGoldenDialog"
+              >
+                <Sparkles class="h-3 w-3" />选择
+              </button>
+            </div>
+            <button
+              v-if="goldenCropIds.length"
+              type="button"
+              class="mt-1.5 text-[10px] text-muted-foreground underline-offset-2 hover:text-rose-500 hover:underline"
+              @click="clearGoldenSelection"
+            >
+              清空 golden
+            </button>
+          </div>
+          <p class="text-[10px] leading-relaxed text-muted-foreground/70">
+            选择后，异常排序以 golden 为基准（偏离越大越异常）；不选则按类内分布自动评分。
           </p>
         </div>
 
@@ -858,6 +986,10 @@ watch(imagePreviewZoom, (z) => {
               <div v-for="(name, i) in labelList" :key="name" class="flex items-center gap-2">
                 <div class="h-2.5 w-2.5 shrink-0 rounded-full" :style="{backgroundColor: COLORS[i % COLORS.length]}" />
                 <span class="truncate text-[11px] text-muted-foreground">{{ name }}</span>
+              </div>
+              <div v-if="goldenCropIds.length" class="flex items-center gap-2 pt-0.5">
+                <div class="h-2.5 w-2.5 shrink-0 rotate-45 border-2 border-amber-400 bg-transparent" />
+                <span class="truncate text-[11px] text-muted-foreground">Golden 参考</span>
               </div>
             </div>
           </div>
@@ -936,11 +1068,15 @@ watch(imagePreviewZoom, (z) => {
                     <div
                       v-for="point in [...plotData.filter((p) => (p.label || labelList[p.cluster]) === cat)].sort((a, b) => (b.anomalyScore ?? 0) - (a.anomalyScore ?? 0))"
                       :key="point.id"
-                      class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border border-border bg-background p-1.5 transition-all hover:border-primary/50 hover:shadow-sm"
+                      class="group relative flex cursor-pointer flex-col gap-1.5 rounded-lg border bg-background p-1.5 transition-all hover:shadow-sm"
+                      :class="point.isGolden ? 'border-amber-400/70 hover:border-amber-400' : 'border-border hover:border-primary/50'"
                       @click="point.url && openPreview(point)"
                     >
                       <div class="aspect-square overflow-hidden rounded-md bg-secondary/10">
                         <img :src="staticUrl(point.url)" alt="" class="h-full w-full object-cover transition-transform group-hover:scale-110" />
+                      </div>
+                      <div v-if="point.isGolden" class="absolute left-1 top-1 flex items-center gap-0.5 rounded-full bg-amber-400 px-1 py-0.5 text-[8px] font-bold text-black shadow">
+                        <Sparkles class="h-2 w-2" />Golden
                       </div>
                       <div class="space-y-1">
                         <div class="flex justify-between text-[9px] font-medium">
@@ -968,6 +1104,80 @@ watch(imagePreviewZoom, (z) => {
       </div>
     </div>
   </div>
+
+  <!-- ════════════════ GOLDEN SELECTION MODAL ════════════════ -->
+  <Teleport to="body">
+    <Transition name="fade">
+      <div v-if="showGoldenDialog" class="fixed inset-0 z-[95]">
+        <div class="absolute inset-0 bg-black/60" @click="showGoldenDialog = false" />
+        <div class="absolute left-1/2 top-1/2 flex max-h-[88vh] w-[min(94vw,56rem)] -translate-x-1/2 -translate-y-1/2 flex-col rounded-xl border border-border bg-background shadow-2xl">
+          <!-- Header -->
+          <div class="flex shrink-0 items-center justify-between border-b border-border px-5 py-3.5">
+            <div class="flex items-center gap-2">
+              <Sparkles class="h-4 w-4 text-amber-400" />
+              <h3 class="text-sm font-semibold tracking-tight">选择 Golden 参考样本</h3>
+              <span class="rounded bg-amber-400/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-500">已选 {{ goldenDraft.size }}</span>
+            </div>
+            <button type="button" class="rounded p-1 text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground" aria-label="关闭" @click="showGoldenDialog = false">
+              <X class="h-4 w-4" />
+            </button>
+          </div>
+
+          <!-- Body -->
+          <div class="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+            <p class="mb-4 text-xs text-muted-foreground">
+              勾选每个缺陷类别下的"标准/合格"裁剪图作为参考。运行分析时，同类样本将按与这些 golden 的偏离程度排序异常。
+            </p>
+            <div v-if="!goldenCropsByClass.length" class="py-10 text-center text-sm text-muted-foreground">
+              当前数据集没有可用的裁剪图。
+            </div>
+            <div v-for="group in goldenCropsByClass" :key="group.cls.id" class="mb-6">
+              <div class="mb-2 flex items-center justify-between border-b border-border pb-1.5">
+                <div class="flex items-center gap-2">
+                  <div class="h-3 w-3 rounded-full" :style="{backgroundColor: group.cls.color || '#8884d8'}" />
+                  <h4 class="text-sm font-semibold">{{ group.cls.name }}</h4>
+                  <span class="rounded bg-secondary/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">{{ group.crops.length }} 裁剪图</span>
+                </div>
+                <button
+                  type="button"
+                  class="rounded border border-border px-2 py-0.5 text-[10px] font-medium transition-colors hover:bg-secondary/40"
+                  @click="toggleGoldenClass(group.crops, !classAllSelected(group.crops))"
+                >
+                  {{ classAllSelected(group.crops) ? '取消全选' : '一键全选' }}
+                </button>
+              </div>
+              <div class="grid grid-cols-4 gap-2 sm:grid-cols-6 md:grid-cols-8">
+                <button
+                  v-for="crop in group.crops"
+                  :key="crop.id"
+                  type="button"
+                  class="group relative aspect-square overflow-hidden rounded-md border-2 transition-all"
+                  :class="goldenDraft.has(crop.id) ? 'border-amber-400 ring-1 ring-amber-400/40' : 'border-border hover:border-primary/40'"
+                  @click="toggleGoldenCrop(crop.id)"
+                >
+                  <img :src="staticUrl(crop.url)" alt="" class="h-full w-full object-cover" />
+                  <div v-if="goldenDraft.has(crop.id)" class="absolute right-0.5 top-0.5 rounded-full bg-amber-400 p-0.5 text-black shadow">
+                    <CheckCircle2 class="h-3 w-3" />
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Footer -->
+          <div class="flex shrink-0 items-center justify-between gap-2 border-t border-border px-5 py-3">
+            <button type="button" class="text-xs text-muted-foreground hover:text-rose-500" @click="goldenDraft = new Set()">全部清空</button>
+            <div class="flex items-center gap-2">
+              <button type="button" class="rounded-md border border-border px-3 py-1.5 text-xs font-medium transition-colors hover:bg-secondary/40" @click="showGoldenDialog = false">取消</button>
+              <button type="button" class="rounded-md bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90" @click="applyGoldenSelection">
+                应用（{{ goldenDraft.size }}）
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </Transition>
+  </Teleport>
 
   <!-- ════════════════ IMAGE PREVIEW MODAL ════════════════ -->
   <Teleport to="body">
