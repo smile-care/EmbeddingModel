@@ -20,6 +20,7 @@ from data_cluster.dl.crop import generate_crops_for_image
 from data_cluster.app.services.storage import (dataset_upload_dir_bytes, delete_dataset_files,
                                                ensure_upload_root, extract_zip_to_dataset,
                                                human_size, save_upload_file, url_to_fs_path)
+from data_cluster.app.services.dataset_import_log import log_import
 
 router = APIRouter(prefix="/datasets", tags=["datasets"])
 
@@ -205,7 +206,9 @@ async def create_dataset(
 
     try:
         if use_zip and zip_file:
+            log_import(f"[{ds.id}] 上传数据集「{name}」: 开始处理 zip ({zip_file.filename})")
             raw = await zip_file.read()
+            log_import(f"[{ds.id}] zip 已接收 ({human_size(len(raw))})")
             try:
                 records, total_bytes, url_annotations = await loop.run_in_executor(
                     None, extract_zip_to_dataset, settings, ds.id, raw
@@ -215,7 +218,9 @@ async def create_dataset(
             await loop.run_in_executor(
                 None, _persist_zip_records, db, settings, ds, records, total_bytes, url_annotations
             )
+            log_import(f"[{ds.id}] 数据集「{name}」导入完成")
         elif file_list:
+            log_import(f"[{ds.id}] 上传数据集「{name}」: 开始处理 {len(file_list)} 张图片")
             contents_list = await asyncio.gather(*[f.read() for f in file_list])
             results = await asyncio.gather(*[
                 save_upload_file(settings, ds.id, "", upload, contents=contents)
@@ -225,7 +230,8 @@ async def create_dataset(
             def _persist_images():
                 total_bytes = 0
                 images = []
-                for (url, nbytes), contents in zip(results, contents_list):
+                for i, ((url, nbytes), contents) in enumerate(zip(results, contents_list), 1):
+                    log_import(f"[{ds.id}] 保存图片 ({i}/{len(file_list)})")
                     w, h = _image_dims(contents)
                     img = Image(
                         url=url,
@@ -250,6 +256,7 @@ async def create_dataset(
                 db.commit()
 
             await loop.run_in_executor(None, _persist_images)
+            log_import(f"[{ds.id}] 数据集「{name}」导入完成 ({len(file_list)} 张图片)")
         else:
             def _mark_ready():
                 ds.status = "Ready"
@@ -300,6 +307,11 @@ def _persist_zip_records(
     image_count = 0
     annotated_images: list[Image] = []
 
+    log_import(
+        f"[{dataset.id}] 写入数据库: {len(records)} 张图片, "
+        f"{len(url_annotations)} 张带标注"
+    )
+
     for category_name, url in records:
         cls = _get_or_create_class(db, dataset.id, category_name, cache)
         ann_data = url_annotations.get(url)
@@ -341,12 +353,19 @@ def _persist_zip_records(
     db.flush()
 
     # Auto-generate crops for annotated images so the zip upload is truly one-click.
-    for img in annotated_images:
+    crop_total = len(annotated_images)
+    if crop_total:
+        log_import(f"[{dataset.id}] 开始生成裁剪图: {crop_total} 张原图")
+    for i, img in enumerate(annotated_images, 1):
         db.expire(img, ["regions"])
         try:
-            generate_crops_for_image(db=db, settings=settings, image=img, dataset_id=dataset.id)
+            log_import(f"[{dataset.id}] 裁剪 ({i}/{crop_total}) image={img.id}")
+            crops = generate_crops_for_image(db=db, settings=settings, image=img, dataset_id=dataset.id)
+            log_import(f"[{dataset.id}] 裁剪 ({i}/{crop_total}) -> {len(crops)} 个 crop")
         except Exception as exc:  # noqa: BLE001 - don't fail whole import on one bad image
-            print(f"[zip-import] crop generation failed for image {img.id}: {exc}")
+            log_import(f"[{dataset.id}] 裁剪失败 image={img.id}: {exc}")
+    if crop_total:
+        log_import(f"[{dataset.id}] 裁剪图生成完成")
     db.commit()
 
 
@@ -482,7 +501,8 @@ async def add_images_to_dataset(
 
     def _persist():
         new_images = []
-        for (url, _nbytes), contents in zip(results, contents_list):
+        for i, ((url, _nbytes), contents) in enumerate(zip(results, contents_list), 1):
+            log_import(f"[{dataset_id}] 追加图片 ({i}/{len(file_list)})")
             w, h = _image_dims(contents)
             new_images.append(Image(
                 url=url,
@@ -501,6 +521,7 @@ async def add_images_to_dataset(
         db.commit()
 
     await loop.run_in_executor(None, _persist)
+    log_import(f"[{dataset_id}] 追加完成 ({len(file_list)} 张图片)")
     out = await loop.run_in_executor(None, _load_dataset_detail, db, dataset_id)
     assert out is not None
     return _serialize_detail(out)

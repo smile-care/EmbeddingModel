@@ -145,6 +145,16 @@ def compute_crop_region(
     return (int(crop_x_min), int(crop_y_min), int(crop_x_max), int(crop_y_max))
 
 
+def _load_rgb_image(image_path: str) -> np.ndarray:
+    """Load an image as RGB uint8 array.
+
+    Prefer PIL over ``cv2.imread`` for large industrial PNGs — OpenCV's PNG
+    decoder warns (and can fail) when IDAT chunks exceed its internal limit.
+    """
+    with Image.open(image_path) as im:
+        return np.array(im.convert("RGB"))
+
+
 def extract_patches_from_image_json(
     image_path: str,
     json_path: str,
@@ -159,10 +169,7 @@ def extract_patches_from_image_json(
     只对应一个标注实例。返回 patch 信息列表（含 patch_path / patch_mask_path /
     label_index / bbox / crop_bbox / original_size / patch_size 等）。
     """
-    image = cv2.imread(str(image_path))
-    if image is None:
-        raise ValueError(f"无法加载图像: {image_path}")
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    image = _load_rgb_image(str(image_path))
 
     img_h, img_w = image.shape[:2]
 

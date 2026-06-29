@@ -214,6 +214,8 @@ class InferenceRun(Base):
     #: optional golden/reference crop ids (subset of the analysis dataset) used to
     #: anchor anomaly scoring; empty/None means "no golden — use the default method".
     golden_crop_ids: Mapped[list[Any] | None] = mapped_column("goldenCropIds", JSON, nullable=True)
+    #: defect-class ids included in analysis; empty/None means all classes with crops
+    selected_class_ids: Mapped[list[Any] | None] = mapped_column("selectedClassIds", JSON, nullable=True)
     algorithm: Mapped[str] = mapped_column(String, default="tsne")
     view_mode: Mapped[str] = mapped_column("viewMode", String, default="distribution")
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

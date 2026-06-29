@@ -11,7 +11,6 @@ Two responsibilities live here:
 """
 from __future__ import annotations
 
-import re
 from pathlib import Path
 from typing import Any
 
@@ -36,55 +35,6 @@ DEFAULT_MODEL_NAME = "默认预训练模型"
 # ---------------------------------------------------------------------------
 # Low-level embedding computation (pure DL; caller passes a resolved model_config)
 # ---------------------------------------------------------------------------
-_PROJ_KEY_RE = re.compile(r"^(.*projection_head\.projection\.)(\d+)(\..*)$")
-
-
-def _align_projection_head(model: torch.nn.Module, state: dict[str, Any]) -> dict[str, Any]:
-    """Realign ``projection_head.projection.<i>`` indices that drifted across code revisions.
-
-    The projection head is an ``nn.Sequential``; removing a parameter-less layer
-    (e.g. the old ``Dropout``) shifts the integer indices of every following
-    parameter-bearing layer even though the ``Linear`` / ``BatchNorm`` shapes are
-    unchanged.  This matches the checkpoint's parameter-bearing layers to the
-    model's, in order, and rewrites the indices so the weights load by name.
-    Only applied when the per-position shapes match, so a genuinely different head
-    is left untouched (and simply not loaded).
-    """
-    model_sd = model.state_dict()
-
-    def grouped(sd: dict[str, Any]) -> dict[str, dict[int, dict[str, tuple]]]:
-        g: dict[str, dict[int, dict[str, tuple]]] = {}
-        for k, v in sd.items():
-            m = _PROJ_KEY_RE.match(k)
-            if not m:
-                continue
-            pre, idx, suf = m.group(1), int(m.group(2)), m.group(3)
-            g.setdefault(pre, {}).setdefault(idx, {})[suf] = tuple(getattr(v, "shape", ()))
-        return g
-
-    src_g = grouped(state)
-    tgt_g = grouped(model_sd)
-    if not src_g:
-        return state
-
-    new_state = dict(state)
-    for pre, src_idx_map in src_g.items():
-        tgt_idx_map = tgt_g.get(pre)
-        if not tgt_idx_map:
-            continue
-        src_order = sorted(src_idx_map)
-        tgt_order = sorted(tgt_idx_map)
-        if len(src_order) != len(tgt_order) or src_order == tgt_order:
-            continue
-        if any(src_idx_map[s] != tgt_idx_map[t] for s, t in zip(src_order, tgt_order)):
-            continue
-        for s in src_order:
-            for suf in src_idx_map[s]:
-                new_state.pop(f"{pre}{s}{suf}", None)
-        for s, t in zip(src_order, tgt_order):
-            for suf in src_idx_map[s]:
-                new_state[f"{pre}{t}{suf}"] = state[f"{pre}{s}{suf}"]
-    return new_state
 
 
 def _load_supcon_model(
@@ -93,14 +43,8 @@ def _load_supcon_model(
     image_size: int,
     use_moco: bool,
     device: torch.device,
-    lenient: bool = False,
 ) -> torch.nn.Module:
-    """Build the model and load a trained checkpoint (strict=False).
-
-    When ``lenient`` is set, the projection-head Sequential indices are realigned
-    first (see :func:`_align_projection_head`) so legacy checkpoints whose head
-    layout drifted still load their trained head — used by the default model.
-    """
+    """Build the model and load a trained checkpoint (strict=True)."""
     model, _queue = build_supcon_model(
         model_config,
         image_size=image_size,
@@ -113,9 +57,7 @@ def _load_supcon_model(
     state = ckpt
     if isinstance(ckpt, dict):
         state = ckpt.get("model_state_dict") or ckpt.get("state_dict") or ckpt
-    if lenient:
-        state = _align_projection_head(model, state)
-    model.load_state_dict(state, strict=False)
+    model.load_state_dict(state, strict=True)
     model.eval()
     return model
 
@@ -221,11 +163,10 @@ def _compute_supcon_embeddings_raw(
     mask_paths: list[Path | None] | None = None,
     batch_size: int = 16,
     device: str | torch.device | None = None,
-    lenient: bool = False,
 ) -> np.ndarray:
     """Compute L2-normalized embeddings for a list of (image, optional mask) pairs."""
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model = _load_supcon_model(checkpoint_path, model_config, image_size, use_moco, dev, lenient=lenient)
+    model = _load_supcon_model(checkpoint_path, model_config, image_size, use_moco, dev)
     image_tf, mask_tf = _build_transforms(image_size)
     mask_dilation = MaskSoftDilation({"enabled": True})
 
@@ -473,7 +414,6 @@ def compute_default_embeddings(
                 mask_paths=mask_paths,
                 batch_size=batch_size,
                 device=device,
-                lenient=True,
             )
 
     return _compute_backbone_embeddings_raw(

@@ -133,6 +133,7 @@ def _run_to_summary(run: InferenceRun, db: Session) -> InferenceRunSummary:
         dataset_id=run.dataset_id,
         dataset_name=ds_name,
         golden_crop_ids=list(run.golden_crop_ids or []),
+        class_ids=list(run.selected_class_ids or []),
         algorithm=run.algorithm,
         view_mode=run.view_mode,
         created_at=run.created_at,
@@ -173,10 +174,16 @@ def _crop_mask_fs_path(settings, crop: CropImage) -> Path | None:
     return None
 
 
-def _dataset_crop_rows(ds: Dataset) -> list[tuple[CropImage, str, int]]:
+def _dataset_crop_rows(
+    ds: Dataset,
+    class_ids: set[str] | None = None,
+) -> list[tuple[CropImage, str, int]]:
     crop_rows = [
-        crop for crop in ds.crop_images
-        if crop.defect_class is not None and crop.url
+        crop
+        for crop in ds.crop_images
+        if crop.defect_class is not None
+        and crop.url
+        and (class_ids is None or crop.class_id in class_ids)
     ]
     label_names = sorted({crop.defect_class.name for crop in crop_rows if crop.defect_class is not None})
     name_to_idx = {name: idx for idx, name in enumerate(label_names)}
@@ -220,6 +227,7 @@ async def create_inference_run(body: InferenceRunCreate, db: Session = Depends(g
             dataset_mode=body.dataset_mode,
             dataset_id=body.dataset_id,
             golden_crop_ids=list(body.golden_crop_ids or []) or None,
+            selected_class_ids=list(body.class_ids or []) or None,
             algorithm=body.algorithm.lower() if body.algorithm else "tsne",
             view_mode=body.view_mode,
             result_json=None,
@@ -265,6 +273,8 @@ async def patch_inference_run(
             row.dataset_id = data["datasetId"]
         if "goldenCropIds" in data:
             row.golden_crop_ids = list(data["goldenCropIds"] or []) or None
+        if "classIds" in data:
+            row.selected_class_ids = list(data["classIds"] or []) or None
         if "algorithm" in data and data["algorithm"] is not None:
             row.algorithm = str(data["algorithm"]).lower()
         if "viewMode" in data and data["viewMode"] is not None:
@@ -326,6 +336,7 @@ async def execute_inference_run(
                 experiment_id=row.model_id,
                 model_id=row.model_id,
                 golden_crop_ids=list(row.golden_crop_ids or []),
+                class_ids=list(row.selected_class_ids or []),
             )
             # 推理计算（GPU/CPU 密集）放线程池，不阻塞事件循环
             resp = await loop.run_in_executor(None, _analyze_embeddings, req, db)
@@ -418,6 +429,7 @@ async def compute_run_projection(
         experiment_id=row.model_id,
         model_id=row.model_id,
         golden_crop_ids=list(row.golden_crop_ids or []),
+        class_ids=list(row.selected_class_ids or []),
     )
     resp = await loop.run_in_executor(None, _analyze_embeddings, req, db)
     labels = list(resp.labels)
@@ -480,8 +492,18 @@ def _analyze_embeddings(req: AnalyzeRequest, db: Session) -> AnalyzeResponse:
             if not checkpoint_path.is_file():
                 raise HTTPException(status_code=422, detail=f"模型 checkpoint 不存在: {checkpoint_path}")
 
-    rows = _dataset_crop_rows(ds)
+    if req.class_ids and len(req.class_ids) < 2:
+        raise HTTPException(status_code=422, detail="至少需要选择 2 个类别进行分析。")
+
+    class_id_set = set(req.class_ids) if req.class_ids else None
+    rows = _dataset_crop_rows(ds, class_id_set)
     label_names = sorted({label_name for _crop, label_name, _li in rows})
+
+    if len(label_names) < 2:
+        raise HTTPException(
+            status_code=422,
+            detail="至少需要 2 个类别且每个类别有可用 crop 才能进行分析。",
+        )
 
     if not rows:
         raise HTTPException(

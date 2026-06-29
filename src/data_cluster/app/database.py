@@ -75,7 +75,7 @@ def get_db() -> Generator[Session, None, None]:
 #: *tables*, so for SQLite we additively ``ALTER TABLE`` any missing columns to
 #: avoid wiping existing dev data on schema bumps.
 _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
-    "InferenceRun": [("goldenCropIds", "JSON")],
+    "InferenceRun": [("goldenCropIds", "JSON"), ("selectedClassIds", "JSON")],
     "Experiment": [
         ("runStatus", "VARCHAR"),
         ("runProgress", "FLOAT DEFAULT 0"),

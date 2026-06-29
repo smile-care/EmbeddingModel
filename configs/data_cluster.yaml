@@ -16,16 +16,16 @@ data_cluster:
   backbones:
     convnext_tiny:
       backbone_config: "configs/backbone/convnext_tiny.yaml"
-      pretrained_path: "checkpoints/supcon_models/0424_bs64x4/checkpoint_epoch_300.pth"
-    convnext_small:
-      backbone_config: "configs/backbone/convnext_small.yaml"
-      pretrained_path: "pretrain_ckpts/dinov3_convnext_small.pth"
-    convnext_base:
-      backbone_config: "configs/backbone/convnext_base.yaml"
-      pretrained_path: "pretrain_ckpts/dinov3_convnext_base.pth"
-    convnext_large:
-      backbone_config: "configs/backbone/convnext_large.yaml"
-      pretrained_path: "pretrain_ckpts/dinov3_convnext_large.pth"
+      pretrained_path: "checkpoints/supcon_models/0627_convnext_tiny/current_model.pth"
+    # convnext_small:
+    #   backbone_config: "configs/backbone/convnext_small.yaml"
+    #   pretrained_path: "pretrain_ckpts/dinov3_convnext_small.pth"
+    # convnext_base:
+    #   backbone_config: "configs/backbone/convnext_base.yaml"
+    #   pretrained_path: "pretrain_ckpts/dinov3_convnext_base.pth"
+    # convnext_large:
+    #   backbone_config: "configs/backbone/convnext_large.yaml"
+    #   pretrained_path: "pretrain_ckpts/dinov3_convnext_large.pth"
 
   # ---------- 训练默认参数 ----------
   # Web UI 创建实验时可覆盖这些值

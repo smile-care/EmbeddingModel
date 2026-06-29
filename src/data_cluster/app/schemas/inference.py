@@ -11,6 +11,8 @@ class AnalyzeRequest(BaseModel):
     model_id: str | None = Field(default=None, alias="modelId")
     #: optional golden/reference crop ids (subset of the dataset) to anchor anomaly scoring
     golden_crop_ids: list[str] = Field(default_factory=list, alias="goldenCropIds")
+    #: defect-class ids to include; empty means all classes with crops
+    class_ids: list[str] = Field(default_factory=list, alias="classIds")
 
     model_config = {"populate_by_name": True}
 
@@ -68,6 +70,7 @@ class InferenceRunCreate(BaseModel):
     dataset_mode: Literal["existing", "upload"] = Field(default="existing", alias="datasetMode")
     dataset_id: str | None = Field(default=None, alias="datasetId")
     golden_crop_ids: list[str] = Field(default_factory=list, alias="goldenCropIds")
+    class_ids: list[str] = Field(default_factory=list, alias="classIds")
     algorithm: str = "tsne"
     view_mode: Literal["distribution", "anomaly"] = Field(default="distribution", alias="viewMode")
 
@@ -80,6 +83,7 @@ class InferenceRunPatch(BaseModel):
     dataset_mode: Literal["existing", "upload"] | None = Field(default=None, alias="datasetMode")
     dataset_id: str | None = Field(default=None, alias="datasetId")
     golden_crop_ids: list[str] | None = Field(default=None, alias="goldenCropIds")
+    class_ids: list[str] | None = Field(default=None, alias="classIds")
     algorithm: str | None = None
     view_mode: Literal["distribution", "anomaly"] | None = Field(default=None, alias="viewMode")
 
@@ -95,6 +99,7 @@ class InferenceRunSummary(BaseModel):
     dataset_id: str | None = Field(default=None, serialization_alias="datasetId")
     dataset_name: str | None = Field(default=None, serialization_alias="datasetName")
     golden_crop_ids: list[str] = Field(default_factory=list, serialization_alias="goldenCropIds")
+    class_ids: list[str] = Field(default_factory=list, serialization_alias="classIds")
     algorithm: str
     view_mode: str = Field(serialization_alias="viewMode")
     created_at: datetime = Field(serialization_alias="createdAt")

@@ -6,6 +6,8 @@ import {
   AlertTriangle,
   ArrowLeft,
   CheckCircle2,
+  Check,
+  ChevronDown,
   Clock,
   Cpu,
   Database,
@@ -26,12 +28,13 @@ import {
 } from 'lucide-vue-next';
 import InferenceScatterChart from '@/components/InferenceScatterChart.vue';
 import type {PlotPoint} from '@/components/InferenceScatterChart.vue';
-import {DatasetsApi, InferenceApi, staticUrl, type AnnotationRegion, type CropImage, type DatasetImage, type DefectClass} from '@/lib/api';
+import {DatasetsApi, InferenceApi, classColor, staticUrl, type AnnotationRegion, type CropImage, type DatasetImage, type DefectClass} from '@/lib/api';
 
 // ── constants ──────────────────────────────────────────────────────────────
 /** Always-available baseline model (server returns this as the first entry too). */
 const DEFAULT_MODEL_ID = 'default';
 const DEFAULT_MODEL = {id: DEFAULT_MODEL_ID, name: '默认预训练模型', type: 'Pretrained'};
+const MIN_ANALYSIS_CLASSES = 2;
 const COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff8042', '#0088FE', '#00C49F'];
 const ALGO_LIST = ['TSNE', 'UMAP', 'PCA'] as const;
 type AlgoKey = (typeof ALGO_LIST)[number];
@@ -65,6 +68,8 @@ const apiModels = ref<{id: string; name: string; type?: string}[]>([]);
 const apiDatasets = ref<{id: string; name: string; items?: number}[]>([]);
 const selectedModel = ref(DEFAULT_MODEL_ID);
 const selectedDataset = ref('');
+const selectedClassIds = ref<string[]>([]);
+const classFilterExpanded = ref(true);
 const analysisLabels = ref<string[]>([]);
 const algorithm = ref<AlgoKey>('TSNE');
 const viewMode = ref<'distribution' | 'anomaly'>('distribution');
@@ -74,6 +79,7 @@ const cachedAlgos = ref<Set<AlgoKey>>(new Set());
 const plotData = ref<PlotPoint[]>([]);
 
 const inferenceDatasetDetail = ref<{id: string; images: TraceDatasetImage[]; defectClasses: DefectClass[]} | null>(null);
+let _loadingRunDetail = false;
 
 // ── golden reference samples (optional) ──────────────────────────────────────
 const goldenCropIds = ref<string[]>([]);
@@ -159,6 +165,61 @@ const modelsForSelect = computed(() => apiModels.value.length ? apiModels.value 
 const datasetsForSelect = computed(() => apiDatasets.value);
 const labelList = computed(() => analysisLabels.value);
 
+const inferenceClassesWithCounts = computed(() => {
+  const detail = inferenceDatasetDetail.value;
+  if (!detail) return [] as {cls: DefectClass; count: number}[];
+  const counts = new Map<string, number>();
+  for (const img of detail.images) {
+    for (const crop of img.crops ?? []) {
+      if (!crop.classId) continue;
+      counts.set(crop.classId, (counts.get(crop.classId) ?? 0) + 1);
+    }
+  }
+  return detail.defectClasses
+    .map((cls) => ({cls, count: counts.get(cls.id) ?? 0}))
+    .filter((g) => g.count > 0)
+    .sort((a, b) => a.cls.sortOrder - b.cls.sortOrder || a.cls.name.localeCompare(b.cls.name));
+});
+
+const allAnalysisClassIds = computed(() => inferenceClassesWithCounts.value.map((g) => g.cls.id));
+const hasEnoughAnalysisClasses = computed(() => selectedClassIds.value.length >= MIN_ANALYSIS_CLASSES);
+const allAnalysisClassesSelected = computed(() => {
+  const all = allAnalysisClassIds.value;
+  return all.length > 0 && all.every((id) => selectedClassIds.value.includes(id));
+});
+
+function resetClassSelectionToAll() {
+  selectedClassIds.value = [...allAnalysisClassIds.value];
+}
+
+function toggleAnalysisClass(classId: string) {
+  const next = new Set(selectedClassIds.value);
+  if (next.has(classId)) next.delete(classId);
+  else next.add(classId);
+  selectedClassIds.value = [...next];
+  pruneGoldenToSelectedClasses();
+}
+
+function selectAllAnalysisClasses() {
+  selectedClassIds.value = [...allAnalysisClassIds.value];
+}
+
+function pruneGoldenToSelectedClasses() {
+  const allowed = new Set(selectedClassIds.value);
+  const detail = inferenceDatasetDetail.value;
+  if (!detail || goldenCropIds.value.length === 0) return;
+  const cropToClass = new Map<string, string>();
+  for (const img of detail.images) {
+    for (const crop of img.crops ?? []) {
+      if (crop.classId) cropToClass.set(crop.id, crop.classId);
+    }
+  }
+  goldenCropIds.value = goldenCropIds.value.filter((id) => {
+    const cls = cropToClass.get(id);
+    return cls && allowed.has(cls);
+  });
+}
+
 function mapPoints(raw: any[]): PlotPoint[] {
   return raw.map((p: any) => ({
     id: p.id,
@@ -199,7 +260,7 @@ const goldenCropsByClass = computed(() => {
   }
   return detail.defectClasses
     .map((cls) => ({cls, crops: byClass.get(cls.id) ?? []}))
-    .filter((g) => g.crops.length > 0);
+    .filter((g) => g.crops.length > 0 && selectedClassIds.value.includes(g.cls.id));
 });
 
 const goldenClassCount = computed(() => {
@@ -262,6 +323,7 @@ function clearGoldenSelection() {
  *  picks a different dataset (only on manual change, not on run load). */
 function onDatasetManualChange() {
   clearGoldenSelection();
+  selectedClassIds.value = [];
 }
 
 async function fetchInferenceRuns() {
@@ -273,11 +335,13 @@ async function fetchInferenceRuns() {
 }
 
 async function loadRunDetail(id: string) {
+  _loadingRunDetail = true;
   try {
     const row = await InferenceApi.getRun(id) as {
       modelId?: string | null;
       datasetId?: string | null;
       goldenCropIds?: string[] | null;
+      classIds?: string[] | null;
       algorithm: string;
       viewMode: 'distribution' | 'anomaly';
       resultJson?: {labels?: string[]; points?: any[]} | null;
@@ -286,6 +350,7 @@ async function loadRunDetail(id: string) {
     selectedModel.value = row.modelId || DEFAULT_MODEL_ID;
     selectedDataset.value = row.datasetId || '';
     goldenCropIds.value = row.goldenCropIds ?? [];
+    selectedClassIds.value = Array.isArray(row.classIds) ? [...row.classIds] : [];
     const a = row.algorithm?.toLowerCase() || 'tsne';
     algorithm.value = a === 'umap' ? 'UMAP' : a === 'pca' ? 'PCA' : 'TSNE';
     viewMode.value = row.viewMode;
@@ -299,7 +364,12 @@ async function loadRunDetail(id: string) {
       plotData.value = [];
       analysisLabels.value = [];
     }
-  } catch { /* ignore */ }
+  } catch { /* ignore */ } finally {
+    _loadingRunDetail = false;
+    if (inferenceDatasetDetail.value && selectedClassIds.value.length === 0) {
+      resetClassSelectionToAll();
+    }
+  }
 }
 
 // ── lifecycle ──────────────────────────────────────────────────────────────
@@ -334,6 +404,21 @@ watch(selectedDataset, (dsId) => {
   if (dsId) void loadInferenceDatasetForTrace(dsId);
   else inferenceDatasetDetail.value = null;
 }, {immediate: true});
+
+watch(inferenceDatasetDetail, (detail) => {
+  if (!detail) {
+    if (!_loadingRunDetail) selectedClassIds.value = [];
+    return;
+  }
+  const valid = new Set(allAnalysisClassIds.value);
+  const kept = selectedClassIds.value.filter((id) => valid.has(id));
+  if (kept.length !== selectedClassIds.value.length) {
+    selectedClassIds.value = kept.length ? kept : [...allAnalysisClassIds.value];
+  } else if (!_loadingRunDetail && selectedClassIds.value.length === 0) {
+    resetClassSelectionToAll();
+  }
+  pruneGoldenToSelectedClasses();
+});
 
 // Close context menu on scroll or resize — use a stopWatch ref to clean up properly
 let _menuCleanup: (() => void) | null = null;
@@ -523,13 +608,14 @@ async function switchAlgorithm(algo: AlgoKey) {
 // ── run analysis ───────────────────────────────────────────────────────────
 async function handleRunAnalysis() {
   const runId = selectedRunId.value;
-  if (!runId || !selectedDataset.value) return;
+  if (!runId || !selectedDataset.value || !hasEnoughAnalysisClasses.value) return;
 
   try {
     await InferenceApi.patchRun(runId, {
       modelId: selectedModel.value || null,
       datasetMode: 'existing',
       datasetId: selectedDataset.value,
+      classIds: selectedClassIds.value,
       goldenCropIds: goldenCropIds.value,
       algorithm: algorithm.value.toLowerCase(),
       viewMode: viewMode.value,
@@ -897,7 +983,7 @@ watch(imagePreviewZoom, (z) => {
         </button>
         <button
           type="button"
-          :disabled="isAnalyzing || !selectedDataset"
+          :disabled="isAnalyzing || !selectedDataset || !hasEnoughAnalysisClasses"
           class="flex items-center gap-1.5 rounded-md bg-primary px-4 py-1.5 text-xs font-semibold text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
           @click="handleRunAnalysis"
         >
@@ -935,6 +1021,72 @@ watch(imagePreviewZoom, (z) => {
           </select>
           <p class="text-[10px] leading-relaxed text-muted-foreground/70">
             仅分析已有数据集的裁剪图（含对应 mask），请先在数据集页面上传并标注图片。
+          </p>
+
+          <div v-if="selectedDataset && inferenceClassesWithCounts.length" class="overflow-hidden rounded-lg border border-border/60 bg-secondary/10">
+            <div class="flex items-center justify-between gap-2 border-b border-border/40 px-2.5 py-2">
+              <button
+                type="button"
+                class="flex min-w-0 flex-1 items-center gap-1.5 rounded-md py-0.5 text-left transition-colors hover:text-foreground"
+                @click="classFilterExpanded = !classFilterExpanded"
+              >
+                <ChevronDown
+                  class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200"
+                  :class="classFilterExpanded ? '' : '-rotate-90'"
+                />
+                <span class="text-[11px] font-medium text-foreground/90">类别筛选</span>
+                <span
+                  class="rounded-full bg-secondary/60 px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground"
+                  :class="!hasEnoughAnalysisClasses ? 'text-amber-600/90' : ''"
+                >
+                  {{ selectedClassIds.length }}/{{ allAnalysisClassIds.length }}
+                </span>
+              </button>
+              <button
+                type="button"
+                class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-emerald-600"
+                @click.stop="allAnalysisClassesSelected ? (selectedClassIds = []) : selectAllAnalysisClasses()"
+              >
+                {{ allAnalysisClassesSelected ? '取消全选' : '全选' }}
+              </button>
+            </div>
+
+            <div v-show="classFilterExpanded" class="space-y-2 px-2.5 py-2">
+              <p v-if="!hasEnoughAnalysisClasses" class="rounded-md bg-amber-500/10 px-2 py-1 text-[10px] text-amber-700 dark:text-amber-400">
+                至少选择 {{ MIN_ANALYSIS_CLASSES }} 个类别
+              </p>
+              <div class="max-h-44 space-y-1 overflow-y-auto pr-0.5">
+                <button
+                  v-for="(group, idx) in inferenceClassesWithCounts"
+                  :key="group.cls.id"
+                  type="button"
+                  class="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left"
+                  @click="toggleAnalysisClass(group.cls.id)"
+                >
+                  <div
+                    class="flex h-4 w-4 shrink-0 items-center justify-center rounded border-2 transition-all duration-150"
+                    :class="selectedClassIds.includes(group.cls.id)
+                      ? 'border-emerald-500 bg-emerald-500 text-white shadow-sm shadow-emerald-500/20'
+                      : 'border-muted-foreground/30 bg-background group-hover:border-emerald-500/40'"
+                  >
+                    <Check v-if="selectedClassIds.includes(group.cls.id)" class="h-2.5 w-2.5 stroke-[3]" />
+                  </div>
+                  <span
+                    class="h-2 w-2 shrink-0 rounded-full ring-1 ring-black/5"
+                    :style="{backgroundColor: classColor(group.cls, idx)}"
+                  />
+                  <span class="min-w-0 flex-1 truncate text-xs text-foreground/80">
+                    {{ group.cls.name }}
+                  </span>
+                  <span class="shrink-0 rounded-full bg-secondary/50 px-1.5 py-0.5 text-[10px] tabular-nums text-muted-foreground">
+                    {{ group.count }}
+                  </span>
+                </button>
+              </div>
+            </div>
+          </div>
+          <p v-else-if="selectedDataset" class="text-[10px] text-muted-foreground">
+            当前数据集没有可用的裁剪图类别。
           </p>
         </div>
 

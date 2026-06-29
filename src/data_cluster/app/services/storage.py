@@ -9,6 +9,7 @@ from pathlib import Path
 from fastapi import UploadFile
 
 from data_cluster.app.config import Settings
+from data_cluster.app.services.dataset_import_log import log_import
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._-]+")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp"}
@@ -191,6 +192,13 @@ def extract_zip_to_dataset(
     with zipfile.ZipFile(BytesIO(data)) as zf:
         valid = [i for i in zf.infolist() if not i.is_dir() and is_safe_zip_path(i.filename)]
         strip_n = _count_common_prefix_depth([i.filename for i in valid])
+        image_total = 0
+        for info in valid:
+            parts = info.filename.replace("\\", "/").strip("/").split("/")[strip_n:]
+            if len(parts) >= 2 and Path(parts[-1]).suffix.lower() in _IMAGE_EXTS:
+                image_total += 1
+        log_import(f"[{dataset_id}] 开始解压 zip（约 {image_total} 张图片）")
+        image_idx = 0
 
         for info in valid:
             parts = info.filename.replace("\\", "/").strip("/").split("/")[strip_n:]
@@ -205,6 +213,11 @@ def extract_zip_to_dataset(
             key = (category_name, stem)
 
             if ext in _IMAGE_EXTS:
+                image_idx += 1
+                log_import(
+                    f"[{dataset_id}] 解压 ({image_idx}/{image_total}) "
+                    f"[{category_name}] {filename}"
+                )
                 raw = zf.read(info)
                 total_bytes += len(raw)
                 dest_dir = original_images_dir(settings, dataset_id)
@@ -227,4 +240,8 @@ def extract_zip_to_dataset(
         for key, url in stem_to_url.items()
         if key in stem_to_annotation
     }
+    log_import(
+        f"[{dataset_id}] 解压完成: {len(records)} 张图片, "
+        f"{len(url_annotations)} 张带标注, {human_size(total_bytes)}"
+    )
     return records, total_bytes, url_annotations
