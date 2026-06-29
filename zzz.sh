@@ -7,4 +7,5 @@
 
 
 
-torchrun --nproc_per_node=4 scripts/train_supcon.py --resume checkpoints/supcon_models/0421/current_model.pth
+torchrun --nproc_per_node=4 scripts/train_supcon.py
+    # --resume checkpoints/supcon_models/0421/current_model.pth

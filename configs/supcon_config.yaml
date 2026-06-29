@@ -16,7 +16,7 @@
 
 supcon:
   model:
-    backbone: "vits16"   # ← 只改这里来切换 backbone
+    backbone: "convnext_tiny"   # ← 只改这里来切换 backbone
 
     embedding_dim: 256
     projection_head:
@@ -26,7 +26,7 @@ supcon:
       #   vitl16              → [1024, 1024]
       #   vith16plus          → [1280, 1280]
       # ConvNeXt 管线：跟着 fusion_dim 走，如 [256, 128]
-      hidden_dims: [384, 384]
+      hidden_dims: [256, 128]
     fusion_dim: 512             # ConvNeXt 管线专用（ViT 管线不使用此参数）
 
     segmentation:
@@ -61,7 +61,7 @@ supcon:
     weight_decay: 0.05
     backbone_lr_ratio: 0.1     # backbone 学习率 = learning_rate × backbone_lr_ratio
     lr_scheduler: "cosine"
-    save_interval: 20
+    save_interval: 50
 
   training_strategy:
     # 0 = 全程微调（推荐，backbone 用低学习率 backbone_lr_ratio 保护）
@@ -91,7 +91,7 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/0627_vit_debug"
-    log_dir: "logs/supcon_logs/0627_vit_debug"
-    use_wandb: false
-    wandb_project: "supcon_logs-0627_vit_debug"
+    checkpoint_dir: "checkpoints/supcon_models/0627_convnext_tiny"
+    log_dir: "logs/supcon_logs/0627_convnext_tiny"
+    use_wandb: true
+    wandb_project: "supcon_logs-0627_convnext_tiny"
