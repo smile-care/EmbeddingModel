@@ -42,17 +42,17 @@ supcon:
       enabled: false
 
   training:
-    epochs: 300
+    epochs: 150
     learning_rate: 1.0e-4
     weight_decay: 0.05
-    backbone_lr_ratio: 0.7     # backbone 学习率 = learning_rate × backbone_lr_ratio
+    backbone_lr_ratio: 0.4     # backbone 学习率 = learning_rate × backbone_lr_ratio
     lr_scheduler: "cosine"
     save_interval: 50
 
   training_strategy:
     # 0 = 全程微调（推荐，backbone 用低学习率 backbone_lr_ratio 保护）
     # N > 0 = 先冻 N 个 epoch 训练 head，再整体微调（适合数据量极少时）
-    freeze_backbone_epochs: 150
+    freeze_backbone_epochs: 0
 
   loss:
     supcon:
