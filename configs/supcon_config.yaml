@@ -45,14 +45,14 @@ supcon:
     epochs: 300
     learning_rate: 1.0e-4
     weight_decay: 0.05
-    backbone_lr_ratio: 0.1     # backbone 学习率 = learning_rate × backbone_lr_ratio
+    backbone_lr_ratio: 0.7     # backbone 学习率 = learning_rate × backbone_lr_ratio
     lr_scheduler: "cosine"
     save_interval: 50
 
   training_strategy:
     # 0 = 全程微调（推荐，backbone 用低学习率 backbone_lr_ratio 保护）
     # N > 0 = 先冻 N 个 epoch 训练 head，再整体微调（适合数据量极少时）
-    freeze_backbone_epochs: 0
+    freeze_backbone_epochs: 150
 
   loss:
     supcon:
@@ -69,7 +69,7 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/0627_convnext_tiny"
-    log_dir: "logs/supcon_logs/0627_convnext_tiny"
+    checkpoint_dir: "checkpoints/supcon_models/0701_convnext_tiny"
+    log_dir: "logs/supcon_logs/0701_convnext_tiny"
     use_wandb: true
-    wandb_project: "supcon_logs-0627_convnext_tiny"
+    wandb_project: "supcon_logs-0701_convnext_tiny"
