@@ -259,6 +259,25 @@ const PALETTE = [
   '#3b82f6', '#8b5cf6', '#ec4899', '#f43f5e', '#10b981',
 ];
 
+/**
+ * Per-category color for inference scatter / legend.
+ * Hues are evenly spaced around the wheel for the active class count so adjacent
+ * entries look as different as possible (no repeated blues/greens from a fixed list).
+ */
+export function categoryChartColor(index: number, total?: number): string {
+  const i = Math.max(0, index);
+  const count = Math.max(total ?? 1, i + 1);
+  const hue = Math.round((i * 360) / count) % 360;
+  const saturation = 88;
+  const lightness = 55 + (i % 2) * 8;
+  return `hsl(${hue}, ${saturation}%, ${lightness}%)`;
+}
+
+export function categoryChartColors(count: number): string[] {
+  const n = Math.max(0, count);
+  return Array.from({length: n}, (_, i) => categoryChartColor(i, n));
+}
+
 export function classColor(cls: Pick<DefectClass, 'color' | 'sortOrder'> | null | undefined, fallbackIndex = 0): string {
   if (cls?.color) return cls.color;
   const idx = cls?.sortOrder ?? fallbackIndex;

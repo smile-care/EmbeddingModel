@@ -14,8 +14,11 @@ from data_cluster.app.config import Settings, get_settings
 from data_cluster.app.database import SessionLocal
 from data_cluster.app.models.db import CropImage, Experiment, ExperimentSample
 from data_cluster.app.services.storage import experiment_checkpoint_run_dir
+from data_cluster.dl.config_resolve import (
+    build_platform_supcon_base,
+    resolve_backbone_pretrained_path,
+)
 from data_cluster.dl.trainer import SupconTrainer
-from embedding_model.utils.config_loader import load_config
 from embedding_model.utils.logging import setup_logger
 
 TRAINING_ALGORITHM = "supcon_db_indexed_training"
@@ -25,10 +28,6 @@ DATASET_CSV_FILENAME = "dataset.csv"
 DEFAULT_VAL_RATIO = 0.2
 MIN_CLASSES_FOR_TRAINING = 2
 MIN_CROPS_PER_CLASS = 2
-# DataCluster 自有配置文件
-DC_CONFIG_PATH = (
-    Path(__file__).resolve().parents[3] / "configs" / "data_cluster.yaml"
-)
 
 # Global stop-flag registry: experiment_id -> True means "please stop"
 _stop_flags: dict[str, bool] = {}
@@ -444,50 +443,23 @@ def _build_data_config(exp: Experiment, manifest_path: Path, supcon_config: dict
 
 
 def _load_dc_config() -> dict[str, Any]:
-    """加载 DataCluster 平台配置。"""
-    try:
-        return load_config(str(DC_CONFIG_PATH))
-    except Exception:
-        return {}
+    from data_cluster.dl.config_resolve import load_dc_config
+
+    return load_dc_config()
 
 
 def _resolve_backbone_pretrained_path(backbone_name: str, exp_config: dict[str, Any] | None = None) -> str | None:
-    """从 DataCluster 配置中解析 backbone 对应的预训练权重路径。"""
-    dc_cfg = _load_dc_config()
-    backbones = dc_cfg.get("data_cluster", {}).get("backbones", {})
-
-    # exp_config 中可显式指定 pretrainedPath
-    if isinstance(exp_config, dict):
-        raw = exp_config.get("pretrainedPath") or exp_config.get("pretrained_path")
-        if isinstance(raw, str) and raw.strip():
-            return raw.strip()
-
-    # 从 data_cluster.yaml 的 backbones 段查找
-    info = backbones.get(backbone_name, {})
-    if isinstance(info, dict) and info.get("pretrained_path"):
-        return str(info["pretrained_path"])
-
-    return None
+    return resolve_backbone_pretrained_path(backbone_name, exp_config)
 
 
 def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
-    """从 DataCluster 配置文件 + 实验参数构建 SupconTrainer 所需配置。"""
+    """从 supcon_config.yaml + DataCluster 平台配置 + 实验参数构建 SupconTrainer 配置。"""
     config = exp.config if isinstance(exp.config, dict) else {}
-    dc_cfg = _load_dc_config()
-    dc = dc_cfg.get("data_cluster", {}) if dc_cfg else {}
+    sup = build_platform_supcon_base()
 
-    # 以 data_cluster.yaml 中的 training / model / moco / loss / data 段为默认值
-    sup = {
-        "data": copy.deepcopy(dc.get("data", {})),
-        "training": copy.deepcopy(dc.get("training", {})),
-        "model": copy.deepcopy(dc.get("model", {})),
-        "moco": copy.deepcopy(dc.get("moco", {})),
-        "loss": copy.deepcopy(dc.get("loss", {})),
-        "training_strategy": copy.deepcopy(dc.get("training_strategy", {})),
-        "output": {
-            "checkpoint_dir": str(run_dir.resolve()),
-            "log_dir": str((run_dir / "logs").resolve()),
-        },
+    sup["output"] = {
+        "checkpoint_dir": str(run_dir.resolve()),
+        "log_dir": str((run_dir / "logs").resolve()),
     }
 
     # --- 数据参数覆盖 ---
@@ -548,27 +520,22 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
         default=sup["training_strategy"].get("freeze_backbone_epochs", 0),
     )
 
-    # --- 模型参数覆盖 ---
-    # backbone 选择优先级：实验显式指定 > data_cluster.yaml training.default_backbone
-    #                       > model.backbone > convnext_small
+    # --- 模型参数覆盖（架构默认来自 supcon_config.yaml）---
     backbone = config.get("backbone") or config.get("modelName") or config.get("model_name")
     if isinstance(backbone, str) and backbone.strip():
         sup["model"]["backbone"] = backbone.strip()
     elif not sup["model"].get("backbone"):
-        default_backbone = dc.get("training", {}).get("default_backbone")
-        sup["model"]["backbone"] = (default_backbone or "convnext_small")
+        sup["model"]["backbone"] = "convnext_tiny"
 
     embedding_dim = config.get("embeddingDim") or config.get("embedding_dim")
     if isinstance(embedding_dim, int) and embedding_dim > 0:
         sup["model"]["embedding_dim"] = embedding_dim
 
-    # 归一化 projection head 配置键：SupconTrainer/工厂同时支持
-    # model.projection_hidden_dims（扁平）与 model.projection_head.hidden_dims（嵌套）。
     if "projection_head" not in sup["model"] and sup["model"].get("projection_hidden_dims"):
         sup["model"]["projection_head"] = {"hidden_dims": list(sup["model"]["projection_hidden_dims"])}
 
-    # 预训练权重路径：默认从 data_cluster.yaml 的 backbones.<backbone>.pretrained_path 加载
-    backbone_name = sup["model"].get("backbone", "convnext_small")
+    # 预训练权重路径：从 data_cluster.yaml 的 backbones.<backbone>.pretrained_path 加载
+    backbone_name = sup["model"].get("backbone", "convnext_tiny")
     pretrained_path = _resolve_backbone_pretrained_path(backbone_name, config)
     if pretrained_path:
         sup["model"]["pretrained_path"] = pretrained_path
@@ -576,12 +543,12 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
     else:
         print(f"[training] backbone='{backbone_name}' 未找到预训练权重路径，将从随机/HF 初始化")
 
-    # --- MoCo 参数覆盖 ---
+    # --- MoCo 参数覆盖（默认来自 supcon_config.yaml）---
     use_moco = _coerce_bool(config, "useMoCo", "use_moco", default=sup["moco"].get("enabled", False))
     sup["moco"]["enabled"] = use_moco
-    sup["moco"]["queue_size"] = _coerce_int(
-        config, "queueSize", "queue_size", default=sup["moco"].get("queue_size", 16384)
-    )
+    queue_size = config.get("queueSize") or config.get("queue_size")
+    if queue_size is not None:
+        sup["moco"]["queue_size"] = queue_size
 
     return {"supcon": sup}
 

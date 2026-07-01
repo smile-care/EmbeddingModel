@@ -2,7 +2,7 @@
 
 Two responsibilities live here:
 
-1. Config building — merge ``configs/data_cluster.yaml`` defaults with an
+1. Config building — merge ``supcon_config.yaml`` + ``data_cluster.yaml`` with an
    experiment's stored overrides (``build_infer_config`` / ``_build_default_model_config``).
 2. Embedding computation — load a model and run the forward pass.  These are the
    low-level ``_*_raw`` helpers, kept here (rather than in ``embedding_model``)
@@ -20,12 +20,16 @@ import torch.nn.functional as F
 from PIL import Image
 from torchvision import transforms
 
+from data_cluster.dl.config_resolve import (
+    build_platform_supcon_base,
+    load_dc_section,
+    resolve_backbone_config_path,
+    resolve_backbone_pretrained_path,
+)
 from embedding_model.supcon.build import build_supcon_model
 from embedding_model.supcon.datasets.supcon_dataset import MaskSoftDilation
-from embedding_model.utils.config_loader import load_config
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
-_DC_CONFIG_PATH = _REPO_ROOT / "configs" / "data_cluster.yaml"
 
 # Stable id used by the API/UI to mean "no trained model — use the pretrained backbone".
 DEFAULT_MODEL_ID = "default"
@@ -43,8 +47,14 @@ def _load_supcon_model(
     image_size: int,
     use_moco: bool,
     device: torch.device,
-) -> torch.nn.Module:
-    """Build the model and load a trained checkpoint (strict=True)."""
+) -> tuple[torch.nn.Module, bool]:
+    """Build the model and load a trained checkpoint (strict=True).
+
+    Returns ``(model, use_moco)`` where ``use_moco`` reflects the checkpoint
+    layout (MoCo ``query_encoder.*`` vs flat ConvNeXtModel ``backbone.*``).
+    """
+    ckpt_use_moco, _has_head = _inspect_checkpoint(checkpoint_path)
+    use_moco = ckpt_use_moco
     model, _queue = build_supcon_model(
         model_config,
         image_size=image_size,
@@ -59,7 +69,7 @@ def _load_supcon_model(
         state = ckpt.get("model_state_dict") or ckpt.get("state_dict") or ckpt
     model.load_state_dict(state, strict=True)
     model.eval()
-    return model
+    return model, use_moco
 
 
 def _build_transforms(image_size: int) -> tuple[transforms.Compose, transforms.Compose]:
@@ -166,7 +176,7 @@ def _compute_supcon_embeddings_raw(
 ) -> np.ndarray:
     """Compute L2-normalized embeddings for a list of (image, optional mask) pairs."""
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model = _load_supcon_model(checkpoint_path, model_config, image_size, use_moco, dev)
+    model, use_moco = _load_supcon_model(checkpoint_path, model_config, image_size, use_moco, dev)
     image_tf, mask_tf = _build_transforms(image_size)
     mask_dilation = MaskSoftDilation({"enabled": True})
 
@@ -234,25 +244,17 @@ def _coerce_image_size(cfg: dict[str, Any]) -> int | list[int] | None:
     return None
 
 
-def _load_dc_config() -> dict[str, Any]:
-    try:
-        return load_config(str(_DC_CONFIG_PATH))
-    except Exception:
-        return {}
-
-
 def build_infer_config(exp_config: dict[str, Any] | None) -> tuple[dict[str, Any], int, bool]:
-    """Merge data_cluster.yaml defaults with exp_config overrides.
+    """Merge supcon_config.yaml + data_cluster.yaml + exp_config overrides.
 
     Returns ``(model_config, image_size, use_moco)`` ready for embedding_model.
     """
-    dc_cfg = _load_dc_config()
-    dc = dc_cfg.get("data_cluster", {}) if dc_cfg else {}
+    base = build_platform_supcon_base()
     exp_cfg = exp_config if isinstance(exp_config, dict) else {}
 
-    data_cfg = dict(dc.get("data", {}))
-    model_cfg = dict(dc.get("model", {}))
-    moco_cfg = dict(dc.get("moco", {}))
+    data_cfg = base.get("data", {})
+    model_cfg = dict(base.get("model", {}))
+    moco_cfg = dict(base.get("moco", {}))
 
     image_size = _coerce_image_size(exp_cfg)
     if image_size is not None:
@@ -260,7 +262,7 @@ def build_infer_config(exp_config: dict[str, Any] | None) -> tuple[dict[str, Any
     elif data_cfg.get("image_size") is None:
         data_cfg["image_size"] = 224
 
-    backbone = exp_cfg.get("backbone") or model_cfg.get("backbone") or "convnext_small"
+    backbone = exp_cfg.get("backbone") or model_cfg.get("backbone") or "convnext_tiny"
     backbone_name = exp_cfg.get("modelName") or exp_cfg.get("model_name") or backbone
     if isinstance(backbone_name, str) and backbone_name.strip():
         model_cfg["backbone"] = backbone_name.strip()
@@ -268,11 +270,6 @@ def build_infer_config(exp_config: dict[str, Any] | None) -> tuple[dict[str, Any
     embedding_dim = exp_cfg.get("embeddingDim") or exp_cfg.get("embedding_dim")
     if isinstance(embedding_dim, int) and embedding_dim > 0:
         model_cfg["embedding_dim"] = embedding_dim
-    elif "embedding_dim" not in model_cfg:
-        model_cfg["embedding_dim"] = 128
-
-    if "projection_hidden_dims" not in model_cfg and "projection_head" not in model_cfg:
-        model_cfg["projection_hidden_dims"] = [256, 128]
 
     use_moco = _coerce_bool(exp_cfg, "useMoCo", "use_moco", default=moco_cfg.get("enabled", False))
     moco_cfg["enabled"] = use_moco
@@ -310,41 +307,33 @@ def compute_supcon_embeddings(
 
 
 def _build_default_model_config() -> tuple[dict[str, Any], int]:
-    """Resolve the default pretrained-backbone config from data_cluster.yaml.
-
-    Returns ``(model_config, image_size)``.  ``pretrained_path`` is only set when
-    the weights file actually exists, so a missing checkpoint degrades to a
-    randomly-initialized backbone instead of crashing.
-    """
-    dc = _load_dc_config().get("data_cluster", {})
-    training = dc.get("training", {}) if isinstance(dc, dict) else {}
-    backbones = dc.get("backbones", {}) if isinstance(dc, dict) else {}
-    model_cfg = dict(dc.get("model", {})) if isinstance(dc, dict) else {}
+    """Resolve the default pretrained-backbone config from platform + supcon configs."""
+    base = build_platform_supcon_base()
+    dc = load_dc_section()
+    model_cfg = dict(base.get("model", {}))
 
     default_backbone = (
-        training.get("default_backbone")
+        dc.get("training", {}).get("default_backbone")
         or model_cfg.get("backbone")
-        or "convnext_small"
+        or "convnext_tiny"
     )
     model_cfg["backbone"] = default_backbone
 
-    info = backbones.get(default_backbone, {}) if isinstance(backbones, dict) else {}
-    if isinstance(info, dict):
-        bb_cfg = info.get("backbone_config")
-        if bb_cfg:
-            bb_path = Path(bb_cfg)
-            if not bb_path.is_absolute():
-                bb_path = (_REPO_ROOT / bb_path).resolve()
-            model_cfg["backbone_config_path"] = str(bb_path)
-        pretrained = info.get("pretrained_path")
-        if pretrained:
-            p = Path(pretrained)
-            if not p.is_absolute():
-                p = (_REPO_ROOT / p).resolve()
-            if p.is_file():
-                model_cfg["pretrained_path"] = str(p)
+    bb_cfg_path = resolve_backbone_config_path(default_backbone)
+    if bb_cfg_path:
+        model_cfg["backbone_config_path"] = bb_cfg_path
 
-    data_cfg = dc.get("data", {}) if isinstance(dc, dict) else {}
+    pretrained = resolve_backbone_pretrained_path(default_backbone)
+    if pretrained:
+        p = Path(pretrained)
+        if not p.is_absolute():
+            p = (_REPO_ROOT / p).resolve()
+        if p.is_file():
+            model_cfg["pretrained_path"] = str(p)
+
+    model_cfg["moco"] = dict(base.get("moco", {}))
+
+    data_cfg = base.get("data", {})
     image_size = data_cfg.get("image_size", 224)
     if isinstance(image_size, list):
         image_size = int(max(image_size)) if image_size else 224

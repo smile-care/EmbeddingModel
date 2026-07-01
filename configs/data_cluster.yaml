@@ -2,14 +2,20 @@
 # DataCluster 平台配置文件
 # 此文件为 DataCluster 模块的独立配置，包括：
 #   1. 各 backbone 对应的预训练权重路径
-#   2. 训练/模型/MoCo/损失 默认参数
+#   2. Web UI 训练/数据加载默认参数（epochs、batch_size 等）
 #   3. 存储路径
+#
+# 模型架构 / MoCo / 损失 与命令行训练共用 configs/supcon_config.yaml，
+# 由 supcon_config_path 指定，避免两套参数不一致导致权重无法复用。
 #
 # 注意：训练默认会加载下方 backbones.<backbone>.pretrained_path 指定的
 #       backbone 预训练权重（除非实验 config 显式提供 pretrainedPath 覆盖）。
 # ============================================================
 
 data_cluster:
+
+  # 与 scripts/train_supcon.py 共用的 SupCon 配置（model / moco / loss 等）
+  supcon_config_path: "configs/supcon_config.yaml"
 
   # ---------- Backbone 预训练权重配置 ----------
   # key 对应 exp config 中的 backbone 参数
@@ -41,42 +47,9 @@ data_cluster:
     lr_scheduler: "cosine"   # 'cosine' | 'step'
 
   training_strategy:
-    freeze_backbone_epochs: 0
+    freeze_backbone_epochs: 100
 
-  # ---------- 模型架构参数 ----------
-  model:
-    backbone: "convnext_tiny"
-    embedding_dim: 128
-    projection_hidden_dims: [256, 128]
-    fpn_out_channels: 256
-    fusion_dim: 512
-    use_layers: [0, 1, 2, 3]
-    segmentation:
-      enabled: true
-      layer_idx: 0
-
-  # ---------- MoCo 默认参数 ----------
-  moco:
-    enabled: false
-    momentum: 0.995
-    queue_size: 16384
-    loss_type: "supervised"
-
-  # ---------- 损失默认参数 ----------
-  loss:
-    supcon:
-      temperature: 0.1
-    neg_weight: 0.2
-    margin: 0.0
-    segmentation:
-      weight: 0.5
-      bce_weight: 0.4
-      dice_weight: 0.4
-      ratio_weight: 0.1
-      target_foreground_ratio: 0.1
-      max_foreground_ratio: 0.1
-
-  # ---------- 数据默认参数 ----------
+  # ---------- 数据默认参数（Web 平台 DataLoader；mask 增强默认开启） ----------
   data:
     image_size: 224
     batch_size: 16

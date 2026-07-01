@@ -28,14 +28,13 @@ import {
 } from 'lucide-vue-next';
 import InferenceScatterChart from '@/components/InferenceScatterChart.vue';
 import type {PlotPoint} from '@/components/InferenceScatterChart.vue';
-import {DatasetsApi, InferenceApi, classColor, staticUrl, type AnnotationRegion, type CropImage, type DatasetImage, type DefectClass} from '@/lib/api';
+import {DatasetsApi, InferenceApi, categoryChartColor, classColor, staticUrl, type AnnotationRegion, type CropImage, type DatasetImage, type DefectClass} from '@/lib/api';
 
 // ── constants ──────────────────────────────────────────────────────────────
 /** Always-available baseline model (server returns this as the first entry too). */
 const DEFAULT_MODEL_ID = 'default';
 const DEFAULT_MODEL = {id: DEFAULT_MODEL_ID, name: '默认预训练模型', type: 'Pretrained'};
 const MIN_ANALYSIS_CLASSES = 2;
-const COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff8042', '#0088FE', '#00C49F'];
 const ALGO_LIST = ['TSNE', 'UMAP', 'PCA'] as const;
 type AlgoKey = (typeof ALGO_LIST)[number];
 
@@ -1136,7 +1135,7 @@ watch(imagePreviewZoom, (z) => {
             <div class="text-[9px] font-bold uppercase tracking-widest text-muted-foreground">类别图例</div>
             <div class="space-y-1.5">
               <div v-for="(name, i) in labelList" :key="name" class="flex items-center gap-2">
-                <div class="h-2.5 w-2.5 shrink-0 rounded-full" :style="{backgroundColor: COLORS[i % COLORS.length]}" />
+                <div class="h-2.5 w-2.5 shrink-0 rounded-full ring-1 ring-black/15 dark:ring-white/35" :style="{backgroundColor: categoryChartColor(i, labelList.length)}" />
                 <span class="truncate text-[11px] text-muted-foreground">{{ name }}</span>
               </div>
               <div v-if="goldenCropIds.length" class="flex items-center gap-2 pt-0.5">
@@ -1208,7 +1207,7 @@ watch(imagePreviewZoom, (z) => {
                 <template v-if="plotData.filter((p) => (p.label || labelList[p.cluster]) === cat).length > 0">
                   <div class="flex items-center justify-between border-b border-border pb-2">
                     <div class="flex items-center gap-2">
-                      <div class="h-3 w-3 rounded-full" :style="{backgroundColor: COLORS[catIdx % COLORS.length]}" />
+                      <div class="h-3 w-3 rounded-full ring-1 ring-black/15 dark:ring-white/35" :style="{backgroundColor: categoryChartColor(catIdx, labelList.length)}" />
                       <h3 class="text-sm font-semibold">{{ cat }}</h3>
                       <span class="rounded bg-secondary/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">{{ plotData.filter((p) => (p.label || labelList[p.cluster]) === cat).length }} 项</span>
                     </div>

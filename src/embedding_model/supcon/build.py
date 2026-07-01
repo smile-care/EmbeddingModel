@@ -30,6 +30,47 @@ def _projection_hidden_dims(model_config: dict[str, Any]) -> list[int]:
     return list(model_config.get("projection_hidden_dims", [256, 128]))
 
 
+def _convnext_build_kwargs(model_config: dict[str, Any]) -> dict[str, Any]:
+    """Resolve ConvNeXt-specific keys from flat or nested supcon config."""
+    cnx = model_config.get("convnext")
+    cnx = cnx if isinstance(cnx, dict) else {}
+    seg = model_config.get("segmentation")
+    seg = seg if isinstance(seg, dict) else {}
+
+    use_layers = model_config.get("use_layers")
+    if use_layers is None:
+        use_layers = cnx.get("use_layers", [0, 1, 2, 3])
+
+    fpn_out = model_config.get("fpn_out_channels")
+    if fpn_out is None:
+        fpn_out = cnx.get("fpn_out_channels", 256)
+
+    seg_layer_idx = model_config.get("seg_layer_idx")
+    if seg_layer_idx is None:
+        seg_layer_idx = cnx.get("seg_layer_idx", seg.get("layer_idx", 0))
+
+    return {
+        "use_layers": list(use_layers),
+        "fpn_out_channels": int(fpn_out),
+        "seg_layer_idx": int(seg_layer_idx),
+    }
+
+
+def _resolve_queue_size(moco_config: dict[str, Any]) -> int:
+    raw = moco_config.get("queue_size", 16384)
+    if isinstance(raw, int):
+        return raw
+    if isinstance(raw, (list, tuple)) and raw:
+        try:
+            return int(max(int(x) for x in raw))
+        except (TypeError, ValueError):
+            pass
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 16384
+
+
 def resolve_backbone_config(
     model_config: dict[str, Any],
     logger: Optional[logging.Logger] = None,
@@ -82,7 +123,8 @@ def build_supcon_model(
 
     seg_config = model_config.get("segmentation", {}) or {}
     enable_segmentation = bool(seg_config.get("enabled", True))
-    seg_layer_idx = int(seg_config.get("layer_idx", 0))
+    cnx_kwargs = _convnext_build_kwargs(model_config)
+    seg_layer_idx = cnx_kwargs["seg_layer_idx"]
 
     common_kwargs = dict(
         backbone_cfg=backbone_cfg,
@@ -91,8 +133,8 @@ def build_supcon_model(
         projection_hidden_dims=_projection_hidden_dims(model_config),
         image_size=image_size,
         freeze_backbone=freeze_backbone,
-        use_layers=model_config.get("use_layers", None),
-        fpn_out_channels=int(model_config.get("fpn_out_channels", 256)),
+        use_layers=cnx_kwargs["use_layers"],
+        fpn_out_channels=cnx_kwargs["fpn_out_channels"],
         fusion_dim=int(model_config.get("fusion_dim", 512)),
         enable_segmentation=enable_segmentation,
         seg_layer_idx=seg_layer_idx,
@@ -103,7 +145,7 @@ def build_supcon_model(
             logger.info("使用 MoCo 模型（动量对比学习）")
         momentum = float(moco_config.get("momentum", 0.999))
         model = MoCoModel(momentum=momentum, **common_kwargs)
-        queue_size = int(moco_config.get("queue_size", 16384))
+        queue_size = _resolve_queue_size(moco_config)
         moco_queue = MoCoQueue(
             queue_size=queue_size,
             embedding_dim=int(model_config.get("embedding_dim", 128)),

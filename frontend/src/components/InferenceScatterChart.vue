@@ -15,102 +15,318 @@ export type PlotPoint = {
 </script>
 
 <script setup lang="ts">
-import {computed, ref, shallowRef} from 'vue';
+import {computed, onBeforeUnmount, ref, shallowRef, watch} from 'vue';
 import VChart from 'vue-echarts';
 import type {ECharts} from 'echarts';
-import {staticUrl} from '@/lib/api';
-
-const COLORS = ['#8884d8', '#82ca9d', '#ffc658', '#ff8042', '#0088FE', '#00C49F'];
+import {categoryChartColor, staticUrl} from '@/lib/api';
 
 const props = defineProps<{plotData: PlotPoint[]; labelList: string[]}>();
 const emit = defineEmits<{preview: [point: PlotPoint]}>();
 
-// ── chart ref ──────────────────────────────────────────────────────────────
-const chartRef = shallowRef<{chart: ECharts} | null>(null);
-const isDragging = ref(false);
+type ChartPublicApi = {
+  chart?: ECharts;
+  getDom?: ECharts['getDom'];
+  convertFromPixel?: ECharts['convertFromPixel'];
+};
 
-// ── drag-to-pan (data-coordinate space) ───────────────────────────────────
-let _dragStartClient = {x: 0, y: 0};
-// Snapshot of the visible data range at drag start
-let _dragStartRange = {xMin: 0, xMax: 0, yMin: 0, yMax: 0};
+type Viewport = {xMin: number; xMax: number; yMin: number; yMax: number};
+
+const chartRef = shallowRef<ChartPublicApi | null>(null);
+const isPanning = ref(false);
+const isOverPoint = ref(false);
+const viewport = ref<Viewport | null>(null);
+const plotSize = ref({width: 1, height: 1});
+
 const DRAG_THRESHOLD = 4;
+const ZOOM_IN_FACTOR = 0.85;
+const ZOOM_OUT_FACTOR = 1.18;
+const MIN_ZOOM_RATIO = 0.02;
+const MAX_ZOOM_OUT_RATIO = 1;
+const GRID_MARGIN = {left: 40, right: 24, top: 24, bottom: 40};
+const TARGET_SPLITS = 8;
+let _panActive = false;
 let _didDrag = false;
+let _suppressClick = false;
+let _userZoomed = false;
+let _dragStartClient = {x: 0, y: 0};
+let _dragStartViewport: Viewport | null = null;
 
-function getCurrentDataRange() {
-  const chart = chartRef.value?.chart;
-  if (!chart) return null;
-  const opt = chart.getOption() as any;
-  // After any dataZoom interaction, echarts stores startValue/endValue
-  const dz: any[] = opt?.dataZoom ?? [];
-  const xz = dz[0] ?? {};
-  const yz = dz[1] ?? {};
-  // Fallback to axis min/max when no zoom has been applied yet
-  const xAxis = (opt?.xAxis as any[])?.[0] ?? {};
-  const yAxis = (opt?.yAxis as any[])?.[0] ?? {};
+function getChart(): ECharts | null {
+  const root = chartRef.value;
+  return root?.chart ?? null;
+}
+
+function setChartCursor(cursor: 'default' | 'grab' | 'grabbing') {
+  const dom = chartRef.value?.getDom?.() ?? getChart()?.getDom();
+  if (dom) dom.style.cursor = cursor;
+}
+
+function getPlotSize() {
+  const dom = chartRef.value?.getDom?.() ?? getChart()?.getDom();
+  if (!dom) return {width: 1, height: 1};
   return {
-    xMin: xz.startValue ?? xAxis.min ?? null,
-    xMax: xz.endValue ?? xAxis.max ?? null,
-    yMin: yz.startValue ?? yAxis.min ?? null,
-    yMax: yz.endValue ?? yAxis.max ?? null,
+    width: Math.max(dom.clientWidth - GRID_MARGIN.left - GRID_MARGIN.right, 1),
+    height: Math.max(dom.clientHeight - GRID_MARGIN.top - GRID_MARGIN.bottom, 1),
   };
 }
 
-function onMousedown(e: MouseEvent) {
-  if (e.button !== 0) return;
-  const range = getCurrentDataRange();
-  if (!range || range.xMin === null) return;
-  _didDrag = false;
-  isDragging.value = true;
-  _dragStartClient = {x: e.clientX, y: e.clientY};
-  _dragStartRange = {xMin: range.xMin, xMax: range.xMax!, yMin: range.yMin!, yMax: range.yMax!};
-  window.addEventListener('mousemove', onMousemove);
-  window.addEventListener('mouseup', onMouseup);
+function updatePlotSize() {
+  plotSize.value = getPlotSize();
 }
 
-function onMousemove(e: MouseEvent) {
-  if (!isDragging.value) return;
-  const chart = chartRef.value?.chart;
-  if (!chart) return;
+function niceInterval(range: number, splits = TARGET_SPLITS) {
+  const raw = range / splits;
+  if (!Number.isFinite(raw) || raw <= 0) return 1;
+  const mag = 10 ** Math.floor(Math.log10(raw));
+  const norm = raw / mag;
+  let nice = 10;
+  if (norm <= 1) nice = 1;
+  else if (norm <= 2) nice = 2;
+  else if (norm <= 5) nice = 5;
+  return nice * mag;
+}
+
+const dataBounds = computed<Viewport>(() => {
+  const xs = props.plotData.map((p) => p.x).filter(Number.isFinite);
+  const ys = props.plotData.map((p) => p.y).filter(Number.isFinite);
+  if (!xs.length || !ys.length) {
+    return {xMin: -1, xMax: 1, yMin: -1, yMax: 1};
+  }
+  const xMinRaw = Math.min(...xs);
+  const xMaxRaw = Math.max(...xs);
+  const yMinRaw = Math.min(...ys);
+  const yMaxRaw = Math.max(...ys);
+  const xPad = Math.max((xMaxRaw - xMinRaw) * 0.08, 1e-6);
+  const yPad = Math.max((yMaxRaw - yMinRaw) * 0.08, 1e-6);
+  return {
+    xMin: xMinRaw - xPad,
+    xMax: xMaxRaw + xPad,
+    yMin: yMinRaw - yPad,
+    yMax: yMaxRaw + yPad,
+  };
+});
+
+// Grid cells should be visually square (equal pixel width/height) without
+// changing the data ranges. Pick a nice interval for X, then derive the Y
+// interval so that one X cell and one Y cell span the same number of pixels.
+const gridIntervals = computed(() => {
+  const vp = viewport.value ?? dataBounds.value;
+  const xRange = vp.xMax - vp.xMin;
+  const yRange = vp.yMax - vp.yMin;
+  const {width, height} = plotSize.value;
+  const intervalX = niceInterval(xRange);
+  const cellPixels = (intervalX / xRange) * width; // px per X cell
+  const intervalY = (cellPixels / height) * yRange; // same px for Y cell
+  return {x: intervalX, y: intervalY};
+});
+
+function clampViewport(next: Viewport): Viewport {
+  const bounds = dataBounds.value;
+  const baseXRange = bounds.xMax - bounds.xMin;
+  const baseYRange = bounds.yMax - bounds.yMin;
+  const minXRange = baseXRange * MIN_ZOOM_RATIO;
+  const minYRange = baseYRange * MIN_ZOOM_RATIO;
+  const maxXRange = baseXRange * MAX_ZOOM_OUT_RATIO;
+  const maxYRange = baseYRange * MAX_ZOOM_OUT_RATIO;
+
+  let xRange = next.xMax - next.xMin;
+  let yRange = next.yMax - next.yMin;
+  const xCenter = (next.xMin + next.xMax) / 2;
+  const yCenter = (next.yMin + next.yMax) / 2;
+
+  xRange = Math.min(Math.max(xRange, minXRange), maxXRange);
+  yRange = Math.min(Math.max(yRange, minYRange), maxYRange);
+
+  const xMinLimit = bounds.xMin;
+  const xMaxLimit = bounds.xMax;
+  const yMinLimit = bounds.yMin;
+  const yMaxLimit = bounds.yMax;
+
+  let xMin = xCenter - xRange / 2;
+  let xMax = xCenter + xRange / 2;
+  let yMin = yCenter - yRange / 2;
+  let yMax = yCenter + yRange / 2;
+
+  if (xMin < xMinLimit) {
+    xMax += xMinLimit - xMin;
+    xMin = xMinLimit;
+  }
+  if (xMax > xMaxLimit) {
+    xMin -= xMax - xMaxLimit;
+    xMax = xMaxLimit;
+  }
+  if (yMin < yMinLimit) {
+    yMax += yMinLimit - yMin;
+    yMin = yMinLimit;
+  }
+  if (yMax > yMaxLimit) {
+    yMin -= yMax - yMaxLimit;
+    yMax = yMaxLimit;
+  }
+
+  return {xMin, xMax, yMin, yMax};
+}
+
+function resetViewport() {
+  viewport.value = {...dataBounds.value};
+}
+
+watch(
+  () => [props.plotData, props.labelList] as const,
+  () => {
+    _userZoomed = false;
+    updatePlotSize();
+    viewport.value = {...dataBounds.value};
+  },
+  {immediate: true, deep: true},
+);
+
+let _resizeObserver: ResizeObserver | null = null;
+
+watch(
+  () => chartRef.value?.getDom?.() ?? getChart()?.getDom(),
+  (dom, _, onCleanup) => {
+    _resizeObserver?.disconnect();
+    _resizeObserver = null;
+    if (!dom) return;
+    updatePlotSize();
+    _resizeObserver = new ResizeObserver(() => updatePlotSize());
+    _resizeObserver.observe(dom);
+    onCleanup(() => {
+      _resizeObserver?.disconnect();
+      _resizeObserver = null;
+    });
+  },
+  {flush: 'post'},
+);
+
+// Re-fit the viewport to the (aspect-corrected) data bounds whenever the plot
+// area changes size, as long as the user hasn't manually zoomed/panned. This
+// also fixes the initial mount where the chart DOM size is not yet known.
+watch(
+  dataBounds,
+  (bounds) => {
+    if (!_userZoomed) viewport.value = {...bounds};
+  },
+);
+
+function cleanupPanListeners() {
+  window.removeEventListener('pointermove', onWindowPointermove);
+  window.removeEventListener('pointerup', onWindowPointerup);
+  window.removeEventListener('pointercancel', onWindowPointerup);
+  _panActive = false;
+  isPanning.value = false;
+}
+
+function onChartMouseover(params: {componentType?: string; seriesType?: string}) {
+  if (params.componentType !== 'series' || params.seriesType !== 'scatter') return;
+  isOverPoint.value = true;
+  if (!_panActive && !isPanning.value) setChartCursor('default');
+}
+
+function onChartMouseout(params: {componentType?: string}) {
+  if (params.componentType !== 'series') return;
+  isOverPoint.value = false;
+  if (!_panActive && !isPanning.value) setChartCursor('grab');
+}
+
+function onPointerdown(e: PointerEvent) {
+  if (e.button !== 0 || !viewport.value) return;
+
+  _panActive = true;
+  _didDrag = false;
+  _dragStartClient = {x: e.clientX, y: e.clientY};
+  _dragStartViewport = {...viewport.value};
+
+  window.addEventListener('pointermove', onWindowPointermove);
+  window.addEventListener('pointerup', onWindowPointerup);
+  window.addEventListener('pointercancel', onWindowPointerup);
+}
+
+function onWindowPointermove(e: PointerEvent) {
+  onPanPointermove(e);
+}
+
+function onWindowPointerup() {
+  finishPan();
+}
+
+function onPanPointermove(e: PointerEvent) {
+  if (!_panActive || !_dragStartViewport) return;
 
   const dx = e.clientX - _dragStartClient.x;
   const dy = e.clientY - _dragStartClient.y;
   if (!_didDrag && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
+
   _didDrag = true;
+  _userZoomed = true;
+  isPanning.value = true;
+  isOverPoint.value = false;
+  setChartCursor('grabbing');
 
-  const dom = chart.getDom();
-  const {xMin, xMax, yMin, yMax} = _dragStartRange;
-  const xRange = xMax - xMin;
-  const yRange = yMax - yMin;
-
-  // Convert pixel delta to data-unit delta
-  // grid area is approximately full canvas minus padding; use dom size as proxy
-  const xShift = -(dx / dom.clientWidth) * xRange;
-  const yShift = (dy / dom.clientHeight) * yRange; // screen-Y is inverted vs data-Y
-
-  chart.dispatchAction({type: 'dataZoom', dataZoomIndex: 0, startValue: xMin + xShift, endValue: xMax + xShift});
-  chart.dispatchAction({type: 'dataZoom', dataZoomIndex: 1, startValue: yMin + yShift, endValue: yMax + yShift});
+  const dom = chartRef.value?.getDom?.() ?? getChart()?.getDom();
+  const w = plotSize.value.width;
+  const h = plotSize.value.height;
+  const start = _dragStartViewport;
+  const xRange = start.xMax - start.xMin;
+  const yRange = start.yMax - start.yMin;
+  const xShift = -(dx / w) * xRange;
+  const yShift = (dy / h) * yRange;
+  viewport.value = clampViewport({
+    xMin: start.xMin + xShift,
+    xMax: start.xMax + xShift,
+    yMin: start.yMin + yShift,
+    yMax: start.yMax + yShift,
+  });
 }
 
-function onMouseup() {
-  isDragging.value = false;
-  _didDrag = false;
-  window.removeEventListener('mousemove', onMousemove);
-  window.removeEventListener('mouseup', onMouseup);
+function onWheel(e: WheelEvent) {
+  const current = viewport.value;
+  if (!current) return;
+  const factor = e.deltaY < 0 ? ZOOM_IN_FACTOR : ZOOM_OUT_FACTOR;
+  const dom = chartRef.value?.getDom?.() ?? getChart()?.getDom();
+  const rect = dom?.getBoundingClientRect();
+  const px = rect ? (e.clientX - rect.left) / Math.max(rect.width, 1) : 0.5;
+  const py = rect ? (e.clientY - rect.top) / Math.max(rect.height, 1) : 0.5;
+  const centerX = current.xMin + px * (current.xMax - current.xMin);
+  const centerY = current.yMax - py * (current.yMax - current.yMin);
+  const nextXRange = (current.xMax - current.xMin) * factor;
+  const nextYRange = (current.yMax - current.yMin) * factor;
+  _userZoomed = true;
+  viewport.value = clampViewport({
+    xMin: centerX - px * nextXRange,
+    xMax: centerX + (1 - px) * nextXRange,
+    yMin: centerY - (1 - py) * nextYRange,
+    yMax: centerY + py * nextYRange,
+  });
 }
+
+function finishPan() {
+  if (_didDrag) _suppressClick = true;
+  _dragStartViewport = null;
+  cleanupPanListeners();
+  if (!isOverPoint.value) setChartCursor('grab');
+}
+
+onBeforeUnmount(() => {
+  cleanupPanListeners();
+  _resizeObserver?.disconnect();
+  _resizeObserver = null;
+});
 
 // ── chart option ───────────────────────────────────────────────────────────
 const chartOption = computed(() => {
   const clusters = [...new Set(props.plotData.map((p) => p.cluster))].sort((a, b) => a - b);
+  const n = props.labelList.length || clusters.length;
   const series = clusters.map((ci) => {
     const pts = props.plotData.filter((p) => p.cluster === ci);
     const label = pts[0]?.label || props.labelList[ci] || `Cluster ${ci + 1}`;
-    const color = COLORS[ci % COLORS.length];
+    const color = categoryChartColor(ci, n);
     return {
       name: label,
       type: 'scatter',
       symbolSize: 9,
       itemStyle: {color, borderColor: 'transparent'},
-      // Golden reference crops are drawn larger, as a ringed star, so they pop.
       data: pts.map((p) => ({
         value: [p.x, p.y],
         raw: p,
@@ -125,16 +341,21 @@ const chartOption = computed(() => {
     };
   });
 
+  const intervals = gridIntervals.value;
+  const axisCommon = {
+    splitNumber: TARGET_SPLITS,
+    splitLine: {show: true, lineStyle: {color: '#3f3f46', type: 'dashed'}},
+    axisLine: {show: false, onZero: false},
+    axisTick: {show: false},
+    axisLabel: {show: false},
+  };
+
   return {
     backgroundColor: 'transparent',
     animation: false,
-    grid: {left: 40, right: 24, top: 24, bottom: 40, containLabel: false},
-    xAxis: {type: 'value', splitLine: {lineStyle: {color: '#3f3f46', type: 'dashed'}}, axisLine: {lineStyle: {color: '#3f3f46'}}, axisTick: {show: false}, axisLabel: {show: false}},
-    yAxis: {type: 'value', splitLine: {lineStyle: {color: '#3f3f46', type: 'dashed'}}, axisLine: {lineStyle: {color: '#3f3f46'}}, axisTick: {show: false}, axisLabel: {show: false}},
-    dataZoom: [
-      {type: 'inside', xAxisIndex: 0, zoomOnMouseWheel: true, moveOnMouseMove: false, moveOnMouseWheel: false, filterMode: 'none'},
-      {type: 'inside', yAxisIndex: 0, zoomOnMouseWheel: true, moveOnMouseMove: false, moveOnMouseWheel: false, filterMode: 'none'},
-    ],
+    grid: {...GRID_MARGIN, containLabel: false},
+    xAxis: {type: 'value', min: viewport.value?.xMin, max: viewport.value?.xMax, interval: intervals.x, minInterval: intervals.x, maxInterval: intervals.x, ...axisCommon},
+    yAxis: {type: 'value', min: viewport.value?.yMin, max: viewport.value?.yMax, interval: intervals.y, minInterval: intervals.y, maxInterval: intervals.y, ...axisCommon},
     tooltip: {
       trigger: 'item',
       backgroundColor: '#09090b',
@@ -145,7 +366,7 @@ const chartOption = computed(() => {
         const p = params as {data?: {raw?: PlotPoint}};
         const d = p.data?.raw;
         if (!d) return '';
-        const color = COLORS[d.cluster % COLORS.length];
+        const color = categoryChartColor(d.cluster, props.labelList.length || props.plotData.length);
         const label = d.label || props.labelList[d.cluster] || `Cluster ${d.cluster + 1}`;
         const score = Number(d.anomalyScore ?? 0);
         const scoreColor = score > 70 ? '#f43f5e' : '#10b981';
@@ -177,6 +398,10 @@ const chartOption = computed(() => {
 });
 
 function onChartClick(params: unknown) {
+  if (_suppressClick) {
+    _suppressClick = false;
+    return;
+  }
   const raw = (params as {data?: {raw?: PlotPoint}}).data?.raw;
   if (raw?.url) emit('preview', raw);
 }
@@ -184,10 +409,46 @@ function onChartClick(params: unknown) {
 
 <template>
   <div
-    class="h-full min-h-[400px] w-full"
-    :class="isDragging ? 'cursor-grabbing' : 'cursor-grab'"
-    @mousedown="onMousedown"
+    class="inference-scatter-chart relative h-full min-h-[400px] w-full"
+    :class="{'is-panning': isPanning, 'is-over-point': isOverPoint && !isPanning}"
+    @pointerdown="onPointerdown"
+    @wheel.prevent="onWheel"
   >
-    <VChart ref="chartRef" class="h-full w-full" :option="chartOption" autoresize @click="onChartClick" />
+    <button
+      type="button"
+      class="absolute right-3 top-3 z-10 rounded border border-border bg-background/80 px-2 py-1 text-[10px] text-muted-foreground shadow-sm backdrop-blur transition hover:border-primary/50 hover:text-foreground"
+      @click.stop="resetViewport"
+      @pointerdown.stop
+    >
+      重置视图
+    </button>
+    <VChart
+      ref="chartRef"
+      class="h-full w-full"
+      :option="chartOption"
+      autoresize
+      @click="onChartClick"
+      @mouseover="onChartMouseover"
+      @mouseout="onChartMouseout"
+    />
   </div>
 </template>
+
+<style scoped>
+.inference-scatter-chart :deep(canvas) {
+  cursor: grab;
+}
+
+.inference-scatter-chart {
+  touch-action: none;
+  user-select: none;
+}
+
+.inference-scatter-chart.is-over-point :deep(canvas) {
+  cursor: default;
+}
+
+.inference-scatter-chart.is-panning :deep(canvas) {
+  cursor: grabbing;
+}
+</style>
