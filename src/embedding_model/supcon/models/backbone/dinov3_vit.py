@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional, Tuple, Union
 
 import torch
@@ -327,13 +328,35 @@ class DINOv3ViT(nn.Module):
 
     def _load_checkpoint(self, path: str) -> None:
         ck = torch.load(path, map_location="cpu")
-        sd = ck["model"] if isinstance(ck, dict) and "model" in ck else ck
-        missing, unexpected = self.load_state_dict(sd, strict=False)
+        sd = ck
+        if isinstance(ck, dict):
+            for key in ("model", "model_state_dict", "state_dict"):
+                if isinstance(ck.get(key), dict):
+                    sd = ck[key]
+                    break
+
+        backbone_sd: dict[str, torch.Tensor] = {}
+        valid_prefixes = ("embeddings.", "model.", "norm.")
+        if isinstance(sd, dict):
+            for k, v in sd.items():
+                if "momentum_encoder" in k:
+                    continue
+                if "backbone." in k:
+                    k = k[k.find("backbone.") + len("backbone."):]
+                if k.startswith(valid_prefixes):
+                    backbone_sd.setdefault(k, v)
+
+        if not backbone_sd:
+            print(f"[DINOv3ViT] WARNING: no backbone weights found in {path}; backbone stays randomly initialized")
+            return
+
+        missing, unexpected = self.load_state_dict(backbone_sd, strict=False)
+        loaded = len(backbone_sd) - len(unexpected)
+        print(f"[DINOv3ViT] loaded {loaded}/{len(backbone_sd)} backbone tensors from {Path(path).name}")
         if missing:
             print(f"[DINOv3ViT] missing keys: {missing[:5]}{'...' if len(missing) > 5 else ''}")
         if unexpected:
             print(f"[DINOv3ViT] unexpected keys: {unexpected[:5]}{'...' if len(unexpected) > 5 else ''}")
-        print(f"[DINOv3ViT] loaded checkpoint from {path!r}")
 
     def forward(
         self,

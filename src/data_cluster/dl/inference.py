@@ -100,11 +100,10 @@ def _compute_backbone_embeddings_raw(
 ) -> np.ndarray:
     """Compute embeddings from the *pretrained backbone only* (no trained head).
 
-    Builds the model so the backbone loads its pretrained weights, then uses
-    mask-weighted global average pooling over the last backbone feature map as the
-    embedding.  This lets the platform offer a usable "default encoder" before any
-    experiment has been trained, with deterministic output (only pretrained
-    weights are involved — the randomly-initialized FPN / projection head are not).
+    Builds the model so the backbone loads its pretrained weights, then uses the
+    backbone-native pooling path without the randomly initialized projection head.
+    This lets the platform offer a usable deterministic "default encoder" before
+    any experiment has been trained.
     """
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, _queue = build_supcon_model(
@@ -149,12 +148,16 @@ def _compute_backbone_embeddings_raw(
         x = torch.stack(batch_imgs).to(dev)
         m = torch.stack(batch_masks).to(dev)
 
-        feats = model.backbone(x, output_hidden_states=True)
-        last = feats[-1]  # (B, C, h, w)
-        m_ds = F.interpolate(m, size=last.shape[-2:], mode="area")
-        num = (last * m_ds).sum(dim=(2, 3))
-        den = m_ds.sum(dim=(2, 3)).clamp_min(1e-6)
-        pooled = num / den
+        if hasattr(model, "mask_pooling"):
+            cls_token, patch_tokens = model.backbone(x, output_hidden_states=True)
+            pooled = model.mask_pooling(cls_token, patch_tokens, m)
+        else:
+            feats = model.backbone(x, output_hidden_states=True)
+            last = feats[-1]  # (B, C, h, w)
+            m_ds = F.interpolate(m, size=last.shape[-2:], mode="area")
+            num = (last * m_ds).sum(dim=(2, 3))
+            den = m_ds.sum(dim=(2, 3)).clamp_min(1e-6)
+            pooled = num / den
         emb = F.normalize(pooled, dim=1, p=2, eps=1e-8)
         out.append(emb.cpu().numpy())
 
@@ -211,9 +214,9 @@ def _compute_supcon_embeddings_raw(
         m = torch.stack(batch_masks).to(dev)
 
         if use_moco:
-            pred = model(x, m, mode="query", return_features=False, return_segmentation=False)
+            pred = model(x, m, mode="query", return_features=False)
         else:
-            pred = model(x, m, return_features=False, return_segmentation=False)
+            pred = model(x, m, return_features=False)
         emb = F.normalize(pred["embeddings"], dim=1, p=2, eps=1e-8)
         out.append(emb.cpu().numpy())
 

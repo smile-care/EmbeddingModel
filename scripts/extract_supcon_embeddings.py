@@ -1,6 +1,6 @@
 """
 提取SupCon/MoCo模型的embedding
-适配最新的算法架构：DINOv3 Backbone + FPN + Mask特征筛选 + 多层特征融合 + Projection Head
+适配最新的算法架构：DINOv3 Backbone + 原生多层 Mask 特征融合 + Projection Head
 支持标准SupCon模型和MoCo（动量对比学习）模型
 使用与训练脚本相同的数据加载模式（基于data_config_zhenyu.yaml和SupConDataset）
 """
@@ -209,19 +209,15 @@ class SupConEmbeddingExtractor:
             backbone_cfg=backbone_cfg,
             ckpt_path=backbone_ckpt_path,
             embedding_dim=model_config.get('embedding_dim', 128),
-            projection_hidden_dims=model_config.get('projection_head', {}).get('hidden_dims', [256, 128]),
             image_size=model_config.get('image_size', 224),
             freeze_backbone=False,
-            fusion_dim=model_config.get('fusion_dim', 512),
         )
         if is_vit:
             common_kwargs['cls_weight'] = model_config.get('vit', {}).get('cls_weight', 0.3)
         else:
             cnx_cfg = model_config.get('convnext', {})
             common_kwargs.update(dict(
-                use_layers=cnx_cfg.get('use_layers', [0, 1, 2, 3]),
-                fpn_out_channels=cnx_cfg.get('fpn_out_channels', 256),
-                seg_layer_idx=cnx_cfg.get('seg_layer_idx', 0),
+                use_layers=cnx_cfg.get('use_layers', [1, 2, 3]),
             ))
 
         if is_moco_model:

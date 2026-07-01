@@ -39,7 +39,7 @@ from src.embedding_model.supcon.datasets.supcon_dataset import (MultiScaleBatchS
 from src.embedding_model.supcon.models.backbone.dinov3_convnext import DINOv3ConvNextConfig
 from src.embedding_model.supcon.models.backbone.dinov3_vit import DINOv3ViTConfig
 from src.embedding_model.supcon.models.convnext_model import ConvNeXtModel
-from src.embedding_model.supcon.models.losses import ComprehensiveSegmentationLoss, SupervisedContrastiveLoss
+from src.embedding_model.supcon.models.losses import SupervisedContrastiveLoss
 from src.embedding_model.supcon.models.moco_loss import MoCoLoss
 from src.embedding_model.supcon.models.moco_model import MoCoModel
 from src.embedding_model.supcon.models.moco_queue import MoCoQueue
@@ -122,8 +122,6 @@ def train_epoch(
     epoch: int,
     use_moco: bool = False,
     moco_queue: Optional[MoCoQueue] = None,
-    seg_criterion: Optional[nn.Module] = None,
-    seg_loss_weight: float = 0.5,
     is_main: bool = True,
 ) -> dict:
     """
@@ -138,8 +136,6 @@ def train_epoch(
         epoch: 当前epoch
         use_moco: 是否使用MoCo
         moco_queue: MoCo队列（如果使用MoCo）
-        seg_criterion: 分割损失函数（可选）
-        seg_loss_weight: 分割损失权重
         is_main: 是否为主进程（rank 0）
     """
     model.train()
@@ -148,7 +144,6 @@ def train_epoch(
 
     total_loss = 0.0
     total_contrastive_loss = 0.0
-    total_seg_loss = 0.0
     total_pos_loss = 0.0
     total_neg_loss = 0.0
     num_batches = 0
@@ -168,12 +163,12 @@ def train_epoch(
         if use_moco:
             # MoCo训练流程
             # 1. 使用query_encoder计算view1的query embeddings
-            query_outputs1 = model(view1_images, view1_masks, mode='query', return_features=False, return_segmentation=(seg_criterion is not None))
+            query_outputs1 = model(view1_images, view1_masks, mode='query', return_features=False)
             query_embeddings1 = query_outputs1['embeddings']
 
             # 2. 使用momentum_encoder计算view2的key embeddings（用于positive pairs和更新队列）
             with torch.no_grad():
-                key_outputs2 = model(view2_images, view2_masks, mode='key', return_features=False, return_segmentation=False)
+                key_outputs2 = model(view2_images, view2_masks, mode='key', return_features=False)
                 key_embeddings2 = key_outputs2['embeddings']
 
             # 3. 获取队列中的负样本
@@ -198,14 +193,7 @@ def train_epoch(
                 queue_labels=queue_labels
             )
 
-            # 计算分割损失（如果启用）
-            seg_loss = torch.tensor(0.0, device=device)
-            if seg_criterion is not None and 'segmentation' in query_outputs1:
-                seg_pred = query_outputs1['segmentation']  # (B, 1, H, W)
-                seg_loss = seg_criterion(seg_pred, view1_masks)
-
-            # 总损失
-            loss = contrastive_loss + seg_loss_weight * seg_loss
+            loss = contrastive_loss
 
             # 6. 检查loss是否为NaN或Inf（DDP 下不提前 continue，改为零损失保持图连通）
             if not torch.isfinite(loss):
@@ -234,10 +222,10 @@ def train_epoch(
         else:
             # 标准SupCon训练流程
             # 前向传播：分别计算view1和view2的embedding
-            outputs1 = model(view1_images, view1_masks, return_features=False, return_segmentation=(seg_criterion is not None))
+            outputs1 = model(view1_images, view1_masks, return_features=False)
             embeddings1 = outputs1['embeddings']
 
-            outputs2 = model(view2_images, view2_masks, return_features=False, return_segmentation=False)
+            outputs2 = model(view2_images, view2_masks, return_features=False)
             embeddings2 = outputs2['embeddings']
 
             # 拼接view1和view2的embedding，形成2B大小的batch
@@ -263,14 +251,7 @@ def train_epoch(
 
             contrastive_loss = criterion(embeddings, labels_duplicated)
 
-            # 计算分割损失（如果启用）
-            seg_loss = torch.tensor(0.0, device=device)
-            if seg_criterion is not None and 'segmentation' in outputs1:
-                seg_pred = outputs1['segmentation']  # (B, 1, H, W)
-                seg_loss = seg_criterion(seg_pred, view1_masks)
-
-            # 总损失
-            loss = contrastive_loss + seg_loss_weight * seg_loss
+            loss = contrastive_loss
 
             # 检查loss是否为NaN或Inf（DDP 下不提前 continue，改为零损失保持图连通）
             if not torch.isfinite(loss):
@@ -294,9 +275,6 @@ def train_epoch(
             total_contrastive_loss += contrastive_loss.item()
         else:
             total_contrastive_loss += contrastive_loss.item()
-        if seg_criterion is not None:
-            total_seg_loss += seg_loss.item()
-
         # 收集pos_loss和neg_loss（仅MoCo）
         if use_moco and hasattr(criterion, 'last_pos_loss') and criterion.last_pos_loss is not None:
             total_pos_loss += criterion.last_pos_loss
@@ -306,8 +284,6 @@ def train_epoch(
         num_batches += 1
 
         postfix_dict = {'loss': loss.item()}
-        if seg_criterion is not None:
-            postfix_dict['seg_loss'] = seg_loss.item()
         pbar.set_postfix(postfix_dict)
 
     # 打印统计信息
@@ -319,14 +295,6 @@ def train_epoch(
         'contrastive_loss': total_contrastive_loss / num_batches if num_batches > 0 else 0.0,
         'skipped_batches': skipped_batches,
     }
-
-    # 添加分割损失信息
-    if seg_criterion is not None and num_batches > 0:
-        result['seg_loss'] = total_seg_loss / num_batches
-        if hasattr(seg_criterion, 'last_loss_details') and seg_criterion.last_loss_details:
-            details = seg_criterion.last_loss_details
-            result['seg_pred_ratio'] = details['pred_foreground_ratio']
-            result['seg_gt_ratio'] = details['gt_foreground_ratio']
 
     # 添加pos_loss和neg_loss（仅MoCo）
     if use_moco:
@@ -512,24 +480,15 @@ def build_model(
         logger.info("管线: ViT → MaskWeightedPooling → ProjectionHead")
     else:
         backbone_cfg = DINOv3ConvNextConfig.from_dict(_raw_cfg)
-        logger.info("管线: ConvNeXt → PA-FPN → FeatureFusion → ProjectionHead")
-
-    # 分割配置
-    seg_cfg             = model_config.get('segmentation', {})
-    enable_segmentation = seg_cfg.get('enabled', True)
-    if enable_segmentation:
-        logger.info("启用语义分割辅助分支")
+        logger.info("管线: ConvNeXt → MultiStageMaskPooling → ProjectionHead")
 
     # 公共参数（两条管线均有效）
     common_kwargs = dict(
         backbone_cfg=backbone_cfg,
         ckpt_path=backbone_ckpt_path,
         embedding_dim=model_config['embedding_dim'],
-        projection_hidden_dims=model_config['projection_head']['hidden_dims'],
         image_size=image_size,
         freeze_backbone=freeze_backbone,
-        fusion_dim=model_config.get('fusion_dim', 512),
-        enable_segmentation=enable_segmentation,
     )
 
     # 管线专用参数
@@ -539,18 +498,13 @@ def build_model(
     else:
         cnx_cfg = model_config.get('convnext', {})
         common_kwargs.update(dict(
-            use_layers=cnx_cfg.get('use_layers', [0, 1, 2, 3]),
-            fpn_out_channels=cnx_cfg.get('fpn_out_channels', 256),
-            seg_layer_idx=cnx_cfg.get('seg_layer_idx', 0),
+            use_layers=cnx_cfg.get('use_layers', [1, 2, 3]),
         ))
 
     if use_moco:
         momentum = moco_config.get('momentum', 0.999)
         logger.info(f"MoCo 动量对比学习，momentum={momentum}")
         model = MoCoModel(**common_kwargs, momentum=momentum).to(device)
-
-        if enable_segmentation and not is_vit:
-            logger.info(f"启用语义分割分支，使用FPN第{seg_layer_idx}层特征") # type: ignore
 
         # 创建MoCo队列
         queue_size_config = moco_config.get('queue_size', 16384)
@@ -575,8 +529,7 @@ def build_loss_func(
     use_moco: bool,
     device: torch.device,
     logger,
-    enable_segmentation: bool = True
-) -> tuple:
+) -> nn.Module:
     """
     构建损失函数
 
@@ -586,10 +539,8 @@ def build_loss_func(
         use_moco: 是否使用MoCo
         device: 设备
         logger: 日志记录器
-        enable_segmentation: 是否启用分割分支
-
     Returns:
-        (对比损失函数, 分割损失函数) 或 (对比损失函数, None)
+        对比损失函数
     """
     if use_moco:
         # MoCo Loss
@@ -627,23 +578,7 @@ def build_loss_func(
             temperature=loss_config['supcon']['temperature'],
         ).to(device)
 
-    # 构建分割损失函数
-    seg_criterion = None
-    if enable_segmentation:
-        seg_config = loss_config.get('segmentation', {})
-        logger.info("构建分割损失函数（ComprehensiveSegmentationLoss）")
-        logger.info(f"  BCE权重: {seg_config.get('bce_weight', 0.4)}, "
-                   f"Dice权重: {seg_config.get('dice_weight', 0.4)}, "
-                   f"比例约束权重: {seg_config.get('ratio_weight', 0.1)}")
-        seg_criterion = ComprehensiveSegmentationLoss(
-            bce_weight=seg_config.get('bce_weight', 0.4),
-            dice_weight=seg_config.get('dice_weight', 0.4),
-            ratio_weight=seg_config.get('ratio_weight', 0.1),
-            target_foreground_ratio=seg_config.get('target_foreground_ratio', 0.1),
-            max_foreground_ratio=seg_config.get('max_foreground_ratio', 0.1)
-        ).to(device)
-
-    return criterion, seg_criterion
+    return criterion
 
 
 def main():
@@ -894,20 +829,13 @@ def main():
 
     # 创建Loss函数
     loss_config = supcon_config['supcon']['loss']
-    enable_segmentation = model_config.get('segmentation', {}).get('enabled', True)
-    criterion, seg_criterion = build_loss_func(
+    criterion = build_loss_func(
         loss_config=loss_config,
         moco_config=moco_config,
         use_moco=use_moco,
         device=device,
         logger=logger,
-        enable_segmentation=enable_segmentation
     )
-
-    # 获取分割损失权重
-    seg_loss_weight = loss_config.get('segmentation', {}).get('weight', 0.5)
-    if enable_segmentation:
-        logger.info(f"分割损失权重: {seg_loss_weight}")
 
     # 创建优化器（backbone和projection head使用不同学习率）
     # 使用 raw_model 提取参数，确保与 DDP 内部参数一致
@@ -1009,8 +937,6 @@ def main():
                 model, train_dl, criterion, optimizer, device, epoch,
                 use_moco=use_moco,
                 moco_queue=scene_queue,
-                seg_criterion=seg_criterion,
-                seg_loss_weight=seg_loss_weight,
                 is_main=is_main,
             )
             if scene_queue is not None and not queue_on_gpu:
@@ -1031,8 +957,6 @@ def main():
             'contrastive_loss': sum(m.get('contrastive_loss', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene),
             'skipped_batches': sum(m.get('skipped_batches', 0) for _, m in train_metrics_per_scene),
         }
-        if train_metrics_per_scene[0][1].get('seg_loss') is not None:
-            train_metrics['seg_loss'] = sum(m.get('seg_loss', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene)
         if use_moco and train_metrics_per_scene[0][1].get('pos_loss') is not None:
             train_metrics['pos_loss'] = sum(m.get('pos_loss', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene)
             train_metrics['neg_loss'] = sum(m.get('neg_loss', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene)
@@ -1102,12 +1026,6 @@ def main():
             }
             if 'contrastive_loss' in train_metrics:
                 log_dict['train_contrastive_loss'] = train_metrics['contrastive_loss']
-            if 'seg_loss' in train_metrics:
-                log_dict['train_seg_loss'] = train_metrics['seg_loss']
-            if 'seg_pred_ratio' in train_metrics_per_scene[0][1]:
-                log_dict['train_seg_pred_ratio'] = sum(m.get('seg_pred_ratio', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene)
-            if 'seg_gt_ratio' in train_metrics_per_scene[0][1]:
-                log_dict['train_seg_gt_ratio'] = sum(m.get('seg_gt_ratio', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene)
             if use_moco:
                 if 'pos_loss' in train_metrics:
                     log_dict['train_pos_loss'] = train_metrics['pos_loss']

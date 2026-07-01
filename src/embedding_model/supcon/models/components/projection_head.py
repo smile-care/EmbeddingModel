@@ -1,16 +1,15 @@
 """Projection Head for contrastive learning."""
-from typing import List
-
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class ProjectionHead(nn.Module):
     """MLP projection head.
 
-    Standard design following SimCLR v2 / MoCo v3:
-      - Each hidden layer: Linear → BN → ReLU  (no Dropout)
-      - Output layer:      Linear only          (no activation, no BN)
+    Batch-size independent projection:
+      - Hidden layer: Linear → LayerNorm → GELU  (no Dropout)
+      - Output layer: Linear → L2Norm
 
     Rationale:
       - No Dropout: contrastive loss is sensitive to embedding L2 norm
@@ -18,39 +17,33 @@ class ProjectionHead(nn.Module):
         cosine similarity computation, especially for MoCo queue embeddings.
       - No activation on the last layer: ReLU would restrict the embedding
         space to the positive orthant, halving the effective cosine space.
+      - LayerNorm avoids BatchNorm's train/eval and small-batch statistic
+        mismatch, which is important for fast web fine-tuning.
     """
 
     def __init__(
         self,
         input_dim: int,
-        hidden_dims: List[int] = [384, 384],
         output_dim: int = 128,
     ):
         """
         Args:
             input_dim:   Input dimension (backbone hidden size for ViT,
-                         fusion_dim for ConvNeXt).
-            hidden_dims: Hidden layer widths. Recommended: match backbone
-                         hidden size for ViT (e.g. [384, 384] for ViT-S).
+                         multi-stage fusion output for ConvNeXt).
             output_dim:  Final embedding dimension.
         """
         super().__init__()
 
-        layers: List[nn.Module] = []
+        hidden_dim = output_dim * 4
         prev_dim = input_dim
 
-        for hidden_dim in hidden_dims:
-            layers += [
-                nn.Linear(prev_dim, hidden_dim),
-                nn.BatchNorm1d(hidden_dim),
-                nn.ReLU(inplace=True),
-            ]
-            prev_dim = hidden_dim
-
-        # Output layer: no activation, no BN
-        layers.append(nn.Linear(prev_dim, output_dim))
-
-        self.projection = nn.Sequential(*layers)
+        self.projection = nn.Sequential(
+            nn.Linear(prev_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.GELU(),
+            # Output layer: no activation; final L2 normalization is in forward.
+            nn.Linear(hidden_dim, output_dim),
+        )
         self._init_weights()
 
     def _init_weights(self) -> None:
@@ -59,7 +52,7 @@ class ProjectionHead(nn.Module):
                 nn.init.xavier_uniform_(m.weight)
                 if m.bias is not None:
                     nn.init.constant_(m.bias, 0)
-            elif isinstance(m, nn.BatchNorm1d):
+            elif isinstance(m, nn.LayerNorm):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
@@ -70,4 +63,4 @@ class ProjectionHead(nn.Module):
         Returns:
             (B, output_dim)
         """
-        return self.projection(x)
+        return F.normalize(self.projection(x), dim=1, p=2, eps=1e-8)

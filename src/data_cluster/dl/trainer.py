@@ -7,7 +7,7 @@
   * 每个 epoch 通过 ``progress_callback`` 上报进度与指标
   * 保存 checkpoint、绘制 loss 曲线
 
-刻意不包含 MoCo、多尺度训练、重复采样、混合精度 (AMP)、分割辅助分支等额外功能；
+刻意不包含 MoCo、多尺度训练、重复采样、混合精度 (AMP) 等额外功能；
 如需这些能力请使用 ``scripts/train_supcon.py`` 独立训练脚本。
 """
 from __future__ import annotations
@@ -231,8 +231,8 @@ class SupconTrainer:
             v2_mask = batch["view2_mask"].to(self.device, non_blocking=self.non_blocking)
             labels = batch["label"].to(self.device, non_blocking=self.non_blocking)
 
-            out1 = self.model(v1_img, v1_mask, return_features=False, return_segmentation=False)
-            out2 = self.model(v2_img, v2_mask, return_features=False, return_segmentation=False)
+            out1 = self.model(v1_img, v1_mask, return_features=False)
+            out2 = self.model(v2_img, v2_mask, return_features=False)
 
             # 同一样本的 view1/view2 共享 label，构成 positive pair
             embeddings = torch.cat([out1["embeddings"], out2["embeddings"]], dim=0)

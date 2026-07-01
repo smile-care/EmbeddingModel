@@ -531,9 +531,6 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
     if isinstance(embedding_dim, int) and embedding_dim > 0:
         sup["model"]["embedding_dim"] = embedding_dim
 
-    if "projection_head" not in sup["model"] and sup["model"].get("projection_hidden_dims"):
-        sup["model"]["projection_head"] = {"hidden_dims": list(sup["model"]["projection_hidden_dims"])}
-
     # 预训练权重路径：从 data_cluster.yaml 的 backbones.<backbone>.pretrained_path 加载
     backbone_name = sup["model"].get("backbone", "convnext_tiny")
     pretrained_path = _resolve_backbone_pretrained_path(backbone_name, config)

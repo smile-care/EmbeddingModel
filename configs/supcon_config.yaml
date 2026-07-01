@@ -19,32 +19,18 @@ supcon:
     backbone: "convnext_tiny"   # ← 只改这里来切换 backbone
 
     embedding_dim: 256
-    projection_head:
-      # ViT 管线：建议与 backbone hidden_size 对齐
-      #   vits16 / vits16plus → [384, 384]
-      #   vitb16              → [768, 768]
-      #   vitl16              → [1024, 1024]
-      #   vith16plus          → [1280, 1280]
-      # ConvNeXt 管线：跟着 fusion_dim 走，如 [256, 128]
-      hidden_dims: [256, 128]
-    fusion_dim: 512             # ConvNeXt 管线专用（ViT 管线不使用此参数）
-
-    segmentation:
-      enabled: false             # 是否启用语义分割辅助分支
 
     # ----------------------------------------------------------
     # ConvNeXt 管线专用参数（backbone 为 convnext_* 时生效）
     # ----------------------------------------------------------
     convnext:
-      use_layers: [0, 1, 2, 3]  # FPN 使用的 stage 索引（0=4x, 1=8x, 2=16x, 3=32x）
-      fpn_out_channels: 256     # FPN 统一输出通道数
-      seg_layer_idx: 0          # 分割头使用的 FPN 层（0 为最高分辨率）
+      use_layers: [1, 2, 3]     # 原生多层 mask pooling 的 stage 索引（0=4x, 1=8x, 2=16x, 3=32x）
 
     # ----------------------------------------------------------
     # ViT 管线专用参数（backbone 为 vit* 时生效）
     # ----------------------------------------------------------
     vit:
-      cls_weight: 0.7           # CLS token 混合比例（0=纯 patch pooling, 1=纯 CLS）
+      cls_weight: 0.4           # CLS token 混合比例（0=纯 patch pooling, 1=纯 CLS）
 
   data:
     data_config_path: "configs/data_config.yaml"
@@ -74,14 +60,6 @@ supcon:
       temperature: 0.1         # batch 较小时用 0.1 更稳定，稳定后可尝试降到 0.07
     neg_weight: 0.2            # 额外负样本惩罚权重，标准对比 loss 已隐式推开负样本，不宜过高
     margin: 0.0                # 固定 margin 在训练初期有副作用，建议保持 0
-    segmentation:
-      weight: 0.1              # 分割损失总权重
-      bce_weight: 0.25
-      dice_weight: 0.25
-      ratio_weight: 0.5        # 前景比例约束权重
-      target_foreground_ratio: 0.1
-      max_foreground_ratio: 0.25
-
   moco:
     enabled: true  # 是否启用MoCo（true: 使用MoCo，false: 使用标准SupCon）
     momentum: 0.995  # 动量系数（默认0.999，越大更新越慢）

@@ -1,7 +1,7 @@
 """Unified SupCon/MoCo model construction.
 
-This is the single place where the embedding model (backbone + FPN + fusion +
-projection head, optionally wrapped in MoCo) is built from a config dict.  Both
+This is the single place where the embedding model (backbone + mask-weighted
+feature fusion + projection head, optionally wrapped in MoCo) is built from a config dict. Both
 the standalone trainer (``scripts/train_supcon.py``) and the platform
 training/inference entry points (``data_cluster.dl.trainer`` /
 ``data_cluster.dl.inference``) call ``build_supcon_model`` so the architecture
@@ -15,45 +15,33 @@ from typing import Any, Optional
 import torch
 
 from embedding_model.supcon.models.backbone.dinov3_convnext import DINOv3ConvNextConfig
+from embedding_model.supcon.models.backbone.dinov3_vit import DINOv3ViTConfig
 from embedding_model.supcon.models.convnext_model import ConvNeXtModel
 from embedding_model.supcon.models.moco_model import MoCoModel
 from embedding_model.supcon.models.moco_queue import MoCoQueue
+from embedding_model.supcon.models.vit_model import ViTModel
 from embedding_model.utils.config_loader import load_config
-
-
-def _projection_hidden_dims(model_config: dict[str, Any]) -> list[int]:
-    """Support both the nested (``projection_head.hidden_dims``) and the flat
-    (``projection_hidden_dims``) config shapes."""
-    head = model_config.get("projection_head")
-    if isinstance(head, dict) and head.get("hidden_dims") is not None:
-        return list(head["hidden_dims"])
-    return list(model_config.get("projection_hidden_dims", [256, 128]))
 
 
 def _convnext_build_kwargs(model_config: dict[str, Any]) -> dict[str, Any]:
     """Resolve ConvNeXt-specific keys from flat or nested supcon config."""
     cnx = model_config.get("convnext")
     cnx = cnx if isinstance(cnx, dict) else {}
-    seg = model_config.get("segmentation")
-    seg = seg if isinstance(seg, dict) else {}
 
     use_layers = model_config.get("use_layers")
     if use_layers is None:
-        use_layers = cnx.get("use_layers", [0, 1, 2, 3])
-
-    fpn_out = model_config.get("fpn_out_channels")
-    if fpn_out is None:
-        fpn_out = cnx.get("fpn_out_channels", 256)
-
-    seg_layer_idx = model_config.get("seg_layer_idx")
-    if seg_layer_idx is None:
-        seg_layer_idx = cnx.get("seg_layer_idx", seg.get("layer_idx", 0))
+        use_layers = cnx.get("use_layers", [1, 2, 3])
 
     return {
         "use_layers": list(use_layers),
-        "fpn_out_channels": int(fpn_out),
-        "seg_layer_idx": int(seg_layer_idx),
     }
+
+
+def _vit_build_kwargs(model_config: dict[str, Any]) -> dict[str, Any]:
+    """Resolve ViT-specific keys from nested supcon config."""
+    vit = model_config.get("vit")
+    vit = vit if isinstance(vit, dict) else {}
+    return {"cls_weight": float(vit.get("cls_weight", 0.3))}
 
 
 def _resolve_queue_size(moco_config: dict[str, Any]) -> int:
@@ -74,7 +62,7 @@ def _resolve_queue_size(moco_config: dict[str, Any]) -> int:
 def resolve_backbone_config(
     model_config: dict[str, Any],
     logger: Optional[logging.Logger] = None,
-) -> tuple[DINOv3ConvNextConfig, str | None]:
+) -> tuple[DINOv3ConvNextConfig | DINOv3ViTConfig, str | None]:
     """Resolve the backbone architecture config and pretrained checkpoint path.
 
     Supported keys in ``model_config``:
@@ -88,7 +76,13 @@ def resolve_backbone_config(
         backbone_config_path = f"configs/backbone/{backbone_name}.yaml"
 
     backbone_cfg_dict = load_config(backbone_config_path)
-    backbone_cfg = DINOv3ConvNextConfig.from_dict(backbone_cfg_dict)
+    model_type = backbone_cfg_dict.get("model_type", "dinov3_convnext")
+    if model_type == "dinov3_vit":
+        backbone_cfg = DINOv3ViTConfig.from_dict(backbone_cfg_dict)
+    elif model_type == "dinov3_convnext":
+        backbone_cfg = DINOv3ConvNextConfig.from_dict(backbone_cfg_dict)
+    else:
+        raise ValueError(f"不支持的 backbone model_type: {model_type!r}")
 
     ckpt_path = model_config.get("pretrained_path")
     if ckpt_path is not None:
@@ -96,6 +90,7 @@ def resolve_backbone_config(
 
     if logger is not None:
         logger.info(f"Backbone 配置: {backbone_config_path}")
+        logger.info(f"Backbone 类型: {model_type}")
         if ckpt_path:
             logger.info(f"预训练权重(backbone): {ckpt_path}")
 
@@ -112,7 +107,7 @@ def build_supcon_model(
     device: torch.device | str | None = None,
     logger: Optional[logging.Logger] = None,
 ) -> tuple[torch.nn.Module, Optional[MoCoQueue]]:
-    """Build a ConvNeXtModel (or MoCoModel + queue) from a model config.
+    """Build a ConvNeXtModel/ViTModel (or MoCoModel + queue) from config.
 
     Returns ``(model, moco_queue)`` where ``moco_queue`` is ``None`` unless
     ``use_moco`` is True.  The backbone's own pretrained weights (if any) are
@@ -120,25 +115,19 @@ def build_supcon_model(
     """
     moco_config = moco_config or {}
     backbone_cfg, ckpt_path = resolve_backbone_config(model_config, logger=logger)
-
-    seg_config = model_config.get("segmentation", {}) or {}
-    enable_segmentation = bool(seg_config.get("enabled", True))
-    cnx_kwargs = _convnext_build_kwargs(model_config)
-    seg_layer_idx = cnx_kwargs["seg_layer_idx"]
+    is_vit = isinstance(backbone_cfg, DINOv3ViTConfig)
 
     common_kwargs = dict(
         backbone_cfg=backbone_cfg,
         ckpt_path=ckpt_path,
         embedding_dim=int(model_config.get("embedding_dim", 128)),
-        projection_hidden_dims=_projection_hidden_dims(model_config),
         image_size=image_size,
         freeze_backbone=freeze_backbone,
-        use_layers=cnx_kwargs["use_layers"],
-        fpn_out_channels=cnx_kwargs["fpn_out_channels"],
-        fusion_dim=int(model_config.get("fusion_dim", 512)),
-        enable_segmentation=enable_segmentation,
-        seg_layer_idx=seg_layer_idx,
     )
+    if is_vit:
+        common_kwargs.update(_vit_build_kwargs(model_config))
+    else:
+        common_kwargs.update(_convnext_build_kwargs(model_config))
 
     if use_moco:
         if logger is not None:
@@ -156,8 +145,9 @@ def build_supcon_model(
         return model, moco_queue
 
     if logger is not None:
-        logger.info("使用标准 SupCon 模型（ConvNeXtModel）")
-    model = ConvNeXtModel(**common_kwargs)
+        logger.info(f"使用标准 SupCon 模型（{'ViTModel' if is_vit else 'ConvNeXtModel'}）")
+    model_cls = ViTModel if is_vit else ConvNeXtModel
+    model = model_cls(**common_kwargs)
     if device is not None:
         model = model.to(device)
     return model, None

@@ -25,18 +25,12 @@ class MoCoModel(nn.Module):
         backbone_cfg: Optional[Union[DINOv3ConvNextConfig, DINOv3ViTConfig]] = None,
         ckpt_path: Optional[str] = None,
         embedding_dim: int = 128,
-        projection_hidden_dims: List[int] = [256, 128],
         image_size: int = 224,
         freeze_backbone: bool = False,
-        fusion_dim: int = 512,
         # ConvNeXt 专用
-        use_layers: Optional[List[int]] = [0, 1, 2, 3],
-        fpn_out_channels: int = 256,
-        seg_layer_idx: int = 0,
+        use_layers: Optional[List[int]] = [1, 2, 3],
         # ViT 专用
         cls_weight: float = 0.3,
-        # 共用
-        enable_segmentation: bool = True,
         momentum: float = 0.999,
     ):
         """
@@ -45,15 +39,10 @@ class MoCoModel(nn.Module):
                           None 时默认使用 ConvNeXt 配置。
             ckpt_path: 预训练权重路径（.pth）
             embedding_dim: embedding 维度
-            projection_hidden_dims: ProjectionHead 隐藏层维度
             image_size: 输入图像边长
             freeze_backbone: 是否冻结 backbone
-            fusion_dim: 融合层输出维度（两条管线均有效）
-            use_layers: [ConvNeXt] FPN 使用的 stage 索引
-            fpn_out_channels: [ConvNeXt] FPN 统一输出通道数
-            seg_layer_idx: [ConvNeXt] 分割头使用的 FPN 层索引
+            use_layers: [ConvNeXt] 原生多层融合使用的 stage 索引
             cls_weight: [ViT] CLS token 混合比例
-            enable_segmentation: 是否启用分割辅助分支
             momentum: 动量系数
         """
         super().__init__()
@@ -67,12 +56,9 @@ class MoCoModel(nn.Module):
                 backbone_cfg=backbone_cfg,
                 ckpt_path=ckpt_path,
                 embedding_dim=embedding_dim,
-                projection_hidden_dims=projection_hidden_dims,
                 image_size=image_size,
                 freeze_backbone=freeze_backbone,
-                fusion_dim=fusion_dim,
                 cls_weight=cls_weight,
-                enable_segmentation=enable_segmentation,
             )
         else:
             model_cls    = ConvNeXtModel
@@ -80,14 +66,9 @@ class MoCoModel(nn.Module):
                 backbone_cfg=backbone_cfg,
                 ckpt_path=ckpt_path,
                 embedding_dim=embedding_dim,
-                projection_hidden_dims=projection_hidden_dims,
                 image_size=image_size,
                 freeze_backbone=freeze_backbone,
                 use_layers=use_layers,
-                fpn_out_channels=fpn_out_channels,
-                fusion_dim=fusion_dim,
-                enable_segmentation=enable_segmentation,
-                seg_layer_idx=seg_layer_idx,
             )
 
         self.query_encoder    = model_cls(**model_kwargs)
@@ -115,7 +96,6 @@ class MoCoModel(nn.Module):
         mask: torch.Tensor,
         mode: str = "query",
         return_features: bool = False,
-        return_segmentation: bool = False,
     ) -> dict:
         """
         Args:
@@ -127,12 +107,10 @@ class MoCoModel(nn.Module):
             encoder = self.query_encoder
         elif mode == "key":
             encoder = self.momentum_encoder
-            return_segmentation = False
         else:
             raise ValueError(f"mode 必须是 'query' 或 'key'，当前为 {mode!r}")
 
-        return encoder(x, mask, return_features=return_features,
-                       return_segmentation=return_segmentation)
+        return encoder(x, mask, return_features=return_features)
 
     def freeze_backbone_layers(self, num_layers: Optional[int] = None) -> None:
         self.query_encoder.freeze_backbone_layers(num_layers)

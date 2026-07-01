@@ -46,9 +46,7 @@ class EmbeddingExtractor:
             backbone_cfg=None,  # 权重已在checkpoint中
             ckpt_path=None,
             embedding_dim=model_config.get('embedding_dim', 128),
-            projection_hidden_dims=model_config.get('projection_head', {}).get('hidden_dims', [256, 128]),
             image_size=224,
-            enable_segmentation=False,
         ).to(self.device)
         
         # 加载权重
@@ -438,6 +436,5 @@ class MAEFeatureExtractor:
             else:
                 # 保存为字典格式
                 np.save(output_file, embeddings_dict)
-        
+
         return embeddings_dict
-    

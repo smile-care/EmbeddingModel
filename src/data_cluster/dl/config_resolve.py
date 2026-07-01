@@ -43,7 +43,13 @@ def resolve_backbone_pretrained_path(
     backbone_name: str,
     exp_config: dict[str, Any] | None = None,
 ) -> str | None:
-    """Platform checkpoint path from data_cluster.yaml ``backbones``."""
+    """Resolve pretrained weights for a backbone.
+
+    Priority:
+      1. explicit experiment override
+      2. data_cluster.yaml ``backbones.<name>.pretrained_path``
+      3. repo default ``pretrain_ckpts/<name>.pth`` when present
+    """
     dc = load_dc_section()
     backbones = dc.get("backbones", {})
 
@@ -55,21 +61,27 @@ def resolve_backbone_pretrained_path(
     info = backbones.get(backbone_name, {})
     if isinstance(info, dict) and info.get("pretrained_path"):
         return str(info["pretrained_path"])
+    default_path = _REPO_ROOT / "pretrain_ckpts" / f"{backbone_name}.pth"
+    if default_path.is_file():
+        return str(default_path)
     return None
 
 
 def resolve_backbone_config_path(backbone_name: str) -> str | None:
     dc = load_dc_section()
     info = dc.get("backbones", {}).get(backbone_name, {})
-    if not isinstance(info, dict):
-        return None
-    raw = info.get("backbone_config")
-    if not raw:
-        return None
-    p = Path(str(raw))
-    if not p.is_absolute():
-        p = (_REPO_ROOT / p).resolve()
-    return str(p)
+    if isinstance(info, dict):
+        raw = info.get("backbone_config")
+        if raw:
+            p = Path(str(raw))
+            if not p.is_absolute():
+                p = (_REPO_ROOT / p).resolve()
+            return str(p)
+
+    default_path = _REPO_ROOT / "configs" / "backbone" / f"{backbone_name}.yaml"
+    if default_path.is_file():
+        return str(default_path)
+    return None
 
 
 def build_platform_supcon_base() -> dict[str, Any]:
