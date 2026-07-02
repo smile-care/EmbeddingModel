@@ -22,7 +22,7 @@ data_cluster:
   backbones:
     convnext_tiny:
       backbone_config: "configs/backbone/convnext_tiny.yaml"
-      pretrained_path: "checkpoints/supcon_models/0627_convnext_tiny/current_model.pth"
+      pretrained_path: "checkpoints/supcon_models/0701_convnext_tiny/checkpoint_epoch_100.pth"
     # convnext_small:
     #   backbone_config: "configs/backbone/convnext_small.yaml"
     #   pretrained_path: "pretrain_ckpts/dinov3_convnext_small.pth"
@@ -37,8 +37,8 @@ data_cluster:
   # Web UI 创建实验时可覆盖这些值
   training:
     default_backbone: "convnext_tiny"
-    epochs: 100
-    learning_rate: 0.0001
+    epochs: 50
+    learning_rate: 1e-4
     weight_decay: 0.05
     backbone_lr_ratio: 0.1
     save_interval: 5
@@ -59,7 +59,7 @@ data_cluster:
     prefetch_factor: 2
     repeat_factor: 1
     mask_dilation:
-      enabled: true
+      enabled: false
       method: "fast_pool"
       fast_gamma: 0.8
 
