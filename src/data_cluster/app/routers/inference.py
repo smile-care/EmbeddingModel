@@ -19,7 +19,9 @@ from data_cluster.app.services.storage import url_to_fs_path
 from data_cluster.dl.projection import (anomaly_scores_per_class, anomaly_scores_vs_golden,
                                         project_2d)
 from data_cluster.dl.inference import (DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME,
+                                       INDUSTRIAL_MODEL_ID, INDUSTRIAL_MODEL_NAME,
                                        compute_default_embeddings,
+                                       compute_industrial_pretrained_embeddings,
                                        compute_supcon_embeddings)
 
 router = APIRouter(tags=["inference"])
@@ -456,7 +458,10 @@ async def list_models(db: Session = Depends(get_db)) -> list[ModelInfo]:
         .order_by(Experiment.created_at.desc())
         .all()
     )
-    models = [ModelInfo(id=DEFAULT_MODEL_ID, name=DEFAULT_MODEL_NAME, type="Pretrained")]
+    models = [
+        ModelInfo(id=DEFAULT_MODEL_ID, name=DEFAULT_MODEL_NAME, type="Pretrained"),
+        ModelInfo(id=INDUSTRIAL_MODEL_ID, name=INDUSTRIAL_MODEL_NAME, type="Pretrained"),
+    ]
     models.extend(ModelInfo(id=e.id, name=e.name, type="Trained") for e in rows)
     return models
 
@@ -476,10 +481,11 @@ def _analyze_embeddings(req: AnalyzeRequest, db: Session) -> AnalyzeResponse:
 
     eid = req.experiment_id or req.model_id
     use_default = (not eid) or eid == DEFAULT_MODEL_ID
+    use_industrial = eid == INDUSTRIAL_MODEL_ID
 
     exp: Experiment | None = None
     checkpoint_path: Path | None = None
-    if not use_default:
+    if not use_default and not use_industrial:
         exp = db.get(Experiment, eid)
         if not exp:
             # Unknown model id: fall back to the default pretrained backbone.
@@ -522,6 +528,8 @@ def _analyze_embeddings(req: AnalyzeRequest, db: Session) -> AnalyzeResponse:
 
     if use_default:
         emb = compute_default_embeddings(image_paths=paths, mask_paths=mask_paths)
+    elif use_industrial:
+        emb = compute_industrial_pretrained_embeddings(image_paths=paths, mask_paths=mask_paths)
     else:
         assert checkpoint_path is not None and exp is not None
         emb = compute_supcon_embeddings(

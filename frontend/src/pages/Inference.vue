@@ -33,7 +33,9 @@ import {DatasetsApi, InferenceApi, categoryChartColor, classColor, staticUrl, ty
 // ── constants ──────────────────────────────────────────────────────────────
 /** Always-available baseline model (server returns this as the first entry too). */
 const DEFAULT_MODEL_ID = 'default';
-const DEFAULT_MODEL = {id: DEFAULT_MODEL_ID, name: '默认预训练模型', type: 'Pretrained'};
+const DEFAULT_MODEL = {id: DEFAULT_MODEL_ID, name: '默认预训练模型: DINOv3 RAW', type: 'Pretrained'};
+const INDUSTRIAL_MODEL = {id: 'industrial_pretrained', name: '工业预训练模型: SupCon Config', type: 'Pretrained'};
+const PRETRAINED_MODELS = [DEFAULT_MODEL, INDUSTRIAL_MODEL];
 const MIN_ANALYSIS_CLASSES = 2;
 const ALGO_LIST = ['TSNE', 'UMAP', 'PCA'] as const;
 type AlgoKey = (typeof ALGO_LIST)[number];
@@ -160,7 +162,7 @@ function computeFitScale() {
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const selectedRun = computed(() => inferenceRuns.value.find((r) => r.id === selectedRunId.value));
-const modelsForSelect = computed(() => apiModels.value.length ? apiModels.value : [DEFAULT_MODEL]);
+const modelsForSelect = computed(() => apiModels.value.length ? apiModels.value : PRETRAINED_MODELS);
 const datasetsForSelect = computed(() => apiDatasets.value);
 const labelList = computed(() => analysisLabels.value);
 
@@ -375,12 +377,12 @@ async function loadRunDetail(id: string) {
 onMounted(() => {
   InferenceApi.listModels()
     .then((d) => {
-      apiModels.value = d.length ? d : [DEFAULT_MODEL];
+      apiModels.value = d.length ? d : PRETRAINED_MODELS;
       if (!apiModels.value.some((m) => m.id === selectedModel.value)) {
         selectedModel.value = apiModels.value[0]?.id ?? DEFAULT_MODEL_ID;
       }
     })
-    .catch(() => { apiModels.value = [DEFAULT_MODEL]; selectedModel.value = DEFAULT_MODEL_ID; });
+    .catch(() => { apiModels.value = PRETRAINED_MODELS; selectedModel.value = DEFAULT_MODEL_ID; });
   DatasetsApi.list()
     .then((d) => { apiDatasets.value = d.map((x) => ({id: x.id, name: x.name, items: x.items})); if (d.length) selectedDataset.value = d[0].id; })
     .catch(() => { apiDatasets.value = []; });

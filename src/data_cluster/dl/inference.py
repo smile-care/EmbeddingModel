@@ -28,12 +28,18 @@ from data_cluster.dl.config_resolve import (
 )
 from embedding_model.supcon.build import build_supcon_model
 from embedding_model.supcon.datasets.supcon_dataset import MaskSoftDilation
+from embedding_model.supcon.models.backbone.dinov3_convnext import (
+    DINOv3ConvNext,
+    DINOv3ConvNextConfig,
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # Stable id used by the API/UI to mean "no trained model — use the pretrained backbone".
 DEFAULT_MODEL_ID = "default"
 DEFAULT_MODEL_NAME = "默认预训练模型"
+INDUSTRIAL_MODEL_ID = "industrial_pretrained"
+INDUSTRIAL_MODEL_NAME = "工业预训练模型"
 
 
 # ---------------------------------------------------------------------------
@@ -98,66 +104,31 @@ def _compute_backbone_embeddings_raw(
     batch_size: int = 16,
     device: str | torch.device | None = None,
 ) -> np.ndarray:
-    """Compute embeddings from the *pretrained backbone only* (no trained head).
-
-    Builds the model so the backbone loads its pretrained weights, then uses the
-    backbone-native pooling path without the randomly initialized projection head.
-    This lets the platform offer a usable deterministic "default encoder" before
-    any experiment has been trained.
-    """
+    """Compute DINOv3 ConvNeXt RAW embeddings with global average pooling."""
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
-    model, _queue = build_supcon_model(
-        model_config,
-        image_size=image_size,
-        use_moco=False,
-        moco_config=model_config.get("moco", {}),
+    cfg = DINOv3ConvNextConfig.from_yaml(str(model_config["backbone_config_path"]))
+    backbone = DINOv3ConvNext(
+        cfg=cfg,
+        ckpt_path=model_config.get("pretrained_path"),
         freeze_backbone=True,
-        device=dev,
-    )
-    model.eval()
-    image_tf, mask_tf = _build_transforms(image_size)
-    mask_dilation = MaskSoftDilation({"enabled": True})
-
-    if mask_paths is None:
-        mask_paths = [None] * len(image_paths)
+    ).to(dev)
+    backbone.eval()
+    image_tf, _mask_tf = _build_transforms(image_size)
 
     out: list[np.ndarray] = []
     for i in range(0, len(image_paths), batch_size):
         batch_imgs: list[torch.Tensor] = []
-        batch_masks: list[torch.Tensor] = []
-        for img_p, mask_p in zip(image_paths[i : i + batch_size], mask_paths[i : i + batch_size]):
+        for img_p in image_paths[i : i + batch_size]:
             try:
                 image = Image.open(img_p).convert("RGB")
                 image_tensor = image_tf(image)
             except OSError:
                 image_tensor = torch.zeros(3, image_size, image_size)
-
-            if mask_p is not None and Path(mask_p).is_file():
-                try:
-                    mask_img = Image.open(mask_p).convert("L")
-                    mask_tensor = (mask_tf(mask_img) > 0.5).float()
-                except OSError:
-                    mask_tensor = torch.ones(1, image_size, image_size)
-            else:
-                mask_tensor = torch.ones(1, image_size, image_size)
-            mask_tensor = mask_dilation(mask_tensor)
-
             batch_imgs.append(image_tensor)
-            batch_masks.append(mask_tensor)
 
         x = torch.stack(batch_imgs).to(dev)
-        m = torch.stack(batch_masks).to(dev)
-
-        if hasattr(model, "mask_pooling"):
-            cls_token, patch_tokens = model.backbone(x, output_hidden_states=True)
-            pooled = model.mask_pooling(cls_token, patch_tokens, m)
-        else:
-            feats = model.backbone(x, output_hidden_states=True)
-            last = feats[-1]  # (B, C, h, w)
-            m_ds = F.interpolate(m, size=last.shape[-2:], mode="area")
-            num = (last * m_ds).sum(dim=(2, 3))
-            den = m_ds.sum(dim=(2, 3)).clamp_min(1e-6)
-            pooled = num / den
+        last = backbone(x, output_hidden_states=False)
+        pooled = last.mean(dim=(2, 3))
         emb = F.normalize(pooled, dim=1, p=2, eps=1e-8)
         out.append(emb.cpu().numpy())
 
@@ -310,23 +281,41 @@ def compute_supcon_embeddings(
 
 
 def _build_default_model_config() -> tuple[dict[str, Any], int]:
-    """Resolve the default pretrained-backbone config from platform + supcon configs."""
+    """Resolve the fixed DINOv3 RAW ConvNeXt-Tiny config."""
+    base = build_platform_supcon_base()
+    model_cfg = {
+        "backbone": "convnext_tiny",
+        "backbone_config_path": str(_REPO_ROOT / "configs" / "backbone" / "convnext_tiny.yaml"),
+        "pretrained_path": str(_REPO_ROOT / "pretrain_ckpts" / "convnext_tiny.pth"),
+    }
+
+    data_cfg = base.get("data", {})
+    image_size = data_cfg.get("image_size", 224)
+    if isinstance(image_size, list):
+        image_size = int(max(image_size)) if image_size else 224
+    else:
+        image_size = int(image_size)
+    return model_cfg, image_size
+
+
+def _build_industrial_model_config() -> tuple[dict[str, Any], int]:
+    """Resolve the platform industrial pretrained model from config files."""
     base = build_platform_supcon_base()
     dc = load_dc_section()
     model_cfg = dict(base.get("model", {}))
 
-    default_backbone = (
+    backbone = (
         dc.get("training", {}).get("default_backbone")
         or model_cfg.get("backbone")
         or "convnext_tiny"
     )
-    model_cfg["backbone"] = default_backbone
+    model_cfg["backbone"] = backbone
 
-    bb_cfg_path = resolve_backbone_config_path(default_backbone)
+    bb_cfg_path = resolve_backbone_config_path(backbone)
     if bb_cfg_path:
         model_cfg["backbone_config_path"] = bb_cfg_path
 
-    pretrained = resolve_backbone_pretrained_path(default_backbone)
+    pretrained = resolve_backbone_pretrained_path(backbone)
     if pretrained:
         p = Path(pretrained)
         if not p.is_absolute():
@@ -379,34 +368,42 @@ def compute_default_embeddings(
     batch_size: int = 16,
     device: str | None = None,
 ) -> np.ndarray:
-    """Compute embeddings for the platform's default pretrained model.
-
-    Two regimes, chosen by inspecting the resolved default checkpoint:
-
-    * **Trained checkpoint (has a projection head)** — run the *full* model forward
-      and take the projection-head ``embeddings``, exactly like a normal trained
-      experiment.  This keeps the default model's features consistent with how it
-      was trained (head output, not raw backbone features).
-    * **Backbone-only weights (or no checkpoint)** — there is no meaningful trained
-      head, so fall back to mask-weighted global average pooling over the pretrained
-      backbone's last feature map.
-    """
+    """Compute fixed DINOv3 RAW ConvNeXt-Tiny embeddings for the default model."""
     model_cfg, image_size = _build_default_model_config()
-    ckpt_path = model_cfg.get("pretrained_path")
+    return _compute_backbone_embeddings_raw(
+        model_config=model_cfg,
+        image_paths=image_paths,
+        image_size=image_size,
+        mask_paths=mask_paths,
+        batch_size=batch_size,
+        device=device,
+    )
 
-    if ckpt_path:
-        use_moco, has_trained_head = _inspect_checkpoint(ckpt_path)
-        if has_trained_head:
-            return _compute_supcon_embeddings_raw(
-                checkpoint_path=ckpt_path,
-                image_paths=image_paths,
-                model_config=model_cfg,
-                image_size=image_size,
-                use_moco=use_moco,
-                mask_paths=mask_paths,
-                batch_size=batch_size,
-                device=device,
-            )
+
+def compute_industrial_pretrained_embeddings(
+    image_paths: list[Path],
+    mask_paths: list[Path | None] | None = None,
+    batch_size: int = 16,
+    device: str | None = None,
+) -> np.ndarray:
+    """Compute embeddings from the configured industrial SupCon pretrained model."""
+    model_cfg, image_size = _build_industrial_model_config()
+    ckpt_path = model_cfg.get("pretrained_path")
+    if not ckpt_path:
+        raise FileNotFoundError("工业预训练模型未配置 pretrained_path")
+
+    use_moco, has_trained_head = _inspect_checkpoint(ckpt_path)
+    if has_trained_head:
+        return _compute_supcon_embeddings_raw(
+            checkpoint_path=ckpt_path,
+            image_paths=image_paths,
+            model_config=model_cfg,
+            image_size=image_size,
+            use_moco=use_moco,
+            mask_paths=mask_paths,
+            batch_size=batch_size,
+            device=device,
+        )
 
     return _compute_backbone_embeddings_raw(
         model_config=model_cfg,
