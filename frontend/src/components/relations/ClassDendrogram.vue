@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {computed} from 'vue';
 import {categoryChartColor, type RelationsLinkageNode} from '@/lib/api';
+import ZoomableSvg from '@/components/relations/ZoomableSvg.vue';
 
 const props = defineProps<{
   root: RelationsLinkageNode | null;
@@ -21,6 +22,8 @@ interface Positioned {
   children: Positioned[];
   leaves: string[];
 }
+
+const resetKey = computed(() => `${props.labels.join('\0')}|${props.mergeThreshold}`);
 
 const layout = computed(() => {
   const root = props.root;
@@ -51,7 +54,6 @@ const layout = computed(() => {
   const plotW = W - PAD.left - PAD.right;
   const plotH = H - PAD.top - PAD.bottom;
   const xOf = (xi: number) => PAD.left + (nLeaves === 1 ? plotW / 2 : (xi / (nLeaves - 1)) * plotW);
-  // higher merge height -> nearer the top
   const yOf = (h: number) => PAD.top + plotH - (h / maxH) * plotH;
 
   interface Seg {x1: number; y1: number; x2: number; y2: number; over: boolean}
@@ -64,11 +66,9 @@ const layout = computed(() => {
     for (const k of p.children) {
       const kx = xOf(k.x);
       const ky = k.children.length === 0 ? PAD.top + plotH : yOf(k.height);
-      // vertical from child up to parent height
       segs.push({x1: kx, y1: ky, x2: kx, y2: py, over});
       draw(k);
     }
-    // horizontal connector across children at parent height
     const xs = p.children.map((k) => xOf(k.x));
     segs.push({x1: Math.min(...xs), y1: py, x2: Math.max(...xs), y2: py, over});
   }
@@ -86,33 +86,36 @@ const layout = computed(() => {
 </script>
 
 <template>
-  <div class="w-full">
-    <div v-if="!layout" class="py-12 text-center text-sm text-muted-foreground">类别不足，无法构建层次树。</div>
-    <template v-else>
-      <svg :viewBox="`0 0 ${W} ${H}`" class="w-full" :style="{maxHeight: '460px'}">
-        <line
-          v-for="(s, i) in layout.segs"
-          :key="i"
-          :x1="s.x1" :y1="s.y1" :x2="s.x2" :y2="s.y2"
-          :stroke="s.over ? '#f43f5e' : '#71717a'"
-          :stroke-width="s.over ? 2.5 : 1.5"
-          stroke-linecap="round"
-        />
-        <g v-for="lp in layout.leafPos" :key="lp.name">
-          <circle :cx="lp.x" :cy="lp.y" r="5" :fill="categoryChartColor(lp.idx, labels.length)" stroke="#fff" stroke-width="1" />
-          <text
-            :x="lp.x" :y="lp.y + 14"
-            text-anchor="end"
-            :transform="`rotate(-40 ${lp.x} ${lp.y + 14})`"
-            class="fill-muted-foreground"
-            style="font-size: 10px; cursor: pointer"
-            @click="emit('highlight', [lp.name])"
-          >{{ lp.name }}</text>
-        </g>
-      </svg>
-      <p class="mt-2 text-center text-[10px] text-muted-foreground">
-        合并高度 = 1 − 类心相似度。<span class="text-rose-500">红色低合并</span>表示两类难以区分（过度拆分信号）。
-      </p>
-    </template>
+  <div class="h-full w-full">
+    <div v-if="!layout" class="flex h-full items-center justify-center text-sm text-muted-foreground">
+      类别不足，无法构建层次树。
+    </div>
+    <ZoomableSvg v-else :width="W" :height="H" :reset-key="resetKey">
+      <line
+        v-for="(s, i) in layout.segs"
+        :key="i"
+        :x1="s.x1" :y1="s.y1" :x2="s.x2" :y2="s.y2"
+        :stroke="s.over ? '#f43f5e' : '#71717a'"
+        :stroke-width="s.over ? 2.5 : 1.5"
+        stroke-linecap="round"
+      />
+      <g v-for="lp in layout.leafPos" :key="lp.name">
+        <circle :cx="lp.x" :cy="lp.y" r="5" :fill="categoryChartColor(lp.idx, labels.length)" stroke="#fff" stroke-width="1" />
+        <text
+          :x="lp.x" :y="lp.y + 14"
+          text-anchor="end"
+          :transform="`rotate(-40 ${lp.x} ${lp.y + 14})`"
+          class="fill-muted-foreground"
+          style="font-size: 10px; cursor: pointer"
+          @click="emit('highlight', [lp.name])"
+        >{{ lp.name }}</text>
+      </g>
+
+      <template #footer>
+        <p class="text-center text-[10px] text-muted-foreground">
+          合并高度 = 1 − 类心相似度。<span class="text-rose-500">红色低合并</span>表示两类难以区分（过度拆分信号）。
+        </p>
+      </template>
+    </ZoomableSvg>
   </div>
 </template>

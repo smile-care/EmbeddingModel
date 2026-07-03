@@ -146,12 +146,6 @@ def build_platform_supcon_base() -> dict[str, Any]:
         for key in (
             "image_size",
             "batch_size",
-            "num_workers",
-            "pin_memory",
-            "persistent_workers",
-            "prefetch_factor",
-            "repeat_factor",
-            "mask_dilation",
         ):
             if key in dc_data:
                 merged["data"][key] = copy.deepcopy(dc_data[key])
@@ -160,12 +154,13 @@ def build_platform_supcon_base() -> dict[str, Any]:
     if isinstance(dc_training, dict):
         for key in (
             "learning_rate",
-            "weight_decay",
             "use_amp",
             "early_stop_patience",
             "early_stop_min_delta",
             "lr_scheduler",
             "freeze_backbone",
+            "use_eval",
+            "device",
         ):
             if key in dc_training:
                 merged["training"][key] = dc_training[key]

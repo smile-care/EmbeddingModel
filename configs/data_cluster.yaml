@@ -46,37 +46,25 @@ data_cluster:
   # Web UI 创建实验时可覆盖这些值
   training:
     default_backbone: "convnext_tiny"
-    # 不再使用 epochs：训练总量以 total_steps 为唯一单位，按数据集规模/
-    # 类别分布自动估算（见 src/data_cluster/dl/step_budget.py）。评估
-    # 频次同样不再单独配置，固定按 total_steps 均匀切出约 10 个检查点
-    # （必含第一步与最后一步）：训练 loss 上报与验证在同一节奏进行。
     learning_rate: 1e-4
-    weight_decay: 0.05
-    use_amp: false
+    use_amp: true
     # 早停：验证 margin 连续 early_stop_patience 次提升不超过
     # early_stop_min_delta 就提前结束训练；设为 0 关闭早停。
     early_stop_patience: 5
     early_stop_min_delta: 0.005
     lr_scheduler: "cosine"   # 'cosine' | 'step'
-    # 是否冻结 backbone 权重（true=整个训练过程都冻结，只训练 fusion/head；
-    # false=backbone 与其余参数使用同一个全局 learning_rate，不再单独设置
-    # backbone 的 LR ratio）。
-    freeze_backbone: false
-    # Web 训练仅保留最终 current_model.pth，不使用 save_interval
+    freeze_backbone: true
+    # 训练设备：cpu 或 gpu
+    device: gpu
+    # 训练过程中是否做验证：true=每个检查点都 eval（约 10 次，含早停）；
+    # false=训练过程不 eval，全部 step 跑完后再对最终模型 eval 一次。
+    use_eval: true
 
-  # ---------- 数据默认参数（Web 平台 DataLoader；mask 增强默认开启） ----------
+  # ---------- 数据默认参数（Web 平台） ----------
+  # batch_size 影响 step 预算估算与对比学习 batch 共现；其余 DataLoader /
+  # mask 参数由代码与 supcon_config 默认值处理（小数据集会自动 num_workers=0）。
   data:
-    image_size: 224
-    batch_size: 16
-    num_workers: 2
-    pin_memory: true
-    persistent_workers: true
-    prefetch_factor: 2
-    repeat_factor: 1
-    mask_dilation:
-      enabled: false
-      method: "fast_pool"
-      fast_gamma: 0.8
+    batch_size: 32
 
   # ---------- 输出默认 ----------
   output:

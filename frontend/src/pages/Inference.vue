@@ -28,7 +28,8 @@ import {
 } from 'lucide-vue-next';
 import InferenceScatterChart from '@/components/InferenceScatterChart.vue';
 import type {PlotPoint} from '@/components/InferenceScatterChart.vue';
-import RelationsDrawer, {type ViewKey} from '@/components/relations/RelationsDrawer.vue';
+import RelationsDrawer from '@/components/relations/RelationsDrawer.vue';
+import {analysisViewLabel, type ViewKey} from '@/components/relations/analysisViews';
 import HeadlineScore from '@/components/relations/HeadlineScore.vue';
 import ConfusionHeatmap from '@/components/relations/ConfusionHeatmap.vue';
 import ClassDendrogram from '@/components/relations/ClassDendrogram.vue';
@@ -165,6 +166,19 @@ const plotData = ref<PlotPoint[]>([]);
 
 const inferenceDatasetDetail = ref<{id: string; images: TraceDatasetImage[]; defectClasses: DefectClass[]} | null>(null);
 let _loadingRunDetail = false;
+/** Fingerprint from last successful analyze (or loaded run detail when fresh). */
+const analyzedFingerprint = ref<string | null>(null);
+/** Serialized config at last analyze / load — used to detect user edits. */
+const analyzedConfigSnapshot = ref<string | null>(null);
+
+function analysisConfigSnapshot(): string {
+  return JSON.stringify({
+    model: selectedModel.value,
+    dataset: selectedDataset.value,
+    classes: [...selectedClassIds.value].sort(),
+    golden: [...goldenCropIds.value].sort(),
+  });
+}
 
 // ── golden reference samples (optional) ──────────────────────────────────────
 const goldenCropIds = ref<string[]>([]);
@@ -419,6 +433,24 @@ async function fetchInferenceRuns() {
   }
 }
 
+function clearAnalysisResults() {
+  plotData.value = [];
+  analysisLabels.value = [];
+  cachedAlgos.value = new Set();
+  relations.value = null;
+  relationsRunId.value = null;
+  relationsK.value = 0;
+  relationsError.value = null;
+  analyzedFingerprint.value = null;
+  analyzedConfigSnapshot.value = null;
+}
+
+function invalidateAnalysisCache() {
+  clearAnalysisResults();
+  const runId = selectedRunId.value;
+  if (runId) void InferenceApi.deleteEmbeddingCache(runId).catch(() => {});
+}
+
 async function loadRunDetail(id: string) {
   _loadingRunDetail = true;
   try {
@@ -429,8 +461,10 @@ async function loadRunDetail(id: string) {
       classIds?: string[] | null;
       algorithm: string;
       viewMode: 'distribution' | 'anomaly';
-      resultJson?: {labels?: string[]; points?: any[]} | null;
+      resultJson?: {labels?: string[]; points?: any[]; fingerprint?: string} | null;
       cachedAlgorithms?: string[];
+      analysisStale?: boolean;
+      analysisFingerprint?: string | null;
     };
     selectedModel.value = row.modelId || DEFAULT_MODEL_ID;
     selectedDataset.value = row.datasetId || '';
@@ -439,20 +473,29 @@ async function loadRunDetail(id: string) {
     const a = row.algorithm?.toLowerCase() || 'tsne';
     algorithm.value = a === 'umap' ? 'UMAP' : a === 'pca' ? 'PCA' : 'TSNE';
     viewMode.value = row.viewMode;
-    cachedAlgos.value = new Set((row.cachedAlgorithms ?? []).map((s) => s.toUpperCase() as AlgoKey));
+    if (row.analysisStale) {
+      clearAnalysisResults();
+      analyzedFingerprint.value = row.analysisFingerprint ?? null;
+    } else {
+      cachedAlgos.value = new Set((row.cachedAlgorithms ?? []).map((s) => s.toUpperCase() as AlgoKey));
+      if (row.resultJson?.points?.length) {
+        plotData.value = mapPoints(row.resultJson.points);
+        analysisLabels.value = row.resultJson.labels ?? [];
+        analyzedFingerprint.value = row.resultJson.fingerprint ?? row.analysisFingerprint ?? null;
+      } else {
+        clearAnalysisResults();
+        analyzedFingerprint.value = row.analysisFingerprint ?? null;
+      }
+    }
     if (row.datasetId) void loadInferenceDatasetForTrace(row.datasetId);
     else inferenceDatasetDetail.value = null;
-    if (row.resultJson?.points?.length) {
-      plotData.value = mapPoints(row.resultJson.points);
-      analysisLabels.value = row.resultJson.labels ?? [];
-    } else {
-      plotData.value = [];
-      analysisLabels.value = [];
-    }
   } catch { /* ignore */ } finally {
-    _loadingRunDetail = false;
     if (inferenceDatasetDetail.value && selectedClassIds.value.length === 0) {
       resetClassSelectionToAll();
+    }
+    _loadingRunDetail = false;
+    if (analyzedFingerprint.value) {
+      analyzedConfigSnapshot.value = analysisConfigSnapshot();
     }
   }
 }
@@ -477,6 +520,7 @@ onMounted(() => {
 watch(selectedRunId, (id) => {
   editingRunName.value = false;
   runNameDraft.value = '';
+  drawerOpen.value = false;
   // Invalidate cached relations; embeddings differ per run.
   relations.value = null;
   relationsRunId.value = null;
@@ -511,6 +555,17 @@ watch(inferenceDatasetDetail, (detail) => {
   }
   pruneGoldenToSelectedClasses();
 });
+
+watch(
+  [selectedModel, selectedDataset, selectedClassIds, goldenCropIds],
+  () => {
+    if (_loadingRunDetail || !selectedRunId.value) return;
+    const snap = analyzedConfigSnapshot.value;
+    if (!snap) return;
+    if (analysisConfigSnapshot() !== snap) invalidateAnalysisCache();
+  },
+  {deep: true},
+);
 
 // Close context menu on scroll or resize — use a stopWatch ref to clean up properly
 let _menuCleanup: (() => void) | null = null;
@@ -721,11 +776,20 @@ async function handleRunAnalysis() {
   relationsRunId.value = null;
   relationsK.value = 0;
   try {
-    const row = await InferenceApi.analyze(runId) as {resultJson?: {labels?: string[]; points?: any[]}; cachedAlgorithms?: string[]};
-    if (row.resultJson?.points) {
+    const row = await InferenceApi.analyze(runId) as {
+      resultJson?: {labels?: string[]; points?: any[]; fingerprint?: string};
+      cachedAlgorithms?: string[];
+      analysisFingerprint?: string | null;
+      analysisStale?: boolean;
+    };
+    if (row.analysisStale) {
+      clearAnalysisResults();
+    } else if (row.resultJson?.points) {
       analysisLabels.value = row.resultJson.labels ?? [];
       plotData.value = mapPoints(row.resultJson.points);
       cachedAlgos.value = new Set((row.cachedAlgorithms ?? [algorithm.value.toLowerCase()]).map((s) => s.toUpperCase() as AlgoKey));
+      analyzedFingerprint.value = row.resultJson.fingerprint ?? row.analysisFingerprint ?? null;
+      analyzedConfigSnapshot.value = analysisConfigSnapshot();
     }
     await fetchInferenceRuns();
   } catch (e) {
@@ -871,6 +935,8 @@ watch(previewCanPan, (can) => {
 onUnmounted(() => {
   detachPreviewGlobalHandlers();
   _menuCleanup?.();
+  const runId = selectedRunId.value;
+  if (runId) void InferenceApi.deleteEmbeddingCache(runId).catch(() => {});
 });
 
 // ── preview modal: drag-to-pan ─────────────────────────────────────────────
@@ -1244,8 +1310,9 @@ watch(imagePreviewZoom, (z) => {
         </template>
       </div>
 
-      <!-- Main chart/anomaly area -->
-      <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
+      <!-- Main chart/anomaly area (+ inline analysis center) -->
+      <div class="flex min-w-0 flex-1 overflow-hidden">
+        <div class="flex min-w-0 flex-1 flex-col overflow-hidden">
         <!-- Toolbar -->
         <div class="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-secondary/5 px-4 py-2.5">
           <div class="flex items-center gap-2">
@@ -1254,8 +1321,11 @@ watch(imagePreviewZoom, (z) => {
               type="button"
               class="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1 text-[10px] font-bold transition-all hover:border-primary/50 hover:text-primary"
               :disabled="plotData.length === 0"
-              :class="plotData.length === 0 ? 'opacity-50' : ''"
-              @click="drawerOpen = true"
+              :class="[
+                plotData.length === 0 ? 'opacity-50' : '',
+                drawerOpen ? 'border-primary/50 bg-primary/10 text-primary' : '',
+              ]"
+              @click="drawerOpen = !drawerOpen"
             >
               <SlidersHorizontal class="h-3 w-3" />分析中心
             </button>
@@ -1318,7 +1388,7 @@ watch(imagePreviewZoom, (z) => {
           </div>
 
           <!-- Relation analysis views -->
-          <div v-else-if="activeView !== 'anomaly'" class="h-full overflow-y-auto p-5">
+          <div v-else-if="activeView !== 'anomaly'" class="flex h-full min-h-0 flex-col overflow-hidden p-5">
             <div v-if="relationsLoading" class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
               <RefreshCw class="h-6 w-6 animate-spin" />
               <p class="text-sm">正在计算类别关系分析…</p>
@@ -1329,50 +1399,53 @@ watch(imagePreviewZoom, (z) => {
               <button type="button" class="rounded-lg border border-border px-3 py-1 text-xs hover:bg-secondary/30" @click="loadRelations(true)">重试</button>
             </div>
             <template v-else-if="relations">
-              <HeadlineScore v-if="activeView === 'headline'" :headline="relations.headline" />
+              <div v-if="activeView === 'headline'" class="min-h-0 flex-1 space-y-3 overflow-y-auto">
+                <h3 class="text-sm font-semibold">{{ analysisViewLabel('headline') }}</h3>
+                <HeadlineScore :headline="relations.headline" />
+              </div>
 
-              <div v-else-if="activeView === 'confusion'" class="space-y-3">
-                <div>
-                  <h3 class="text-sm font-semibold">kNN 跨类混淆矩阵</h3>
+              <div v-else-if="activeView === 'confusion'" class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+                <div class="shrink-0">
+                  <h3 class="text-sm font-semibold">{{ analysisViewLabel('confusion') }}</h3>
                   <p class="text-[11px] text-muted-foreground">行 = 真实类，值 = 该类样本的 k 近邻落入各列类别的占比（%）。对角线 = 纯度。点击格子在散点中高亮相关两类。</p>
                 </div>
-                <ConfusionHeatmap :labels="relations.labels" :matrix="relations.confusion" mode="confusion" :threshold="confusionThreshold" @select="onHeatmapSelect('confusion', $event)" />
+                <ConfusionHeatmap class="min-h-0 flex-1" :labels="relations.labels" :matrix="relations.confusion" mode="confusion" :threshold="confusionThreshold" @select="onHeatmapSelect('confusion', $event)" />
               </div>
 
-              <div v-else-if="activeView === 'centroid'" class="space-y-3">
-                <div>
-                  <h3 class="text-sm font-semibold">类心余弦相似度矩阵</h3>
+              <div v-else-if="activeView === 'centroid'" class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+                <div class="shrink-0">
+                  <h3 class="text-sm font-semibold">{{ analysisViewLabel('centroid') }}</h3>
                   <p class="text-[11px] text-muted-foreground">类心 = 各类归一化均值向量，值 = 类心间余弦相似度。越接近 1 越相似。</p>
                 </div>
-                <ConfusionHeatmap :labels="relations.labels" :matrix="relations.centroidSim" mode="similarity" :threshold="simThreshold" @select="onHeatmapSelect('centroid', $event)" />
+                <ConfusionHeatmap class="min-h-0 flex-1" :labels="relations.labels" :matrix="relations.centroidSim" mode="similarity" :threshold="simThreshold" @select="onHeatmapSelect('centroid', $event)" />
               </div>
 
-              <div v-else-if="activeView === 'dendrogram'" class="space-y-3">
-                <h3 class="text-sm font-semibold">类别层次聚类树状图</h3>
-                <ClassDendrogram :root="relations.linkage" :labels="relations.labels" :merge-threshold="1 - simThreshold" @highlight="highlightPair" />
+              <div v-else-if="activeView === 'dendrogram'" class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+                <h3 class="shrink-0 text-sm font-semibold">{{ analysisViewLabel('dendrogram') }}</h3>
+                <ClassDendrogram class="min-h-0 flex-1" :root="relations.linkage" :labels="relations.labels" :merge-threshold="1 - simThreshold" @highlight="highlightPair" />
               </div>
 
-              <div v-else-if="activeView === 'graph'" class="space-y-3">
-                <h3 class="text-sm font-semibold">类别关系图</h3>
-                <ClassGraph :labels="relations.labels" :counts="relations.counts" :centroid-sim="relations.centroidSim" :edge-threshold="simThreshold * 0.85" @highlight="highlightPair" />
+              <div v-else-if="activeView === 'graph'" class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
+                <h3 class="shrink-0 text-sm font-semibold">{{ analysisViewLabel('graph') }}</h3>
+                <ClassGraph class="min-h-0 flex-1" :labels="relations.labels" :counts="relations.counts" :centroid-sim="relations.centroidSim" :edge-threshold="simThreshold * 0.85" @highlight="highlightPair" />
               </div>
 
-              <div v-else-if="activeView === 'warnings'" class="space-y-3">
+              <div v-else-if="activeView === 'warnings'" class="min-h-0 flex-1 space-y-3 overflow-y-auto">
                 <div>
-                  <h3 class="text-sm font-semibold">相似/混淆类别警告</h3>
+                  <h3 class="text-sm font-semibold">{{ analysisViewLabel('warnings') }}</h3>
                   <p class="text-[11px] text-muted-foreground">点击可在分布散点中仅高亮该类别对。阈值可在「分析中心」中调整。</p>
                 </div>
                 <WarningList :labels="relations.labels" :confusion="relations.confusion" :centroid-sim="relations.centroidSim" :confusion-threshold="confusionThreshold" :sim-threshold="simThreshold" @highlight="highlightPair" />
               </div>
 
-              <div v-else-if="activeView === 'perclass'" class="space-y-3">
-                <h3 class="text-sm font-semibold">每类质量</h3>
+              <div v-else-if="activeView === 'perclass'" class="min-h-0 flex-1 space-y-3 overflow-y-auto">
+                <h3 class="text-sm font-semibold">{{ analysisViewLabel('perclass') }}</h3>
                 <PerClassCards :per-class="relations.perClass" :labels="relations.labels" @highlight="highlightPair" />
               </div>
 
-              <div v-else-if="activeView === 'mislabels'" class="space-y-3">
+              <div v-else-if="activeView === 'mislabels'" class="min-h-0 flex-1 space-y-3 overflow-y-auto">
                 <div>
-                  <h3 class="text-sm font-semibold">疑似误标清单</h3>
+                  <h3 class="text-sm font-semibold">{{ analysisViewLabel('mislabels') }}</h3>
                   <p class="text-[11px] text-muted-foreground">样本的 k 近邻多数属于其他类别。点击图片查看原图与标注。</p>
                 </div>
                 <MislabelList :mislabels="relations.mislabels" :threshold="mislabelThreshold" @preview="previewMislabel" />
@@ -1432,28 +1505,28 @@ watch(imagePreviewZoom, (z) => {
             </div>
           </div>
         </div>
+        </div>
+
+        <RelationsDrawer
+          :open="drawerOpen"
+          :active-view="activeView"
+          :k="relationsK"
+          :confusion-threshold="confusionThreshold"
+          :sim-threshold="simThreshold"
+          :mislabel-threshold="mislabelThreshold"
+          :loading="relationsLoading"
+          :relations-available="relationsAvailable"
+          @close="drawerOpen = false"
+          @update:active-view="selectView"
+          @update:k="relationsK = $event"
+          @update:confusion-threshold="confusionThreshold = $event"
+          @update:sim-threshold="simThreshold = $event"
+          @update:mislabel-threshold="mislabelThreshold = $event"
+          @reload-k="reloadRelationsK"
+        />
       </div>
     </div>
   </div>
-
-  <!-- ════════════════ ANALYSIS CENTER DRAWER ════════════════ -->
-  <RelationsDrawer
-    :open="drawerOpen"
-    :active-view="activeView"
-    :k="relationsK"
-    :confusion-threshold="confusionThreshold"
-    :sim-threshold="simThreshold"
-    :mislabel-threshold="mislabelThreshold"
-    :loading="relationsLoading"
-    :relations-available="relationsAvailable"
-    @close="drawerOpen = false"
-    @update:active-view="selectView"
-    @update:k="relationsK = $event"
-    @update:confusion-threshold="confusionThreshold = $event"
-    @update:sim-threshold="simThreshold = $event"
-    @update:mislabel-threshold="mislabelThreshold = $event"
-    @reload-k="reloadRelationsK"
-  />
 
   <!-- ════════════════ GOLDEN SELECTION MODAL ════════════════ -->
   <Teleport to="body">

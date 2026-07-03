@@ -347,6 +347,8 @@ export const InferenceApi = {
   createRun: (body: unknown) => request<any>('/api/inference/runs', jsonInit('POST', body)),
   patchRun: (id: string, body: unknown) => request<any>(`/api/inference/runs/${id}`, jsonInit('PATCH', body)),
   deleteRun: (id: string) => request<{success: boolean}>(`/api/inference/runs/${id}`, {method: 'DELETE'}),
+  deleteEmbeddingCache: (id: string) =>
+    request<{success: boolean}>(`/api/inference/runs/${id}/embedding-cache`, {method: 'DELETE'}),
   analyze: (id: string, body?: unknown) =>
     request<any>(`/api/inference/runs/${id}/analyze`, body ? jsonInit('POST', body) : {method: 'POST'}),
   getProjection: (id: string, algo: string) =>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import {computed, ref, watch} from 'vue';
 import {categoryChartColor} from '@/lib/api';
+import ZoomableSvg from '@/components/relations/ZoomableSvg.vue';
 
 const props = defineProps<{
   labels: string[];
@@ -17,7 +18,10 @@ const H = 460;
 interface Node {x: number; y: number; r: number}
 const nodes = ref<Node[]>([]);
 
-/** Lightweight force layout: hub repulsion + similarity-weighted springs. */
+const resetKey = computed(
+  () => `${props.labels.join('\0')}|${props.edgeThreshold}|${props.counts.join(',')}`,
+);
+
 function layout() {
   const n = props.labels.length;
   if (n === 0) {
@@ -43,11 +47,9 @@ function layout() {
         let dist = Math.hypot(dx, dy) || 0.01;
         dx /= dist;
         dy /= dist;
-        // repulsion
         const rep = 9000 / (dist * dist);
         fx[i] += dx * rep; fy[i] += dy * rep;
         fx[j] -= dx * rep; fy[j] -= dy * rep;
-        // spring: stronger similarity pulls closer (rest length shrinks with sim)
         const sim = Math.max(0, props.centroidSim?.[i]?.[j] ?? 0);
         const rest = 260 - sim * 200;
         const spring = (dist - rest) * 0.02 * (0.3 + sim);
@@ -59,7 +61,6 @@ function layout() {
     for (let i = 0; i < n; i++) {
       pos[i].x += fx[i] * damp * 0.1;
       pos[i].y += fy[i] * damp * 0.1;
-      // gentle centering + bounds
       pos[i].x += (cx - pos[i].x) * 0.01;
       pos[i].y += (cy - pos[i].y) * 0.01;
       pos[i].x = Math.max(pos[i].r + 40, Math.min(W - pos[i].r - 40, pos[i].x));
@@ -70,7 +71,7 @@ function layout() {
 }
 
 watch(
-  () => [props.labels, props.centroidSim],
+  () => [props.labels, props.centroidSim, props.edgeThreshold, props.counts],
   layout,
   {immediate: true, deep: true},
 );
@@ -89,8 +90,8 @@ const edges = computed(() => {
 </script>
 
 <template>
-  <div class="w-full">
-    <svg :viewBox="`0 0 ${W} ${H}`" class="w-full" :style="{maxHeight: '480px'}">
+  <div class="h-full w-full">
+    <ZoomableSvg :width="W" :height="H" :reset-key="resetKey">
       <g v-if="nodes.length === labels.length">
         <line
           v-for="(e, k) in edges"
@@ -114,9 +115,12 @@ const edges = computed(() => {
           <text :x="nd.x" :y="nd.y + 3" text-anchor="middle" fill="#fff" style="font-size: 9px; font-weight: 700">{{ counts[i] }}</text>
         </g>
       </g>
-    </svg>
-    <p class="mt-1 text-center text-[10px] text-muted-foreground">
-      节点大小 = 样本数；连线粗细 = 类心相似度（越粗越相似）。<span class="text-rose-500">红线</span>为高相似警告。
-    </p>
+
+      <template #footer>
+        <p class="text-center text-[10px] text-muted-foreground">
+          节点大小 = 样本数；连线粗细 = 类心相似度（越粗越相似）。<span class="text-rose-500">红线</span>为高相似警告。
+        </p>
+      </template>
+    </ZoomableSvg>
   </div>
 </template>

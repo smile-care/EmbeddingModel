@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -155,7 +156,18 @@ def _run_to_detail(run: InferenceRun, db: Session) -> InferenceRunDetail:
         .all()
     )
     cached_algos = [r[0] for r in cached]
-    return InferenceRunDetail(**base, result_json=run.result_json, cached_algorithms=cached_algos)
+    current_fp, stale = _analysis_stale_for_run(run, db)
+    result_json = run.result_json
+    if stale and isinstance(result_json, dict):
+        # Do not expose stale scatter coordinates to the client.
+        result_json = {k: v for k, v in result_json.items() if k not in ("points", "labels")}
+    return InferenceRunDetail(
+        **base,
+        result_json=result_json,
+        cached_algorithms=cached_algos if not stale else [],
+        analysis_stale=stale,
+        analysis_fingerprint=current_fp,
+    )
 
 
 def _crop_fs_path(settings, crop: CropImage) -> Path:
@@ -308,6 +320,21 @@ async def delete_inference_run(run_id: str, db: Session = Depends(get_db)) -> di
     return {"success": True}
 
 
+@router.delete("/inference/runs/{run_id}/embedding-cache")
+async def delete_inference_embedding_cache(run_id: str, db: Session = Depends(get_db)) -> dict[str, bool]:
+    """Remove the on-disk embedding cache for a run (does not delete the run record)."""
+    loop = asyncio.get_event_loop()
+
+    def _delete_cache():
+        row = db.get(InferenceRun, run_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Inference run not found")
+        delete_embeddings(get_settings(), run_id)
+
+    await loop.run_in_executor(None, _delete_cache)
+    return {"success": True}
+
+
 def _upsert_projection(db: Session, run_id: str, algorithm: str, labels: list, points: list) -> None:
     existing = (
         db.query(InferenceRunProjection)
@@ -350,7 +377,9 @@ async def execute_inference_run(
             points = [p.model_dump(by_alias=True) for p in resp.points]
 
             def _save_result():
-                row.result_json = {"labels": labels, "points": points}
+                rows, _label_names, _label_arr = _resolve_analysis_rows(req, db)
+                fp = _analysis_fingerprint(req, db, rows)
+                row.result_json = {"labels": labels, "points": points, "fingerprint": fp}
                 row.status = "Completed"
                 _upsert_projection(db, run_id, row.algorithm.lower(), labels, points)
                 db.commit()
@@ -545,9 +574,91 @@ def _compute_run_embeddings(
     )
 
 
-def _model_cache_key(req: AnalyzeRequest) -> str:
-    """Stable identifier for the model producing embeddings (cache invalidation)."""
-    return str(req.experiment_id or req.model_id or DEFAULT_MODEL_ID)
+def _path_mtime_token(path: Path | None) -> str:
+    if path is None or not path.is_file():
+        return "0"
+    return str(path.stat().st_mtime_ns)
+
+
+def _model_cache_key(req: AnalyzeRequest, db: Session) -> str:
+    """Stable identifier for the model producing embeddings (includes checkpoint mtime)."""
+    eid = str(req.experiment_id or req.model_id or DEFAULT_MODEL_ID)
+    if eid in (DEFAULT_MODEL_ID, INDUSTRIAL_MODEL_ID):
+        return eid
+    exp = db.get(Experiment, eid)
+    if not exp or not exp.checkpoint_path:
+        return eid
+    return f"{eid}:{_path_mtime_token(Path(exp.checkpoint_path))}"
+
+
+def _data_fingerprint(settings, rows: list[tuple[CropImage, str, int]]) -> str:
+    parts: list[str] = []
+    for crop, _n, _li in rows:
+        img = _crop_fs_path(settings, crop)
+        mask = _crop_mask_fs_path(settings, crop)
+        parts.append(f"{crop.id}:{_path_mtime_token(img)}:{_path_mtime_token(mask)}")
+    return hashlib.sha256("|".join(parts).encode()).hexdigest()
+
+
+def _config_fingerprint(req: AnalyzeRequest) -> str:
+    classes = ",".join(sorted(req.class_ids or []))
+    golden = ",".join(sorted(req.golden_crop_ids or []))
+    return f"{req.dataset_id}|{classes}|{golden}"
+
+
+def _analysis_fingerprint(
+    req: AnalyzeRequest,
+    db: Session,
+    rows: list[tuple[CropImage, str, int]],
+) -> str:
+    settings = get_settings()
+    raw = "|".join(
+        (
+            _model_cache_key(req, db),
+            _data_fingerprint(settings, rows),
+            _config_fingerprint(req),
+        )
+    )
+    return hashlib.sha256(raw.encode()).hexdigest()
+
+
+def _stored_analysis_fingerprint(run: InferenceRun) -> str | None:
+    payload = run.result_json
+    if not isinstance(payload, dict):
+        return None
+    fp = payload.get("fingerprint")
+    return str(fp) if fp else None
+
+
+def _analyze_request_for_run(run: InferenceRun) -> AnalyzeRequest:
+    return AnalyzeRequest(
+        dataset_id=run.dataset_id or "",
+        method=run.algorithm.lower() if run.algorithm else "tsne",
+        experiment_id=run.model_id,
+        model_id=run.model_id,
+        golden_crop_ids=list(run.golden_crop_ids or []),
+        class_ids=list(run.selected_class_ids or []),
+    )
+
+
+def _analysis_stale_for_run(run: InferenceRun, db: Session) -> tuple[str | None, bool]:
+    """Return (current_fingerprint, is_stale) for an existing-dataset run."""
+    if run.dataset_mode != "existing" or not run.dataset_id:
+        return None, False
+    stored = _stored_analysis_fingerprint(run)
+    has_points = bool(
+        isinstance(run.result_json, dict) and run.result_json.get("points")
+    )
+    if not stored and not has_points:
+        return None, False
+    try:
+        req = _analyze_request_for_run(run)
+        rows, _label_names, _label_arr = _resolve_analysis_rows(req, db)
+        current = _analysis_fingerprint(req, db, rows)
+    except HTTPException:
+        return stored, bool(stored or has_points)
+    stale = stored != current if stored else bool(has_points)
+    return current, stale
 
 
 def _load_or_compute_embeddings(
@@ -560,21 +671,19 @@ def _load_or_compute_embeddings(
 ) -> np.ndarray:
     """Return embeddings for rows, reusing the per-run npz cache when it matches.
 
-    The cache is keyed by run and validated against the current model, crop id
-    ordering and label set, so a stale cache (model switched, dataset edited,
-    classes changed) is recomputed instead of silently reused.
+    The cache is keyed by run and validated against a content fingerprint (model
+    checkpoint, crop file mtimes, class/golden filters) so stale data is
+    recomputed instead of silently reused.
     """
     settings = get_settings()
     crop_ids = [crop.id for crop, _n, _li in rows]
-    model_key = _model_cache_key(req)
+    fingerprint = _analysis_fingerprint(req, db, rows)
 
     if run_id:
         cached = load_embeddings(settings, run_id)
         if (
             cached is not None
-            and cached.get("model_key") == model_key
-            and cached["crop_ids"] == crop_ids
-            and cached["label_names"] == label_names
+            and cached.get("fingerprint") == fingerprint
             and cached["emb"].shape[0] == len(crop_ids)
         ):
             return cached["emb"]
@@ -588,7 +697,7 @@ def _load_or_compute_embeddings(
             crop_ids=crop_ids,
             label_indices=label_arr,
             label_names=label_names,
-            model_key=model_key,
+            fingerprint=fingerprint,
         )
     return emb
 

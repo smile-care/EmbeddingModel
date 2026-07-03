@@ -54,7 +54,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 # 预计某个 DataLoader 整个生命周期内要消耗的 batch 数低于该阈值时，多进程
 # worker 的调度/IPC 开销会超过并行收益，自动退化为 num_workers=0。
-MIN_BATCHES_FOR_WORKERS = 8
+MIN_BATCHES_FOR_WORKERS = 4
 
 
 class _ContinuousShuffleSampler(Sampler[int]):
@@ -128,7 +128,12 @@ class SupconTrainer:
 
         # 早停：连续 N 次验证 margin 提升不超过 min_delta 就提前结束训练；
         # patience<=0 关闭早停（total_steps 上限退化为唯一的停止条件）。
+        # 仅当 use_eval=true（每个检查点都做验证）时早停才有意义。
+        self.eval_during_training = bool(self.training_config.get("use_eval", True))
         self.early_stop_patience = max(0, int(self.training_config.get("early_stop_patience", 0)))
+        if not self.eval_during_training and self.early_stop_patience > 0:
+            self.logger.info("use_eval=false：训练过程不做验证，早停已自动关闭。")
+            self.early_stop_patience = 0
         self.early_stop_min_delta = float(self.training_config.get("early_stop_min_delta", 0.0))
         self.non_blocking = self.device.type == "cuda"
         if self.device.type == "cuda":
@@ -326,7 +331,7 @@ class SupconTrainer:
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2.0)
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=3.0)
         self.optimizer.step()
         self.scheduler.step()
 
@@ -443,7 +448,7 @@ class SupconTrainer:
             window_batches = 0
 
             val_metrics = None
-            if self.use_eval and self.val_dataloader is not None:
+            if self.eval_during_training and self.use_eval and self.val_dataloader is not None:
                 val_metrics = self.validate()
                 val_losses.append(val_metrics["loss"])
                 last_val_metrics = val_metrics
@@ -494,13 +499,43 @@ class SupconTrainer:
             if stopped:
                 break
 
+        # use_eval=false：训练过程不做验证，全部 step 跑完（或用户中止）后对
+        # 当前模型 eval 一次，供 dashboard / 推理质量摘要使用。
+        if (
+            not self.eval_during_training
+            and self.use_eval
+            and self.val_dataloader is not None
+            and last_step > 0
+        ):
+            self.logger.info(f"训练结束，对最终模型做一次验证 (step {last_step})...")
+            last_val_metrics = self.validate()
+            val_losses.append(last_val_metrics["loss"])
+            self.model.train()
+            if self.progress_callback is not None:
+                self.progress_callback(
+                    {
+                        "step": last_step,
+                        "total_steps": self.total_steps,
+                        "progress": (last_step / self.total_steps) * 100.0,
+                        "train_metrics": last_train_metrics or {"loss": 0.0},
+                        "val_metrics": last_val_metrics,
+                    }
+                )
+            self.logger.info(
+                f"  [final val] loss={last_val_metrics['loss']:.4f}, "
+                f"PosSim={last_val_metrics['margin_pos_sim']:.4f}, "
+                f"NegSim={last_val_metrics['margin_neg_sim']:.4f}, "
+                f"Margin={last_val_metrics['margin']:.4f}"
+            )
+
         if last_train_metrics is not None:
             self._save_checkpoint(last_step, last_train_metrics)
 
+        val_plot_steps = steps if self.eval_during_training else ([last_step] if val_losses else None)
         plot_loss_curve(
             train_losses,
-            val_losses if self.use_eval else [],
-            val_epochs=steps if self.use_eval else None,
+            val_losses,
+            val_epochs=val_plot_steps,
             save_path=str(self.checkpoint_dir / "loss_curve.png"),
             title="SupCon Training Loss",
             train_x=steps,

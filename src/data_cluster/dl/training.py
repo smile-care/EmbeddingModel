@@ -8,6 +8,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
+import torch
 from sqlalchemy.orm import Session
 
 from data_cluster.app.config import Settings, get_settings
@@ -29,6 +30,10 @@ DATASET_CSV_FILENAME = "dataset.csv"
 DEFAULT_VAL_RATIO = 0.2
 MIN_CLASSES_FOR_TRAINING = 2
 MIN_CROPS_PER_CLASS = 2
+# Web 小样本 finetune 默认 weight decay：常为冻结 backbone、只训 fusion/head，
+# 且 total_steps 较短；supcon 全量预训练用的 0.05 对此场景偏强，0.01 更稳妥。
+WEB_DEFAULT_WEIGHT_DECAY = 0.01
+WEB_DEFAULT_DEVICE = "gpu"
 
 # Global stop-flag registry: experiment_id -> True means "please stop"
 _stop_flags: dict[str, bool] = {}
@@ -105,6 +110,34 @@ def _coerce_bool(config: dict[str, Any] | None, *keys: str, default: bool) -> bo
             if lowered in {"0", "false", "no", "off"}:
                 return False
     return default
+
+
+def _coerce_device_choice(config: dict[str, Any] | None, *keys: str, default: str = WEB_DEFAULT_DEVICE) -> str:
+    """解析训练设备选项：``cpu`` 或 ``gpu``。"""
+    if config:
+        for key in keys:
+            raw = config.get(key)
+            if isinstance(raw, str) and raw.strip():
+                choice = raw.strip().lower()
+                if choice in {"cpu", "gpu"}:
+                    return choice
+                raise ValueError(f"不支持的 device: {raw!r}，可选 cpu / gpu")
+    normalized = str(default).strip().lower()
+    return normalized if normalized in {"cpu", "gpu"} else WEB_DEFAULT_DEVICE
+
+
+def resolve_training_device(choice: str) -> torch.device:
+    """把 ``cpu`` / ``gpu`` 配置项解析为 ``torch.device``。"""
+    if choice == "cpu":
+        return torch.device("cpu")
+    if choice == "gpu":
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "训练配置 device=gpu，但当前环境 CUDA 不可用。"
+                "请检查 GPU 驱动、CUDA 安装，或将 device 改为 cpu。"
+            )
+        return torch.device("cuda")
+    raise ValueError(f"不支持的 device: {choice!r}，可选 cpu / gpu")
 
 
 def _coerce_image_size(config: dict[str, Any] | None) -> int | list[int] | None:
@@ -412,18 +445,12 @@ def _build_data_config(exp: Experiment, manifest_path: Path, supcon_config: dict
     config = exp.config if isinstance(exp.config, dict) else {}
     sup_data = ((supcon_config or {}).get("supcon") or {}).get("data") or {}
     default_mask_dilation = sup_data.get("mask_dilation") if isinstance(sup_data.get("mask_dilation"), dict) else {}
-    mask_method = config.get("maskDilationMethod") or config.get("mask_dilation_method")
     mask_enabled = config.get("maskDilationEnabled")
     if mask_enabled is None:
         mask_enabled = config.get("mask_dilation_enabled")
-    mask_fast_gamma = config.get("maskDilationFastGamma")
-    if mask_fast_gamma is None:
-        mask_fast_gamma = config.get("mask_dilation_fast_gamma")
 
     mask_dilation = {
-        "enabled": bool(default_mask_dilation.get("enabled", True)),
-        "method": str(default_mask_dilation.get("method", "fast_pool")).strip().lower(),
-        "fast_gamma": float(default_mask_dilation.get("fast_gamma", 0.8)),
+        "enabled": bool(default_mask_dilation.get("enabled", False)),
     }
     if isinstance(mask_enabled, bool):
         mask_dilation["enabled"] = mask_enabled
@@ -433,13 +460,6 @@ def _build_data_config(exp: Experiment, manifest_path: Path, supcon_config: dict
             mask_dilation["enabled"] = True
         elif lowered in {"0", "false", "no", "off"}:
             mask_dilation["enabled"] = False
-    if isinstance(mask_method, str) and mask_method.strip():
-        mask_dilation["method"] = mask_method.strip().lower()
-    if mask_fast_gamma is not None:
-        try:
-            mask_dilation["fast_gamma"] = float(mask_fast_gamma)
-        except (TypeError, ValueError):
-            pass
 
     return {
         "name": exp.name,
@@ -474,23 +494,6 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
     if image_size is not None:
         sup["data"]["image_size"] = image_size
     sup["data"]["batch_size"] = _coerce_int(config, "batchSize", "batch_size", default=sup["data"].get("batch_size", 16))
-    sup["data"]["repeat_factor"] = max(
-        1,
-        _coerce_int(config, "repeatFactor", "repeat_factor", default=int(sup["data"].get("repeat_factor", 1))),
-    )
-    sup["data"]["num_workers"] = _coerce_int(
-        config, "numWorkers", "num_workers", default=sup["data"].get("num_workers", 4)
-    )
-    sup["data"]["pin_memory"] = _coerce_bool(
-        config, "pinMemory", "pin_memory", default=sup["data"].get("pin_memory", True)
-    )
-    sup["data"]["persistent_workers"] = _coerce_bool(
-        config, "persistentWorkers", "persistent_workers",
-        default=bool(sup["data"].get("persistent_workers", True))
-    )
-    sup["data"]["prefetch_factor"] = _coerce_int(
-        config, "prefetchFactor", "prefetch_factor", default=int(sup["data"].get("prefetch_factor", 2))
-    )
 
     # --- 训练参数覆盖 ---
     # 默认训练总量按「类别对共现覆盖」理论估算（见 step_budget.py），而不是
@@ -510,7 +513,7 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
         config, "learningRate", "learning_rate", default=float(sup["training"].get("learning_rate", 1e-4))
     )
     sup["training"]["weight_decay"] = _coerce_float(
-        config, "weightDecay", "weight_decay", default=float(sup["training"].get("weight_decay", 0.05))
+        config, "weightDecay", "weight_decay", default=WEB_DEFAULT_WEIGHT_DECAY
     )
     sup["training"]["use_amp"] = _coerce_bool(
         config, "useAmp", "use_amp", default=bool(sup["training"].get("use_amp", False))
@@ -540,6 +543,15 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
     sup["training"]["freeze_backbone"] = _coerce_bool(
         config, "freezeBackbone", "freeze_backbone",
         default=bool(sup["training"].get("freeze_backbone", False)),
+    )
+    # true：每个检查点都做验证（含早停）；false：训练过程不验证，结束后 eval 一次。
+    sup["training"]["use_eval"] = _coerce_bool(
+        config, "useEval", "use_eval",
+        default=bool(sup["training"].get("use_eval", True)),
+    )
+    sup["training"]["device"] = _coerce_device_choice(
+        config, "device", "trainingDevice",
+        default=str(sup["training"].get("device", WEB_DEFAULT_DEVICE)),
     )
 
     # --- 模型参数覆盖（架构默认来自 supcon_config.yaml）---
@@ -616,13 +628,17 @@ def run_training_job(experiment_id: str) -> None:
         dataset_csv = run_dir / DATASET_CSV_FILENAME
         _write_dataset_csv(dataset_csv, exp)
 
-        # 训练阶段需求：验证集与训练集使用同一份样本，始终开启 eval。
+        # 验证集与训练集使用同一份样本；是否在每个检查点 eval 由
+        # training.use_eval 控制（false 时仅在训练结束后 eval 一次）。
         use_eval = True
         supcon_config = _build_supcon_config(exp, run_dir)
         logger = setup_logger(
             f"experiment_{exp.id}",
             log_dir=supcon_config["supcon"]["output"]["log_dir"],
         )
+        device_choice = str(supcon_config["supcon"]["training"].get("device", WEB_DEFAULT_DEVICE))
+        device = resolve_training_device(device_choice)
+        logger.info(f"训练设备: {device} (config device={device_choice})")
         data_config = _build_data_config(exp, dataset_csv, supcon_config=supcon_config)
         pretrained_path = None
         if isinstance(exp.config, dict):
@@ -697,6 +713,7 @@ def run_training_job(experiment_id: str) -> None:
             data_config_paths=[data_config],
             use_eval=use_eval,
             pretrained_path=pretrained_path,
+            device=device,
             progress_callback=on_progress,
         )
         summary = trainer.run()

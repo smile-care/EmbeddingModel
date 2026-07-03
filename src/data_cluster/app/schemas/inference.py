@@ -110,6 +110,10 @@ class InferenceRunDetail(InferenceRunSummary):
     result_json: dict[str, Any] | None = Field(default=None, serialization_alias="resultJson")
     # Algorithms for which a cached projection already exists
     cached_algorithms: list[str] = Field(default_factory=list, serialization_alias="cachedAlgorithms")
+    #: True when saved scatter/results no longer match current model/dataset/config
+    analysis_stale: bool = Field(default=False, serialization_alias="analysisStale")
+    #: Fingerprint of the current run config + dataset crop files (for client-side bust)
+    analysis_fingerprint: str | None = Field(default=None, serialization_alias="analysisFingerprint")
 
 
 class InferenceRunAnalyzeUpload(BaseModel):

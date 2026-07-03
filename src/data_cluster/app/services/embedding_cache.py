@@ -33,12 +33,12 @@ def save_embeddings(
     crop_ids: list[str],
     label_indices: np.ndarray,
     label_names: list[str],
-    model_key: str,
+    fingerprint: str,
 ) -> None:
     """Persist (overwrite) the embedding cache for a run atomically.
 
-    ``model_key`` identifies which model produced the embeddings so a cache from
-    a different model is not silently reused when the run's model changes.
+    ``fingerprint`` captures model version, crop file content and run config so
+    a stale cache is not silently reused after edits.
     """
     out = cache_path(settings, run_id)
     tmp = out.with_suffix(".tmp.npz")
@@ -48,25 +48,31 @@ def save_embeddings(
         crop_ids=np.asarray(crop_ids, dtype=object),
         label_indices=np.asarray(label_indices, dtype=np.int64),
         label_names=np.asarray(label_names, dtype=object),
-        model_key=np.asarray(str(model_key), dtype=object),
+        fingerprint=np.asarray(str(fingerprint), dtype=object),
     )
     tmp.replace(out)
 
 
 def load_embeddings(settings: Settings, run_id: str) -> dict | None:
-    """Return ``{emb, crop_ids, label_indices, label_names, model_key}`` or ``None``."""
+    """Return ``{emb, crop_ids, label_indices, label_names, fingerprint}`` or ``None``."""
     path = cache_path(settings, run_id)
     if not path.is_file():
         return None
     try:
         with np.load(path, allow_pickle=True) as data:
+            if "fingerprint" in data:
+                fp = str(data["fingerprint"])
+            elif "model_key" in data:
+                # Legacy caches lack crop mtime / config — treat as uncacheable.
+                fp = None
+            else:
+                fp = None
             return {
                 "emb": data["emb"],
                 "crop_ids": [str(x) for x in data["crop_ids"].tolist()],
                 "label_indices": data["label_indices"],
                 "label_names": [str(x) for x in data["label_names"].tolist()],
-                # Older caches predate model_key -> None forces a recompute.
-                "model_key": str(data["model_key"]) if "model_key" in data else None,
+                "fingerprint": fp,
             }
     except Exception:
         return None
