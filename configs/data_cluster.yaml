@@ -2,7 +2,7 @@
 # DataCluster 平台配置文件
 # 此文件为 DataCluster 模块的独立配置，包括：
 #   1. 各架构变体对应的预训练 Embedding 模型权重路径
-#   2. Web UI 训练/数据加载默认参数（epochs、batch_size 等）
+#   2. Web UI 训练/数据加载默认参数（total_steps、batch_size 等）
 #   3. 存储路径
 #
 # 注意：训练默认会加载下方 pretrained_models.<backbone>.pretrained_path 指定的
@@ -46,17 +46,23 @@ data_cluster:
   # Web UI 创建实验时可覆盖这些值
   training:
     default_backbone: "convnext_tiny"
-    epochs: 50
+    # 不再使用 epochs：训练总量以 total_steps 为唯一单位，按数据集规模/
+    # 类别分布自动估算（见 src/data_cluster/dl/step_budget.py）。评估
+    # 频次同样不再单独配置，固定按 total_steps 均匀切出约 10 个检查点
+    # （必含第一步与最后一步）：训练 loss 上报与验证在同一节奏进行。
     learning_rate: 1e-4
     weight_decay: 0.05
-    backbone_lr_ratio: 0.1
     use_amp: false
-    eval_interval: 10
+    # 早停：验证 margin 连续 early_stop_patience 次提升不超过
+    # early_stop_min_delta 就提前结束训练；设为 0 关闭早停。
+    early_stop_patience: 5
+    early_stop_min_delta: 0.005
     lr_scheduler: "cosine"   # 'cosine' | 'step'
+    # 是否冻结 backbone 权重（true=整个训练过程都冻结，只训练 fusion/head；
+    # false=backbone 与其余参数使用同一个全局 learning_rate，不再单独设置
+    # backbone 的 LR ratio）。
+    freeze_backbone: false
     # Web 训练仅保留最终 current_model.pth，不使用 save_interval
-
-  training_strategy:
-    freeze_backbone_epochs: 100
 
   # ---------- 数据默认参数（Web 平台 DataLoader；mask 增强默认开启） ----------
   data:

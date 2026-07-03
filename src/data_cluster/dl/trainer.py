@@ -3,11 +3,21 @@
 只做必要的事：
   * 加载数据集（训练 / 验证共用同一份样本，由 manifest 提供）
   * 构建模型并加载预训练 backbone（委托 ``build_supcon_model``）
-  * 标准监督对比损失训练，可选先冻结 backbone 若干 epoch 再解冻
-  * 每个 epoch 通过 ``progress_callback`` 上报进度与指标
+  * 标准监督对比损失训练，可选整个训练过程冻结 backbone
+  * 每个检查点通过 ``progress_callback`` 上报进度与指标
   * 训练结束（或用户中止）时保存唯一 checkpoint、绘制 loss 曲线
 
-刻意不包含 MoCo、多尺度训练、重复采样、混合精度 (AMP) 等额外功能；
+训练全程按 **step** 驱动，不再有 epoch 概念：
+  * 整个训练只对 train_dataloader 触发一次 ``__iter__()``（见
+    ``_ContinuousShuffleSampler``），避免小数据集下「每个 epoch 重新调度
+    DataLoader worker」的固定开销比训练本身还大的问题（web 平台 finetune
+    常见几十张图、单次 iterate 仅个位数 batch 的场景）。
+  * ``total_steps`` 直接来自配置（见 ``step_budget.py`` 的自适应估算），
+    把 ``[1, total_steps]`` 均匀切成约 10 个检查点（见
+    ``step_budget.compute_checkpoint_steps``），检查点即训练 loss 上报
+    与验证共用的唯一节奏——不再有单独的 eval_interval 概念。
+
+刻意不包含 MoCo、多尺度训练、混合精度 (AMP) 等额外功能；
 如需这些能力请使用 ``scripts/train_supcon.py`` 独立训练脚本。
 """
 from __future__ import annotations
@@ -22,9 +32,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Sampler
 from tqdm import tqdm
 
+from data_cluster.dl.step_budget import DEFAULT_NUM_CHECKPOINTS, compute_checkpoint_steps
 from embedding_model.supcon.build import (
     build_supcon_model,
     extract_model_state_dict,
@@ -41,19 +52,44 @@ from embedding_model.utils.visualization import plot_loss_curve
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-# Web 平台常见场景是几十张图的小样本 finetune：一个 epoch 可能只有个位数
-# batch。此时多进程 DataLoader 每个 epoch 重新调度 worker 的 IPC 开销，
-# 比几个 batch 本身的计算时间还长，表现为「每个 epoch 训练完就卡一下」。
-# 低于该阈值时自动退化为主进程同步加载（num_workers=0），数据集较大时
-# 仍使用配置的多进程 worker。
-MIN_BATCHES_PER_EPOCH_FOR_WORKERS = 8
+# 预计某个 DataLoader 整个生命周期内要消耗的 batch 数低于该阈值时，多进程
+# worker 的调度/IPC 开销会超过并行收益，自动退化为 num_workers=0。
+MIN_BATCHES_FOR_WORKERS = 8
+
+
+class _ContinuousShuffleSampler(Sampler[int]):
+    """把多个独立 shuffle 拼接成一条连续样本流。
+
+    训练循环因此只需对 DataLoader 调用一次 ``__iter__()``（而不是反复
+    重新创建迭代器），彻底消除小数据集下重启 worker 的固定开销，同时
+    仍保证每一轮完整遍历（长度为 ``dataset_len``）内部样本不重复。
+    """
+
+    def __init__(self, dataset_len: int, num_samples: int, seed: Optional[int] = None) -> None:
+        self.dataset_len = dataset_len
+        self.num_samples = num_samples
+        self.seed = seed
+
+    def __iter__(self):
+        generator = torch.Generator()
+        if self.seed is not None:
+            generator.manual_seed(self.seed)
+        produced = 0
+        while produced < self.num_samples:
+            perm = torch.randperm(self.dataset_len, generator=generator).tolist()
+            take = min(len(perm), self.num_samples - produced)
+            yield from perm[:take]
+            produced += take
+
+    def __len__(self) -> int:
+        return self.num_samples
 
 
 class SupconTrainer:
     """监督对比 finetune pipeline。
 
     ``__init__`` 完成输出目录、数据/DataLoader、模型与预训练加载、损失、优化器与调度器；
-    ``run()`` 执行 epoch 循环、验证、进度回调、日志与保存。
+    ``run()`` 执行按 step 驱动的训练循环、验证、进度回调、日志与保存。
     """
 
     def __init__(
@@ -79,7 +115,6 @@ class SupconTrainer:
         self.training_config = sup["training"]
         self.model_config = sup["model"]
         self.loss_config = sup["loss"]
-        self.training_strategy = sup.get("training_strategy", {})
 
         self.checkpoint_dir = Path(sup["output"]["checkpoint_dir"])
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -91,7 +126,10 @@ class SupconTrainer:
         else:
             self.image_size = int(image_size_cfg)
 
-        self.eval_interval = max(1, int(self.training_config.get("eval_interval", 1)))
+        # 早停：连续 N 次验证 margin 提升不超过 min_delta 就提前结束训练；
+        # patience<=0 关闭早停（total_steps 上限退化为唯一的停止条件）。
+        self.early_stop_patience = max(0, int(self.training_config.get("early_stop_patience", 0)))
+        self.early_stop_min_delta = float(self.training_config.get("early_stop_min_delta", 0.0))
         self.non_blocking = self.device.type == "cuda"
         if self.device.type == "cuda":
             torch.backends.cudnn.benchmark = True
@@ -103,9 +141,6 @@ class SupconTrainer:
         ).to(self.device)
         self._setup_optimizer_scheduler()
 
-        self.freeze_epochs = int(self.training_strategy.get("freeze_backbone_epochs", 0))
-        self.start_epoch = 1
-
     # ------------------------------------------------------------------ data
     def _resolve_dataset_cls(self, data_cfg: dict):
         dataset_type = str(data_cfg.get("dataset_type", "")).strip().lower()
@@ -113,14 +148,13 @@ class SupconTrainer:
             return DataClusterTripletDataset
         return SupConDataset
 
-    def _build_loader_kwargs(self, dataset_len: int, batch_size: int) -> dict:
-        """按数据集大小自适应选择 num_workers（见 ``MIN_BATCHES_PER_EPOCH_FOR_WORKERS``）。"""
+    def _build_loader_kwargs(self, num_batches: int) -> dict:
+        """按（预计消耗的）batch 数自适应选择 num_workers（见 ``MIN_BATCHES_FOR_WORKERS``）。"""
         num_workers = int(self.data_config.get("num_workers", 4))
-        batches_per_epoch = math.ceil(dataset_len / batch_size) if batch_size > 0 else 0
-        if num_workers > 0 and batches_per_epoch < MIN_BATCHES_PER_EPOCH_FOR_WORKERS:
+        if num_workers > 0 and num_batches < MIN_BATCHES_FOR_WORKERS:
             self.logger.info(
-                f"每 epoch 仅 {batches_per_epoch} 个 batch（阈值 {MIN_BATCHES_PER_EPOCH_FOR_WORKERS}），"
-                f"关闭多进程 DataLoader (num_workers {num_workers}->0) 避免小数据集下的 worker 调度开销。"
+                f"预计仅 {num_batches} 个 batch（阈值 {MIN_BATCHES_FOR_WORKERS}），"
+                f"关闭多进程 DataLoader (num_workers {num_workers}->0) 避免 worker 调度开销。"
             )
             num_workers = 0
 
@@ -157,10 +191,20 @@ class SupconTrainer:
         logger.info(f"训练样本: {len(train_dataset)}, 图像尺度: {self.image_size}")
 
         batch_size = min(self.data_config["batch_size"], max(1, len(train_dataset)))
-        train_loader_kwargs = self._build_loader_kwargs(len(train_dataset), batch_size)
+        self.batch_size = batch_size
+        self.total_steps = int(self.training_config["total_steps"])
 
+        # 整个训练只对 train_dataloader 触发一次 __iter__()：把连续的多轮
+        # shuffle 拼接成一条样本流，num_workers 按训练全程的总 batch 数
+        # （而非单次遍历的 batch 数）判断是否值得起多进程。
+        train_sampler = _ContinuousShuffleSampler(
+            dataset_len=len(train_dataset),
+            num_samples=self.total_steps * batch_size,
+        )
+        train_loader_kwargs = self._build_loader_kwargs(self.total_steps)
         self.train_dataloader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True, **train_loader_kwargs
+            train_dataset, batch_size=batch_size, sampler=train_sampler,
+            drop_last=True, **train_loader_kwargs,
         )
 
         self.val_dataloader = None
@@ -172,7 +216,9 @@ class SupconTrainer:
                 image_size=self.image_size,
             )
             logger.info(f"验证样本: {len(val_dataset)} (与训练集共用)")
-            val_loader_kwargs = self._build_loader_kwargs(len(val_dataset), batch_size)
+            # 验证每次单独 iterate（不常触发），按单次调用的 batch 数判断即可。
+            val_batches_per_call = max(1, math.ceil(len(val_dataset) / batch_size))
+            val_loader_kwargs = self._build_loader_kwargs(val_batches_per_call)
             self.val_dataloader = DataLoader(
                 val_dataset, batch_size=batch_size, shuffle=False, **val_loader_kwargs
             )
@@ -186,8 +232,8 @@ class SupconTrainer:
         return Path(raw) if raw else None
 
     def _setup_model(self) -> None:
-        freeze_backbone = int(self.training_strategy.get("freeze_backbone_epochs", 0)) > 0
-        self.logger.info("创建模型...")
+        freeze_backbone = bool(self.training_config.get("freeze_backbone", False))
+        self.logger.info("创建模型..." + ("（backbone 已冻结）" if freeze_backbone else ""))
 
         model_config = dict(self.model_config)
         pretrained_path = self._resolve_pretrained_path()
@@ -238,64 +284,53 @@ class SupconTrainer:
 
     def _setup_optimizer_scheduler(self) -> None:
         training_config = self.training_config
-        backbone_lr_ratio = float(training_config.get("backbone_lr_ratio", 0.1))
         base_lr = float(training_config["learning_rate"])
 
-        backbone_params, other_params = [], []
-        for name, param in self.model.named_parameters():
-            (backbone_params if "backbone" in name else other_params).append(param)
-
+        # 冻结的 backbone 参数 requires_grad=False，不进入优化器（避免
+        # AdamW 为不更新的参数无谓地维护动量状态）。未冻结时 backbone 与
+        # 其余参数使用同一个全局 learning_rate，不再单独设置 LR ratio。
+        trainable_params = [p for p in self.model.parameters() if p.requires_grad]
         self.optimizer = optim.AdamW(
-            [
-                {"params": backbone_params, "lr": base_lr * backbone_lr_ratio},
-                {"params": other_params, "lr": base_lr},
-            ],
+            trainable_params,
+            lr=base_lr,
             weight_decay=float(training_config["weight_decay"]),
         )
 
-        epochs = int(training_config["epochs"])
+        # 按 step 调度：self.total_steps 已在 _setup_data 中按连续样本流
+        # 算好，LR 曲线因此平滑下降，不受训练量估算方式影响。
         if str(training_config.get("lr_scheduler", "cosine")).lower() == "cosine":
             self.scheduler = optim.lr_scheduler.CosineAnnealingLR(
-                self.optimizer, T_max=epochs, eta_min=1e-6
+                self.optimizer, T_max=self.total_steps, eta_min=1e-6
             )
         else:
             self.scheduler = optim.lr_scheduler.StepLR(
-                self.optimizer, step_size=max(1, epochs // 3), gamma=0.1
+                self.optimizer, step_size=max(1, self.total_steps // 3), gamma=0.1
             )
 
     # ----------------------------------------------------------------- train
-    def train_epoch(self, epoch: int) -> dict:
-        """训练一个 epoch：双视图监督对比损失。"""
-        self.model.train()
-        total_loss = 0.0
-        num_batches = 0
+    def _train_step(self, batch: dict) -> float:
+        """单步双视图监督对比损失训练，返回该 step 的 loss 值。"""
+        v1_img = batch["view1_image"].to(self.device, non_blocking=self.non_blocking)
+        v1_mask = batch["view1_mask"].to(self.device, non_blocking=self.non_blocking)
+        v2_img = batch["view2_image"].to(self.device, non_blocking=self.non_blocking)
+        v2_mask = batch["view2_mask"].to(self.device, non_blocking=self.non_blocking)
+        labels = batch["label"].to(self.device, non_blocking=self.non_blocking)
 
-        pbar = tqdm(self.train_dataloader, desc=f"Epoch {epoch}")
-        for batch in pbar:
-            v1_img = batch["view1_image"].to(self.device, non_blocking=self.non_blocking)
-            v1_mask = batch["view1_mask"].to(self.device, non_blocking=self.non_blocking)
-            v2_img = batch["view2_image"].to(self.device, non_blocking=self.non_blocking)
-            v2_mask = batch["view2_mask"].to(self.device, non_blocking=self.non_blocking)
-            labels = batch["label"].to(self.device, non_blocking=self.non_blocking)
+        out1 = self.model(v1_img, v1_mask, return_features=False)
+        out2 = self.model(v2_img, v2_mask, return_features=False)
 
-            out1 = self.model(v1_img, v1_mask, return_features=False)
-            out2 = self.model(v2_img, v2_mask, return_features=False)
+        # 同一样本的 view1/view2 共享 label，构成 positive pair
+        embeddings = torch.cat([out1["embeddings"], out2["embeddings"]], dim=0)
+        labels_dup = torch.cat([labels, labels], dim=0)
+        loss = self.criterion(embeddings, labels_dup)
 
-            # 同一样本的 view1/view2 共享 label，构成 positive pair
-            embeddings = torch.cat([out1["embeddings"], out2["embeddings"]], dim=0)
-            labels_dup = torch.cat([labels, labels], dim=0)
-            loss = self.criterion(embeddings, labels_dup)
+        self.optimizer.zero_grad(set_to_none=True)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2.0)
+        self.optimizer.step()
+        self.scheduler.step()
 
-            self.optimizer.zero_grad(set_to_none=True)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=2.0)
-            self.optimizer.step()
-
-            total_loss += loss.item()
-            num_batches += 1
-            pbar.set_postfix({"loss": loss.item()})
-
-        return {"loss": total_loss / num_batches if num_batches > 0 else 0.0}
+        return loss.item()
 
     @torch.no_grad()
     def validate(self) -> dict:
@@ -345,12 +380,12 @@ class SupconTrainer:
             except OSError as exc:
                 self.logger.warning(f"无法删除旧 checkpoint {old}: {exc}")
 
-    def _save_checkpoint(self, epoch: int, train_metrics: dict) -> Path:
+    def _save_checkpoint(self, step: int, train_metrics: dict) -> Path:
         """保存唯一最终权重 ``current_model.pth``（供推理使用）。"""
         self._purge_legacy_periodic_checkpoints()
         path = self.checkpoint_dir / "current_model.pth"
         payload = {
-            "epoch": epoch,
+            "step": step,
             "model_state_dict": self.model.state_dict(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
@@ -361,60 +396,90 @@ class SupconTrainer:
         return path
 
     def run(self) -> dict:
+        """训练主循环：对 train_dataloader 只 iterate 一次（连续 step 流）。
+
+        全程按 step 计（不再有 epoch 概念）：把 ``[1, self.total_steps]``
+        均匀切成约 ``DEFAULT_NUM_CHECKPOINTS`` 个检查点（见
+        ``step_budget.compute_checkpoint_steps``，一定含第一步和最后一
+        步），在每个检查点聚合区间内的训练 loss、跑一次验证、上报进度、
+        写日志。验证与训练 loss 共用同一节奏，因此两条曲线天然按 step
+        对齐，无需再做稀疏对齐处理。
+        """
         self.logger.info("开始训练...")
         self._purge_legacy_periodic_checkpoints()
+        checkpoint_steps = set(compute_checkpoint_steps(self.total_steps, DEFAULT_NUM_CHECKPOINTS))
+
+        steps: list[int] = []
         train_losses: list[float] = []
         val_losses: list[float] = []
-        val_epochs: list[int] = []
-        total_epochs = int(self.training_config["epochs"])
         last_train_metrics = None
         last_val_metrics = None
-        last_epoch = 0
+        last_step = 0
+        stopped = False
+        early_stopped = False
+        best_margin = float("-inf")
+        no_improve_evals = 0
 
-        for epoch in range(self.start_epoch, total_epochs + 1):
-            if self.freeze_epochs > 0 and epoch == self.freeze_epochs + 1:
-                self.logger.info("解冻 backbone 参数...")
-                self.model.unfreeze_all()
+        self.model.train()
+        window_loss_sum = 0.0
+        window_batches = 0
 
-            train_metrics = self.train_epoch(epoch)
+        pbar = tqdm(self.train_dataloader, total=self.total_steps, desc="Training")
+        for global_step, batch in enumerate(pbar, start=1):
+            loss_value = self._train_step(batch)
+            window_loss_sum += loss_value
+            window_batches += 1
+            pbar.set_postfix({"loss": loss_value, "step": global_step})
+
+            if global_step not in checkpoint_steps:
+                continue
+
+            train_metrics = {"loss": window_loss_sum / window_batches if window_batches else 0.0}
+            steps.append(global_step)
             train_losses.append(train_metrics["loss"])
             last_train_metrics = train_metrics
-            last_epoch = epoch
+            last_step = global_step
+            window_loss_sum = 0.0
+            window_batches = 0
 
             val_metrics = None
-            should_eval = (
-                self.use_eval
-                and self.val_dataloader is not None
-                and (
-                    epoch == self.start_epoch
-                    or epoch % self.eval_interval == 0
-                    or epoch == total_epochs
-                )
-            )
-            if should_eval:
+            if self.use_eval and self.val_dataloader is not None:
                 val_metrics = self.validate()
                 val_losses.append(val_metrics["loss"])
-                val_epochs.append(epoch)
                 last_val_metrics = val_metrics
+                self.model.train()
 
-            self.scheduler.step()
+                if self.early_stop_patience > 0:
+                    current_margin = float(val_metrics.get("margin", 0.0))
+                    if current_margin > best_margin + self.early_stop_min_delta:
+                        best_margin = current_margin
+                        no_improve_evals = 0
+                    else:
+                        no_improve_evals += 1
+                    if no_improve_evals >= self.early_stop_patience:
+                        self.logger.info(
+                            f"验证 margin 连续 {no_improve_evals} 次提升未超过 "
+                            f"{self.early_stop_min_delta}（best={best_margin:.4f}），提前停止训练。"
+                        )
+                        stopped = True
+                        early_stopped = True
 
             if self.progress_callback is not None:
                 should_stop = self.progress_callback(
                     {
-                        "epoch": epoch,
-                        "total_epochs": total_epochs,
-                        "progress": (epoch / total_epochs) * 100.0,
+                        "step": global_step,
+                        "total_steps": self.total_steps,
+                        "progress": (global_step / self.total_steps) * 100.0,
                         "train_metrics": train_metrics,
                         "val_metrics": val_metrics,
                     }
                 )
                 if should_stop:
-                    self.logger.info(f"训练在 epoch {epoch} 被用户中止。")
-                    break
+                    self.logger.info(f"训练在 step {global_step} 被用户中止。")
+                    stopped = True
 
             log_msg = (
-                f"Epoch {epoch}: train_loss={train_metrics['loss']:.4f}, "
+                f"Step {global_step}/{self.total_steps}: train_loss={train_metrics['loss']:.4f}, "
                 f"lr={self.scheduler.get_last_lr()[0]:.6f}"
             )
             if val_metrics is not None:
@@ -426,23 +491,29 @@ class SupconTrainer:
                 )
             self.logger.info(log_msg)
 
+            if stopped:
+                break
+
         if last_train_metrics is not None:
-            self._save_checkpoint(last_epoch, last_train_metrics)
+            self._save_checkpoint(last_step, last_train_metrics)
 
         plot_loss_curve(
             train_losses,
             val_losses if self.use_eval else [],
-            val_epochs=val_epochs if self.use_eval else None,
+            val_epochs=steps if self.use_eval else None,
             save_path=str(self.checkpoint_dir / "loss_curve.png"),
             title="SupCon Training Loss",
+            train_x=steps,
         )
 
-        self.logger.info("训练完成！")
+        self.logger.info("训练完成！" if not early_stopped else "验证 margin 已收敛，提前停止训练。")
         return {
-            "epochs": total_epochs,
+            "total_steps": self.total_steps,
+            "steps_run": last_step,
+            "early_stopped": early_stopped,
+            "steps": steps,
             "train_losses": train_losses,
             "val_losses": val_losses,
-            "val_epochs": val_epochs,
             "last_train_metrics": last_train_metrics,
             "last_val_metrics": last_val_metrics,
             "checkpoint_dir": str(self.checkpoint_dir),

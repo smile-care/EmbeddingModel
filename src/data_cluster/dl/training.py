@@ -4,7 +4,7 @@ import copy
 import csv
 import json
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +18,7 @@ from data_cluster.dl.config_resolve import (
     build_platform_supcon_base,
     resolve_backbone_pretrained_path,
 )
+from data_cluster.dl.step_budget import recommend_total_steps
 from data_cluster.dl.trainer import SupconTrainer
 from embedding_model.utils.logging import setup_logger
 
@@ -34,7 +35,7 @@ _stop_flags: dict[str, bool] = {}
 
 
 def request_stop(experiment_id: str) -> None:
-    """Signal a running training job to stop after the current epoch."""
+    """Signal a running training job to stop at the next checkpoint."""
     _stop_flags[experiment_id] = True
 
 
@@ -310,6 +311,12 @@ def prepare_experiment_samples(db: Session, exp: Experiment, settings: Settings)
     return train_count, val_count
 
 
+def _train_category_counts(exp: Experiment) -> list[int]:
+    """训练集每个类别的样本数（用于 ``recommend_total_steps`` 的覆盖度估算）。"""
+    counter = Counter(sample.category_name for sample in exp.samples if sample.split == "train")
+    return list(counter.values())
+
+
 def get_experiment_sample_counts(exp: Experiment) -> tuple[int, int, int]:
     total = len(exp.samples)
     train_count = sum(1 for sample in exp.samples if sample.split == "train")
@@ -486,23 +493,40 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
     )
 
     # --- 训练参数覆盖 ---
-    sup["training"]["epochs"] = _coerce_int(config, "epochs", default=sup["training"].get("epochs", 100))
+    # 默认训练总量按「类别对共现覆盖」理论估算（见 step_budget.py），而不是
+    # 写死的固定值：数据集越大/类别越不均衡，所需训练量不同；配合下方的
+    # early stopping，这里给得宽松一些也无妨——真正训练不到这个上限就会
+    # 因为验证 margin 不再提升而提前停止。用户仍可显式传 totalSteps 覆盖。
+    try:
+        smart_default_total_steps = recommend_total_steps(
+            _train_category_counts(exp), sup["data"]["batch_size"]
+        )
+    except Exception:
+        smart_default_total_steps = int(sup["training"].get("total_steps", 1000))
+    sup["training"]["total_steps"] = max(
+        1, _coerce_int(config, "totalSteps", "total_steps", default=smart_default_total_steps)
+    )
     sup["training"]["learning_rate"] = _coerce_float(
         config, "learningRate", "learning_rate", default=float(sup["training"].get("learning_rate", 1e-4))
     )
     sup["training"]["weight_decay"] = _coerce_float(
         config, "weightDecay", "weight_decay", default=float(sup["training"].get("weight_decay", 0.05))
     )
-    sup["training"]["backbone_lr_ratio"] = _coerce_float(
-        config, "backboneLrRatio", "backbone_lr_ratio",
-        default=float(sup["training"].get("backbone_lr_ratio", 0.1)),
-    )
     sup["training"]["use_amp"] = _coerce_bool(
         config, "useAmp", "use_amp", default=bool(sup["training"].get("use_amp", False))
     )
-    sup["training"]["eval_interval"] = max(
-        1,
-        _coerce_int(config, "evalInterval", "eval_interval", default=int(sup["training"].get("eval_interval", 1))),
+    # 早停：连续 N 次验证 margin 未提升（提升幅度 < min_delta）即提前结束训练，
+    # 避免小数据集把 total_steps 上限的宽松预算真的全部跑完。0 = 关闭早停。
+    sup["training"]["early_stop_patience"] = max(
+        0,
+        _coerce_int(
+            config, "earlyStopPatience", "early_stop_patience",
+            default=int(sup["training"].get("early_stop_patience", 5)),
+        ),
+    )
+    sup["training"]["early_stop_min_delta"] = _coerce_float(
+        config, "earlyStopMinDelta", "early_stop_min_delta",
+        default=float(sup["training"].get("early_stop_min_delta", 0.005)),
     )
     # SupconTrainer 需要 lr_scheduler 键（'cosine' | 'step'），data_cluster.yaml 默认 cosine
     lr_scheduler = config.get("lrScheduler") or config.get("lr_scheduler")
@@ -511,10 +535,11 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
     else:
         sup["training"].setdefault("lr_scheduler", "cosine")
 
-    # --- 训练策略覆盖 ---
-    sup["training_strategy"]["freeze_backbone_epochs"] = _coerce_int(
-        config, "freezeBackboneEpochs", "freeze_backbone_epochs",
-        default=sup["training_strategy"].get("freeze_backbone_epochs", 0),
+    # 是否冻结 backbone（整个训练过程）：为 False 时 backbone 与其余参数
+    # 使用同一个全局 learning_rate，不再单独设置 LR ratio。
+    sup["training"]["freeze_backbone"] = _coerce_bool(
+        config, "freezeBackbone", "freeze_backbone",
+        default=bool(sup["training"].get("freeze_backbone", False)),
     )
 
     # --- 模型参数覆盖（架构默认来自 supcon_config.yaml）---
@@ -605,31 +630,30 @@ def run_training_job(experiment_id: str) -> None:
             if isinstance(raw_pretrained, str) and raw_pretrained.strip():
                 pretrained_path = raw_pretrained.strip()
 
-        # Accumulate per-epoch series for live chart rendering
+        # Accumulate per-checkpoint series for live chart rendering. Training
+        # loss and validation now share the same checkpoint cadence (see
+        # trainer.py), so all series below are always the same length and
+        # already aligned to `live_steps` — no separate epoch bookkeeping needed.
+        live_steps: list[int] = []
         live_train_losses: list[float] = []
         live_val_losses: list[float] = []
-        live_val_epochs: list[int] = []
         live_margins: list[float] = []
         live_pos_sims: list[float] = []
         live_neg_sims: list[float] = []
 
-        # 降频写 DB：每 DB_WRITE_INTERVAL 个 epoch 写一次，减少训练主线程阻塞
-        # 前端轮询间隔已改为 2s，写入间隔 3 epoch 完全够用
-        _DB_WRITE_INTERVAL = 3
-        _last_db_write_epoch: list[int] = [0]  # 用 list 做闭包可变引用
-
         def on_progress(payload: dict[str, Any]) -> bool:
-            """Called after each epoch. Returns True to signal trainer to stop."""
+            """Called at each training checkpoint (~10 per run). Returns True
+            to signal the trainer to stop. Checkpoints are infrequent enough
+            that every callback invocation writes straight to the DB."""
             tm = payload.get("train_metrics") or {}
             vm = normalize_experiment_metrics({"val": payload.get("val_metrics") or {}})["val"]
+            step = int(payload.get("step", 0) or 0)
 
             if tm.get("loss") is not None:
                 live_train_losses.append(float(tm["loss"]))
-            epoch = int(payload.get("epoch", 0) or 0)
+                live_steps.append(step)
             if vm.get("loss") is not None:
                 live_val_losses.append(float(vm["loss"]))
-                if epoch > 0:
-                    live_val_epochs.append(epoch)
                 if vm.get("margin") is not None:
                     live_margins.append(float(vm["margin"]))
                 if vm.get("PosSim") is not None:
@@ -641,15 +665,7 @@ def run_training_job(experiment_id: str) -> None:
             if _stop_flags.get(experiment_id):
                 return True
 
-            total_epochs = int(payload.get("total_epochs", 1) or 1)
-            is_last_epoch = (epoch >= total_epochs)
-            epochs_since_write = epoch - _last_db_write_epoch[0]
-
-            # 未到写入间隔且不是最后一 epoch，跳过 DB 写入
-            if epochs_since_write < _DB_WRITE_INTERVAL and not is_last_epoch:
-                return False
-
-            _last_db_write_epoch[0] = epoch
+            total_steps = int(payload.get("total_steps", 1) or 1)
             current = db.get(Experiment, experiment_id)
             if not current:
                 return False
@@ -657,14 +673,14 @@ def run_training_job(experiment_id: str) -> None:
             current.run_metrics = normalize_experiment_metrics(
                 {
                     "stage": "training",
-                    "epoch": epoch,
-                    "totalEpochs": total_epochs,
+                    "step": step,
+                    "totalSteps": total_steps,
                     "train": tm,
                     "val": vm,
                     "liveSeries": {
+                        "steps": list(live_steps),
                         "trainLosses": list(live_train_losses),
                         "valLosses": list(live_val_losses),
-                        "valEpochs": list(live_val_epochs),
                         "margins": list(live_margins),
                         "posSims": list(live_pos_sims),
                         "negSims": list(live_neg_sims),
@@ -693,11 +709,11 @@ def run_training_job(experiment_id: str) -> None:
         checkpoint_path = Path(summary["checkpoint_path"])
 
         # Embed the accumulated live series into the final summary so the
-        # completed dashboard can render per-epoch loss / margin curves.
+        # completed dashboard can render per-checkpoint loss / margin curves.
         summary["liveSeries"] = {
+            "steps": live_steps,
             "trainLosses": live_train_losses,
             "valLosses": live_val_losses,
-            "valEpochs": live_val_epochs,
             "margins": live_margins,
             "posSims": live_pos_sims,
             "negSims": live_neg_sims,
@@ -712,7 +728,7 @@ def run_training_job(experiment_id: str) -> None:
                 {
                     "stage": "stopped",
                     "summary": summary,
-                    "epochsRun": len(live_train_losses),
+                    "stepsRun": summary.get("steps_run", live_steps[-1] if live_steps else 0),
                 },
                 _inplace=True,
             )

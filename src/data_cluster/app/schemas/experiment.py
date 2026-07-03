@@ -36,7 +36,7 @@ class ExperimentDetail(ExperimentSummary):
     dataset_id: str | None = Field(default=None, serialization_alias="datasetId")
     config: dict[str, Any] | None = None
     metrics: dict[str, Any] | None = None
-    #: 本次运行的实时指标（stage/epoch/liveSeries/error 等），与 metrics（结果）分离
+    #: 本次运行的实时指标（stage/step/liveSeries/error 等），与 metrics（结果）分离
     run_metrics: dict[str, Any] | None = Field(default=None, serialization_alias="runMetrics")
     checkpoint_path: str | None = Field(default=None, serialization_alias="checkpointPath")
     sample_count: int = Field(default=0, serialization_alias="sampleCount")

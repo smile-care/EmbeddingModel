@@ -275,7 +275,7 @@ class Experiment(Base):
     run_status: Mapped[str | None] = mapped_column("runStatus", String, nullable=True)
     #: 「本次运行」进度（0-100），实时刷新。
     run_progress: Mapped[float] = mapped_column("runProgress", Float, default=0.0)
-    #: 「本次运行」实时指标：stage/epoch/totalEpochs/train/val/liveSeries/error。
+    #: 「本次运行」实时指标：stage/step/totalSteps/train/val/liveSeries/error。
     run_metrics: Mapped[dict[str, Any] | None] = mapped_column("runMetrics", JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, default=datetime.utcnow)
     samples: Mapped[list["ExperimentSample"]] = relationship(

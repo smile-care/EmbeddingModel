@@ -125,16 +125,24 @@ const liveSeries = computed(
   () => bodyMetrics.value?.liveSeries ?? bodyMetrics.value?.summary?.liveSeries ?? null,
 );
 
-// Final series (available after completion/stopped)
+// Final series (available after completion/stopped). Training loss and
+// validation now share the same checkpoint cadence (see trainer.py), so all
+// series below are always the same length and already aligned to `steps` —
+// no sparse/null alignment needed.
 const trainLosses = computed<number[]>(() =>
   liveSeries.value?.trainLosses ?? summary.value?.train_losses ?? [],
 );
 const valLosses = computed<number[]>(() =>
   liveSeries.value?.valLosses ?? summary.value?.val_losses ?? [],
 );
-const valEpochs = computed<number[]>(() =>
-  liveSeries.value?.valEpochs ?? summary.value?.val_epochs ?? [],
-);
+const steps = computed<number[]>(() => {
+  const recorded = liveSeries.value?.steps ?? summary.value?.steps ?? [];
+  if (recorded.length === trainLosses.value.length && recorded.length > 0) {
+    return recorded;
+  }
+  // 旧数据无 steps 时回退为连续编号（与历史行为一致）
+  return trainLosses.value.map((_, i) => i + 1);
+});
 const liveMargins = computed<number[]>(() => liveSeries.value?.margins ?? []);
 const livePosSims = computed<number[]>(() => liveSeries.value?.posSims ?? []);
 const liveNegSims = computed<number[]>(() => liveSeries.value?.negSims ?? []);
@@ -146,49 +154,6 @@ const lastTrainMetrics = computed(() =>
   bodyMetrics.value?.train ?? summary.value?.last_train_metrics ?? null,
 );
 
-const epochs = computed(() =>
-  Array.from({length: trainLosses.value.length}, (_, i) => i + 1),
-);
-
-/** 将稀疏验证序列按真实 epoch 对齐到与 train 相同的横轴（非验证 epoch 为 null）。 */
-function alignSeriesToEpochs(
-  series: number[],
-  evalEpochs: number[],
-  totalEpochs: number,
-): (number | null)[] {
-  const data: (number | null)[] = Array(totalEpochs).fill(null);
-  for (let i = 0; i < series.length; i++) {
-    const ep = evalEpochs[i] ?? i + 1;
-    if (ep >= 1 && ep <= totalEpochs) {
-      data[ep - 1] = series[i];
-    }
-  }
-  return data;
-}
-
-const resolvedValEpochs = computed(() => {
-  const losses = valLosses.value;
-  const recorded = valEpochs.value;
-  if (recorded.length === losses.length && recorded.length > 0) {
-    return recorded;
-  }
-  // 旧数据无 valEpochs 时回退为连续编号（与历史行为一致）
-  return losses.map((_, i) => i + 1);
-});
-
-const valLossSeriesData = computed(() =>
-  alignSeriesToEpochs(valLosses.value, resolvedValEpochs.value, trainLosses.value.length),
-);
-const marginSeriesData = computed(() =>
-  alignSeriesToEpochs(liveMargins.value, resolvedValEpochs.value, trainLosses.value.length),
-);
-const posSimSeriesData = computed(() =>
-  alignSeriesToEpochs(livePosSims.value, resolvedValEpochs.value, trainLosses.value.length),
-);
-const negSimSeriesData = computed(() =>
-  alignSeriesToEpochs(liveNegSims.value, resolvedValEpochs.value, trainLosses.value.length),
-);
-
 function getNumericMetric(source: Record<string, any> | null | undefined, ...keys: string[]) {
   for (const key of keys) {
     const raw = source?.[key];
@@ -198,8 +163,6 @@ function getNumericMetric(source: Record<string, any> | null | undefined, ...key
   }
   return null;
 }
-
-const marginEpochs = computed(() => epochs.value);
 
 const valMargin = computed(() => {
   const v = getNumericMetric(lastValMetrics.value, 'Margin', 'margin');
@@ -231,14 +194,14 @@ const finalValLoss = computed(() => {
   return v != null ? Number(v).toFixed(4) : null;
 });
 
-// Current epoch info — describes the *live run* (from runMetrics/runProgress).
-const currentEpoch = computed(() => runMetrics.value?.epoch ?? null);
-const totalEpochs = computed(() => runMetrics.value?.totalEpochs ?? null);
+// Current step info — describes the *live run* (from runMetrics/runProgress).
+const currentStep = computed(() => runMetrics.value?.step ?? null);
+const totalSteps = computed(() => runMetrics.value?.totalSteps ?? null);
 const progressPct = computed(() => {
   const p = exp.value?.runProgress;
   if (typeof p === 'number' && p > 0) return Math.round(p);
-  if (!currentEpoch.value || !totalEpochs.value) return 0;
-  return Math.round((currentEpoch.value / totalEpochs.value) * 100);
+  if (!currentStep.value || !totalSteps.value) return 0;
+  return Math.round((currentStep.value / totalSteps.value) * 100);
 });
 
 // ── Stop training ─────────────────────────────────────────────────────────────
@@ -290,12 +253,12 @@ const AXIS_STYLE = {
   axisLabel: {color: '#71717a', fontSize: 11},
 };
 
-function epochXAxis(data: number[]) {
+function stepXAxis(data: number[]) {
   return {
     type: 'category' as const,
     data,
     ...AXIS_STYLE,
-    name: 'Epoch',
+    name: 'Step',
     nameLocation: 'middle' as const,
     nameGap: 30,
     nameTextStyle: {color: '#52525b', fontSize: 11},
@@ -325,7 +288,7 @@ const lossChartOption = computed(() => ({
   tooltip: {
     ...TOOLTIP_STYLE,
     formatter: (params: any[]) => {
-      const epoch = epochs.value[params[0].dataIndex] ?? params[0].dataIndex + 1;
+      const step = steps.value[params[0].dataIndex] ?? params[0].dataIndex + 1;
       const rows = params
         .filter((p) => p.value != null && p.value !== '')
         .map(
@@ -333,10 +296,10 @@ const lossChartOption = computed(() => ({
           `<span style="color:#a1a1aa">${p.marker}${p.seriesName}</span>` +
           `<b>${Number(p.value).toFixed(4)}</b></div>`,
       ).join('');
-      return `<div style="font-size:11px;color:#71717a;margin-bottom:2px">Epoch ${epoch}</div>${rows}`;
+      return `<div style="font-size:11px;color:#71717a;margin-bottom:2px">Step ${step}</div>${rows}`;
     },
   },
-  xAxis: epochXAxis(epochs.value),
+  xAxis: stepXAxis(steps.value),
   yAxis: valueYAxis((v) => v.toFixed(2)),
   series: [
     {
@@ -346,8 +309,7 @@ const lossChartOption = computed(() => ({
       itemStyle: {color: '#a855f7'},
     },
     ...(valLosses.value.length > 0 ? [{
-      name: 'Val Loss', type: 'line', data: valLossSeriesData.value,
-      connectNulls: true,
+      name: 'Val Loss', type: 'line', data: valLosses.value,
       smooth: 0.3, symbolSize: 4,
       lineStyle: {color: '#10b981', width: 2, type: 'dashed'},
       itemStyle: {color: '#10b981'},
@@ -366,7 +328,7 @@ const marginChartOption = computed(() => ({
   tooltip: {
     ...TOOLTIP_STYLE,
     formatter: (params: any[]) => {
-      const epoch = marginEpochs.value[params[0].dataIndex] ?? params[0].dataIndex + 1;
+      const step = steps.value[params[0].dataIndex] ?? params[0].dataIndex + 1;
       const rows = params
         .filter((p) => p.value != null && p.value !== '')
         .map(
@@ -374,29 +336,26 @@ const marginChartOption = computed(() => ({
           `<span style="color:#a1a1aa">${p.marker}${p.seriesName}</span>` +
           `<b>${Number(p.value).toFixed(4)}</b></div>`,
       ).join('');
-      return `<div style="font-size:11px;color:#71717a;margin-bottom:2px">Epoch ${epoch}</div>${rows}`;
+      return `<div style="font-size:11px;color:#71717a;margin-bottom:2px">Step ${step}</div>${rows}`;
     },
   },
-  xAxis: epochXAxis(marginEpochs.value),
+  xAxis: stepXAxis(steps.value),
   yAxis: valueYAxis((v) => v.toFixed(2)),
   series: [
     {
-      name: 'Pos Sim', type: 'line', data: posSimSeriesData.value,
-      connectNulls: true,
+      name: 'Pos Sim', type: 'line', data: livePosSims.value,
       smooth: 0.3, symbolSize: 4,
       lineStyle: {color: '#10b981', width: 2},
       itemStyle: {color: '#10b981'},
     },
     {
-      name: 'Neg Sim', type: 'line', data: negSimSeriesData.value,
-      connectNulls: true,
+      name: 'Neg Sim', type: 'line', data: liveNegSims.value,
       smooth: 0.3, symbolSize: 4,
       lineStyle: {color: '#f43f5e', width: 2},
       itemStyle: {color: '#f43f5e'},
     },
     {
-      name: 'Margin', type: 'line', data: marginSeriesData.value,
-      connectNulls: true,
+      name: 'Margin', type: 'line', data: liveMargins.value,
       smooth: 0.3, symbolSize: 4,
       lineStyle: {color: '#f59e0b', width: 2, type: 'dashed'},
       itemStyle: {color: '#f59e0b'},
@@ -470,8 +429,8 @@ const marginChartOption = computed(() => ({
             <template v-if="stage === 'preparing_dataset'">{{ hasResult ? '重新训练 · 正在准备数据集…' : '正在准备数据集…' }}</template>
             <template v-else>{{ hasResult ? '重新训练进行中' : '训练进行中' }}</template>
           </p>
-          <p v-if="currentEpoch && totalEpochs" class="mt-0.5 text-xs text-muted-foreground">
-            Epoch {{ currentEpoch }} / {{ totalEpochs }}
+          <p v-if="currentStep && totalSteps" class="mt-0.5 text-xs text-muted-foreground">
+            Step {{ currentStep }} / {{ totalSteps }}
             <span class="ml-2 text-amber-400/70">{{ progressPct }}%</span>
           </p>
           <p v-else-if="hasResult" class="mt-0.5 text-xs text-muted-foreground">
@@ -491,7 +450,7 @@ const marginChartOption = computed(() => ({
     </div>
 
     <!-- Progress bar -->
-    <div v-if="totalEpochs" class="h-1.5 w-full overflow-hidden rounded-full bg-secondary/30">
+    <div v-if="totalSteps" class="h-1.5 w-full overflow-hidden rounded-full bg-secondary/30">
       <div
         class="h-full rounded-full bg-amber-400 transition-all duration-700"
         :style="{width: progressPct + '%'}"
@@ -525,7 +484,7 @@ const marginChartOption = computed(() => ({
       <!-- Loss curve -->
       <div class="rounded-xl border border-border bg-secondary/5 p-5">
         <h3 class="mb-1 text-sm font-semibold">训练 / 验证损失曲线</h3>
-        <p class="mb-3 text-[11px] text-muted-foreground">实时更新 · 每 epoch 刷新一次</p>
+        <p class="mb-3 text-[11px] text-muted-foreground">实时更新 · 每个检查点刷新一次</p>
         <div class="h-[220px] w-full shrink-0 overflow-hidden">
           <VChart class="h-full w-full min-h-0" :option="lossChartOption" autoresize />
         </div>
@@ -543,7 +502,7 @@ const marginChartOption = computed(() => ({
 
     <!-- Placeholder: preparing or no data yet -->
     <div v-else class="flex flex-1 items-center justify-center text-xs text-muted-foreground/40">
-      {{ stage === 'preparing_dataset' ? '正在准备数据集，训练即将开始…' : '等待第一个 epoch 完成后显示曲线…' }}
+      {{ stage === 'preparing_dataset' ? '正在准备数据集，训练即将开始…' : '等待第一个检查点完成后显示曲线…' }}
     </div>
   </div>
 
@@ -618,7 +577,7 @@ const marginChartOption = computed(() => ({
               {{ stage === 'completed' ? 'Completed' : '已中止' }}
             </span>
             <span v-if="stage === 'stopped' && summary?.train_losses?.length" class="text-xs text-muted-foreground">
-              ({{ summary.train_losses.length }} / {{ exp.config?.epochs ?? '?' }} epochs)
+              (step {{ summary?.steps_run ?? '?' }} / {{ summary?.total_steps ?? '?' }})
             </span>
           </div>
         </div>
@@ -654,14 +613,14 @@ const marginChartOption = computed(() => ({
         <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">最终 Train Loss</p>
         <div class="mt-2">
           <p class="text-2xl font-semibold tabular-nums text-purple-400">{{ finalTrainLoss ?? '---' }}</p>
-          <p class="mt-1 text-[10px] text-muted-foreground">最后一轮训练损失</p>
+          <p class="mt-1 text-[10px] text-muted-foreground">最新一次训练损失</p>
         </div>
       </div>
       <div class="flex flex-col justify-between rounded-xl border border-border bg-secondary/5 p-4">
         <p class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">最终 Val Loss</p>
         <div class="mt-2">
           <p class="text-2xl font-semibold tabular-nums text-emerald-400">{{ finalValLoss ?? '---' }}</p>
-          <p class="mt-1 text-[10px] text-muted-foreground">最后一轮验证损失</p>
+          <p class="mt-1 text-[10px] text-muted-foreground">最新一次验证损失</p>
         </div>
       </div>
     </div>
@@ -675,7 +634,7 @@ const marginChartOption = computed(() => ({
         <div v-if="trainLosses.length > 0" class="h-[260px] w-full shrink-0 overflow-hidden">
           <VChart class="h-full w-full min-h-0" :option="lossChartOption" autoresize />
         </div>
-        <div v-else class="flex h-[260px] shrink-0 items-center justify-center text-xs text-muted-foreground/50">无逐 epoch 损失数据</div>
+        <div v-else class="flex h-[260px] shrink-0 items-center justify-center text-xs text-muted-foreground/50">暂无损失数据</div>
       </div>
 
       <!-- Similarity sidebar — 1/3 -->

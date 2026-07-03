@@ -139,7 +139,6 @@ def build_platform_supcon_base() -> dict[str, Any]:
         "model": copy.deepcopy(sup.get("model", {})),
         "moco": copy.deepcopy(sup.get("moco", {})),
         "loss": copy.deepcopy(sup.get("loss", {})),
-        "training_strategy": copy.deepcopy(sup.get("training_strategy", {})),
     }
 
     dc_data = dc.get("data", {})
@@ -160,22 +159,16 @@ def build_platform_supcon_base() -> dict[str, Any]:
     dc_training = dc.get("training", {})
     if isinstance(dc_training, dict):
         for key in (
-            "epochs",
             "learning_rate",
             "weight_decay",
-            "backbone_lr_ratio",
             "use_amp",
-            "eval_interval",
+            "early_stop_patience",
+            "early_stop_min_delta",
             "lr_scheduler",
+            "freeze_backbone",
         ):
             if key in dc_training:
                 merged["training"][key] = dc_training[key]
-
-    dc_strategy = dc.get("training_strategy", {})
-    if isinstance(dc_strategy, dict) and "freeze_backbone_epochs" in dc_strategy:
-        merged["training_strategy"]["freeze_backbone_epochs"] = dc_strategy[
-            "freeze_backbone_epochs"
-        ]
 
     default_backbone = (dc_training or {}).get("default_backbone")
     if isinstance(default_backbone, str) and default_backbone.strip():

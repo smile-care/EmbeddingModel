@@ -48,7 +48,8 @@ def plot_loss_curve(
     val_losses: Optional[List[float]] = None,
     val_epochs: Optional[List[int]] = None,
     save_path: Optional[str] = None,
-    title: str = "Training Loss"
+    title: str = "Training Loss",
+    train_x: Optional[List[int]] = None,
 ):
     """
     绘制损失曲线
@@ -56,12 +57,15 @@ def plot_loss_curve(
     Args:
         train_losses: 训练损失列表
         val_losses: 验证损失列表（可选）
-        val_epochs: 验证对应的 epoch 编号（与 val_losses 等长；缺省则按 1..N 绘制）
+        val_epochs: 验证对应的横轴编号，如 epoch 或 step（与 val_losses 等长；缺省则按 1..N 绘制）
         save_path: 保存路径
         title: 图表标题
+        train_x: 训练损失对应的横轴编号（与 train_losses 等长；缺省则按 1..N 绘制，
+            适用于按 epoch 密集记录的场景；step 级稀疏检查点场景应显式传入真实 step 号）
     """
     plt.figure(figsize=(10, 6))
-    plt.plot(range(1, len(train_losses) + 1), train_losses, label='Train Loss', linewidth=2)
+    train_x_values = train_x if train_x and len(train_x) == len(train_losses) else range(1, len(train_losses) + 1)
+    plt.plot(train_x_values, train_losses, label='Train Loss', linewidth=2)
     if val_losses:
         if val_epochs and len(val_epochs) == len(val_losses):
             plt.plot(val_epochs, val_losses, label='Val Loss', linewidth=2, marker='o')
