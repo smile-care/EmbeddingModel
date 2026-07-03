@@ -20,6 +20,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  SlidersHorizontal,
   Sparkles,
   Terminal,
   Trash2,
@@ -36,16 +37,14 @@ import ClassDendrogram from '@/components/relations/ClassDendrogram.vue';
 import ClassGraph from '@/components/relations/ClassGraph.vue';
 import WarningList from '@/components/relations/WarningList.vue';
 import PerClassCards from '@/components/relations/PerClassCards.vue';
+import AnalysisViewHeader from '@/components/relations/AnalysisViewHeader.vue';
 import MislabelList from '@/components/relations/MislabelList.vue';
 import {DatasetsApi, InferenceApi, categoryChartColor, classColor, staticUrl, type AnnotationRegion, type CropImage, type DatasetImage, type DefectClass, type RelationsMislabel, type RelationsOut} from '@/lib/api';
-import {SlidersHorizontal} from 'lucide-vue-next';
 
 // ── constants ──────────────────────────────────────────────────────────────
-/** Always-available baseline model (server returns this as the first entry too). */
-const DEFAULT_MODEL_ID = 'default';
-const DEFAULT_MODEL = {id: DEFAULT_MODEL_ID, name: '默认预训练模型: DINOv3 RAW', type: 'Pretrained'};
-const INDUSTRIAL_MODEL = {id: 'industrial_pretrained', name: '工业预训练模型: SupCon Config', type: 'Pretrained'};
-const PRETRAINED_MODELS = [DEFAULT_MODEL, INDUSTRIAL_MODEL];
+const DEFAULT_RAW_GROUP_ID = 'default_pretrained';
+const DEFAULT_RAW_GROUP_NAME = '默认预训练模型';
+const INDUSTRIAL_MODEL_ID = 'industrial_pretrained';
 const MIN_ANALYSIS_CLASSES = 2;
 const ALGO_LIST = ['TSNE', 'UMAP', 'PCA'] as const;
 type AlgoKey = (typeof ALGO_LIST)[number];
@@ -77,7 +76,14 @@ interface InferenceRunSummary {
 // ── state ──────────────────────────────────────────────────────────────────
 const apiModels = ref<{id: string; name: string; type?: string}[]>([]);
 const apiDatasets = ref<{id: string; name: string; items?: number}[]>([]);
-const selectedModel = ref(DEFAULT_MODEL_ID);
+/** Main drawer select: default RAW group, industrial, or a trained experiment id. */
+const selectedMainModel = ref(DEFAULT_RAW_GROUP_ID);
+/** Second-level pick when ``selectedMainModel`` is the default RAW group. */
+const selectedRawVariant = ref('');
+const rawVariantOpen = ref(false);
+const rawVariantTriggerRef = ref<HTMLButtonElement | null>(null);
+const rawVariantPanelRef = ref<HTMLElement | null>(null);
+const rawVariantPanelPos = ref({top: 0, left: 0});
 const selectedDataset = ref('');
 const selectedClassIds = ref<string[]>([]);
 const classFilterExpanded = ref(true);
@@ -87,6 +93,8 @@ const viewMode = ref<'distribution' | 'anomaly'>('distribution');
 // ── analysis center (drawer) ─────────────────────────────────────────────────
 const activeView = ref<ViewKey>('distribution');
 const drawerOpen = ref(false);
+const analysisDrawerRef = ref<{rootEl: HTMLElement | null} | null>(null);
+const analysisDrawerTriggerRef = ref<HTMLButtonElement | null>(null);
 const relations = ref<RelationsOut | null>(null);
 const relationsLoading = ref(false);
 const relationsError = ref<string | null>(null);
@@ -96,6 +104,8 @@ const confusionThreshold = ref(0.3);
 const simThreshold = ref(0.85);
 const mislabelThreshold = ref(0.5);
 const highlightLabels = ref<string[]>([]);
+/** Relation view to restore after drill-down highlight on scatter. */
+const highlightReturnView = ref<ViewKey | null>(null);
 const RELATION_VIEWS: ViewKey[] = ['headline', 'confusion', 'centroid', 'dendrogram', 'graph', 'warnings', 'perclass', 'mislabels'];
 const relationsAvailable = computed(() => relations.value != null);
 
@@ -104,8 +114,12 @@ function selectView(v: ViewKey) {
   if (v === 'distribution' || v === 'anomaly') {
     viewMode.value = v;
     highlightLabels.value = [];
+    highlightReturnView.value = null;
   } else if (relations.value == null && !relationsLoading.value) {
+    highlightReturnView.value = null;
     void loadRelations();
+  } else {
+    highlightReturnView.value = null;
   }
 }
 
@@ -134,9 +148,20 @@ function reloadRelationsK() {
 }
 
 function highlightPair(labels: string[]) {
+  if (RELATION_VIEWS.includes(activeView.value)) {
+    highlightReturnView.value = activeView.value;
+  }
   highlightLabels.value = labels;
   activeView.value = 'distribution';
   viewMode.value = 'distribution';
+}
+
+function returnFromHighlight() {
+  const back = highlightReturnView.value;
+  if (!back) return;
+  highlightReturnView.value = null;
+  highlightLabels.value = [];
+  activeView.value = back;
 }
 
 function onHeatmapSelect(mode: 'confusion' | 'centroid', payload: {i: number; j: number}) {
@@ -147,15 +172,20 @@ function onHeatmapSelect(mode: 'confusion' | 'centroid', payload: {i: number; j:
 }
 
 function previewMislabel(item: RelationsMislabel) {
+  const fromPlot = plotData.value.find((p) => p.id === item.cropId);
+  const fromDataset = findCropInDataset(item.cropId);
   openPreview({
     id: item.cropId,
-    x: 0,
-    y: 0,
-    cluster: 0,
+    x: fromPlot?.x ?? 0,
+    y: fromPlot?.y ?? 0,
+    cluster: fromPlot?.cluster ?? 0,
     url: item.url,
     label: item.currentLabel,
-    sourceImageId: item.sourceImageId ?? undefined,
-    instanceIndex: item.instanceIndex ?? undefined,
+    anomalyScore: fromPlot?.anomalyScore,
+    isGolden: fromPlot?.isGolden,
+    sourceImageId: item.sourceImageId ?? fromPlot?.sourceImageId ?? fromDataset?.sourceImageId ?? undefined,
+    instanceIndex: item.instanceIndex ?? fromPlot?.instanceIndex ?? fromDataset?.instanceIndex ?? undefined,
+    cropAnnotation: fromPlot?.cropAnnotation ?? fromDataset?.cropAnnotation ?? undefined,
   } as PlotPoint);
 }
 
@@ -173,7 +203,7 @@ const analyzedConfigSnapshot = ref<string | null>(null);
 
 function analysisConfigSnapshot(): string {
   return JSON.stringify({
-    model: selectedModel.value,
+    model: effectiveModelId.value,
     dataset: selectedDataset.value,
     classes: [...selectedClassIds.value].sort(),
     golden: [...goldenCropIds.value].sort(),
@@ -222,6 +252,15 @@ const previewContainerSize = ref({w: 0, h: 0});
 /** Combined transform scale = fitScale * userZoom */
 const previewEffectiveScale = computed(() => imagePreviewFitScale.value * imagePreviewZoom.value);
 
+/** Annotation outline width in viewBox units — keeps ~constant screen pixels for any image size/zoom. */
+const previewAnnotationStrokeWidth = computed(() => {
+  const nw = imagePreviewNaturalSize.value.w;
+  const scale = previewEffectiveScale.value;
+  if (!nw || !scale) return 0.002;
+  const targetPx = previewModalView.value === 'source' ? 1.25 : 1.75;
+  return targetPx / (nw * scale);
+});
+
 /** True when scaled image exceeds the viewport — only then allow drag-to-pan */
 const previewCanPan = computed(() => {
   const nw = imagePreviewNaturalSize.value.w;
@@ -260,7 +299,97 @@ function computeFitScale() {
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const selectedRun = computed(() => inferenceRuns.value.find((r) => r.id === selectedRunId.value));
-const modelsForSelect = computed(() => apiModels.value.length ? apiModels.value : PRETRAINED_MODELS);
+
+const rawModelVariants = computed(() =>
+  apiModels.value.filter((m) => m.type === 'Pretrained' && m.id !== INDUSTRIAL_MODEL_ID),
+);
+
+const mainModelOptions = computed(() => {
+  const items: {id: string; name: string}[] = [{id: DEFAULT_RAW_GROUP_ID, name: DEFAULT_RAW_GROUP_NAME}];
+  const industrial = apiModels.value.find((m) => m.id === INDUSTRIAL_MODEL_ID);
+  if (industrial) items.push({id: industrial.id, name: industrial.name});
+  for (const m of apiModels.value) {
+    if (m.type === 'Trained') items.push({id: m.id, name: m.name});
+  }
+  return items;
+});
+
+const effectiveModelId = computed(() =>
+  selectedMainModel.value === DEFAULT_RAW_GROUP_ID
+    ? selectedRawVariant.value
+    : selectedMainModel.value,
+);
+
+const isDefaultRawSelected = computed(() => selectedMainModel.value === DEFAULT_RAW_GROUP_ID);
+
+const selectedRawVariantLabel = computed(
+  () => rawModelVariants.value.find((m) => m.id === selectedRawVariant.value)?.name ?? '',
+);
+
+function syncModelSelectionFromApiId(modelId: string) {
+  if (!modelId) {
+    selectedMainModel.value = DEFAULT_RAW_GROUP_ID;
+    selectedRawVariant.value = rawModelVariants.value[0]?.id ?? '';
+    return;
+  }
+  if (rawModelVariants.value.some((m) => m.id === modelId)) {
+    selectedMainModel.value = DEFAULT_RAW_GROUP_ID;
+    selectedRawVariant.value = modelId;
+    return;
+  }
+  selectedMainModel.value = modelId;
+  if (!selectedRawVariant.value) {
+    selectedRawVariant.value = rawModelVariants.value[0]?.id ?? '';
+  }
+}
+
+function onAnalysisDrawerOutside(e: MouseEvent) {
+  if (!drawerOpen.value) return;
+  const target = e.target as Node;
+  const drawerEl = analysisDrawerRef.value?.rootEl;
+  if (drawerEl?.contains(target) || analysisDrawerTriggerRef.value?.contains(target)) return;
+  drawerOpen.value = false;
+}
+
+function selectRawVariant(id: string) {
+  selectedRawVariant.value = id;
+  rawVariantOpen.value = false;
+}
+
+const RAW_VARIANT_PANEL_WIDTH = 224;
+const RAW_VARIANT_PANEL_GAP = 4;
+
+function updateRawVariantPanelPos() {
+  const btn = rawVariantTriggerRef.value;
+  if (!btn) return;
+  const rect = btn.getBoundingClientRect();
+  const panelH = rawVariantPanelRef.value?.offsetHeight ?? 180;
+  const pad = 8;
+  let left = rect.right + RAW_VARIANT_PANEL_GAP;
+  let top = rect.top;
+  if (left + RAW_VARIANT_PANEL_WIDTH > window.innerWidth - pad) {
+    left = rect.left - RAW_VARIANT_PANEL_WIDTH - RAW_VARIANT_PANEL_GAP;
+  }
+  if (top + panelH > window.innerHeight - pad) {
+    top = Math.max(pad, window.innerHeight - panelH - pad);
+  }
+  rawVariantPanelPos.value = {top, left};
+}
+
+function toggleRawVariantPicker() {
+  rawVariantOpen.value = !rawVariantOpen.value;
+  if (rawVariantOpen.value) {
+    void nextTick(() => updateRawVariantPanelPos());
+  }
+}
+
+function onRawVariantPickerOutside(e: MouseEvent) {
+  if (!rawVariantOpen.value) return;
+  const target = e.target as Node;
+  if (rawVariantTriggerRef.value?.contains(target) || rawVariantPanelRef.value?.contains(target)) return;
+  rawVariantOpen.value = false;
+}
+
 const datasetsForSelect = computed(() => apiDatasets.value);
 const labelList = computed(() => analysisLabels.value);
 
@@ -466,7 +595,7 @@ async function loadRunDetail(id: string) {
       analysisStale?: boolean;
       analysisFingerprint?: string | null;
     };
-    selectedModel.value = row.modelId || DEFAULT_MODEL_ID;
+    syncModelSelectionFromApiId(row.modelId || rawModelVariants.value[0]?.id || '');
     selectedDataset.value = row.datasetId || '';
     goldenCropIds.value = row.goldenCropIds ?? [];
     selectedClassIds.value = Array.isArray(row.classIds) ? [...row.classIds] : [];
@@ -502,14 +631,26 @@ async function loadRunDetail(id: string) {
 
 // ── lifecycle ──────────────────────────────────────────────────────────────
 onMounted(() => {
+  document.addEventListener('mousedown', onRawVariantPickerOutside);
   InferenceApi.listModels()
     .then((d) => {
-      apiModels.value = d.length ? d : PRETRAINED_MODELS;
-      if (!apiModels.value.some((m) => m.id === selectedModel.value)) {
-        selectedModel.value = apiModels.value[0]?.id ?? DEFAULT_MODEL_ID;
+      apiModels.value = d;
+      if (!selectedRawVariant.value) {
+        selectedRawVariant.value = rawModelVariants.value[0]?.id ?? '';
+      }
+      if (selectedMainModel.value === DEFAULT_RAW_GROUP_ID) {
+        if (!rawModelVariants.value.some((m) => m.id === selectedRawVariant.value)) {
+          selectedRawVariant.value = rawModelVariants.value[0]?.id ?? '';
+        }
+      } else if (!mainModelOptions.value.some((m) => m.id === selectedMainModel.value)) {
+        syncModelSelectionFromApiId(rawModelVariants.value[0]?.id ?? '');
       }
     })
-    .catch(() => { apiModels.value = PRETRAINED_MODELS; selectedModel.value = DEFAULT_MODEL_ID; });
+    .catch(() => {
+      apiModels.value = [];
+      selectedMainModel.value = DEFAULT_RAW_GROUP_ID;
+      selectedRawVariant.value = '';
+    });
   DatasetsApi.list()
     .then((d) => { apiDatasets.value = d.map((x) => ({id: x.id, name: x.name, items: x.items})); if (d.length) selectedDataset.value = d[0].id; })
     .catch(() => { apiDatasets.value = []; });
@@ -527,6 +668,7 @@ watch(selectedRunId, (id) => {
   relationsK.value = 0;
   relationsError.value = null;
   highlightLabels.value = [];
+  highlightReturnView.value = null;
   if (RELATION_VIEWS.includes(activeView.value)) activeView.value = viewMode.value;
   if (id) void loadRunDetail(id);
   else { plotData.value = []; analysisLabels.value = []; cachedAlgos.value = new Set(); }
@@ -556,8 +698,31 @@ watch(inferenceDatasetDetail, (detail) => {
   pruneGoldenToSelectedClasses();
 });
 
+watch(drawerOpen, (open) => {
+  if (open) {
+    document.addEventListener('mousedown', onAnalysisDrawerOutside);
+  } else {
+    document.removeEventListener('mousedown', onAnalysisDrawerOutside);
+  }
+});
+
+watch(selectedMainModel, (id) => {
+  if (id !== DEFAULT_RAW_GROUP_ID) rawVariantOpen.value = false;
+});
+
+watch(rawVariantOpen, (open) => {
+  if (!open) {
+    window.removeEventListener('scroll', updateRawVariantPanelPos, true);
+    window.removeEventListener('resize', updateRawVariantPanelPos);
+    return;
+  }
+  void nextTick(() => updateRawVariantPanelPos());
+  window.addEventListener('scroll', updateRawVariantPanelPos, true);
+  window.addEventListener('resize', updateRawVariantPanelPos);
+});
+
 watch(
-  [selectedModel, selectedDataset, selectedClassIds, goldenCropIds],
+  [effectiveModelId, selectedDataset, selectedClassIds, goldenCropIds],
   () => {
     if (_loadingRunDetail || !selectedRunId.value) return;
     const snap = analyzedConfigSnapshot.value;
@@ -613,7 +778,7 @@ async function createNewInferenceRun(name: string): Promise<boolean> {
   try {
     const row = await InferenceApi.createRun({
       name: cleanName,
-      modelId: apiModels.value[0]?.id || DEFAULT_MODEL_ID,
+      modelId: rawModelVariants.value[0]?.id || '',
       datasetMode: 'existing',
       datasetId: apiDatasets.value[0]?.id || null,
       algorithm: 'tsne',
@@ -759,7 +924,7 @@ async function handleRunAnalysis() {
 
   try {
     await InferenceApi.patchRun(runId, {
-      modelId: selectedModel.value || null,
+      modelId: effectiveModelId.value || null,
       datasetMode: 'existing',
       datasetId: selectedDataset.value,
       classIds: selectedClassIds.value,
@@ -770,7 +935,6 @@ async function handleRunAnalysis() {
   } catch { /* ignore */ }
 
   isAnalyzing.value = true;
-  cachedAlgos.value = new Set();
   // New forward pass -> stale relations cache.
   relations.value = null;
   relationsRunId.value = null;
@@ -808,9 +972,29 @@ function regionToLabel(r: AnnotationRegion, i: number): AnnotationLabel {
   return {label_id: i, points: r.points as [number, number][], isSubtract: r.isSubtract};
 }
 
+function findCropInDataset(cropId: string): CropImage | null {
+  const detail = inferenceDatasetDetail.value;
+  if (!detail) return null;
+  for (const img of detail.images) {
+    const crop = img.crops?.find((c) => c.id === cropId);
+    if (crop) return crop;
+  }
+  return null;
+}
+
 function cropAnnotationFromPoint(p: PlotPoint): Annotation | null {
-  if (!p.cropAnnotation?.length) return null;
-  return {id: p.id, labels: p.cropAnnotation.map((lbl, i) => ({label_id: i, points: lbl.points as [number, number][], isSubtract: lbl.isSubtract}))};
+  const shapes = p.cropAnnotation?.length
+    ? p.cropAnnotation
+    : findCropInDataset(p.id)?.cropAnnotation;
+  if (!shapes?.length) return null;
+  return {
+    id: p.id,
+    labels: shapes.map((lbl, i) => ({
+      label_id: i,
+      points: lbl.points as [number, number][],
+      isSubtract: lbl.isSubtract,
+    })),
+  };
 }
 
 function sourceAnnotationFromPoint(p: PlotPoint): Annotation | null {
@@ -933,6 +1117,10 @@ watch(previewCanPan, (can) => {
 });
 
 onUnmounted(() => {
+  document.removeEventListener('mousedown', onRawVariantPickerOutside);
+  document.removeEventListener('mousedown', onAnalysisDrawerOutside);
+  window.removeEventListener('scroll', updateRawVariantPanelPos, true);
+  window.removeEventListener('resize', updateRawVariantPanelPos);
   detachPreviewGlobalHandlers();
   _menuCleanup?.();
   const runId = selectedRunId.value;
@@ -1165,10 +1353,54 @@ watch(imagePreviewZoom, (z) => {
           <div class="flex items-center gap-2 text-[9px] font-bold uppercase tracking-widest text-muted-foreground">
             <Cpu class="h-3 w-3" />模型选择
           </div>
-          <select v-model="selectedModel" class="w-full rounded-md border border-border bg-background px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring">
-            <option v-for="m in modelsForSelect" :key="m.id" :value="m.id">{{ m.name }}</option>
-          </select>
+          <div class="flex gap-1">
+            <select
+              v-model="selectedMainModel"
+              class="min-w-0 flex-1 rounded-md border border-border bg-background px-2.5 py-1.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
+            >
+              <option v-for="m in mainModelOptions" :key="m.id" :value="m.id">{{ m.name }}</option>
+            </select>
+            <button
+              v-if="isDefaultRawSelected"
+              ref="rawVariantTriggerRef"
+              type="button"
+              class="shrink-0 flex h-[30px] w-[30px] items-center justify-center rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-secondary/50 hover:text-foreground"
+              :class="rawVariantOpen ? 'bg-secondary/50 text-foreground ring-1 ring-ring' : ''"
+              title="选择 backbone 变体"
+              @click="toggleRawVariantPicker"
+            >
+              <SlidersHorizontal class="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <p v-if="isDefaultRawSelected && selectedRawVariantLabel" class="text-[10px] leading-relaxed text-muted-foreground/80">
+            当前：{{ selectedRawVariantLabel }}
+          </p>
         </div>
+
+        <Teleport to="body">
+          <div
+            v-if="rawVariantOpen"
+            ref="rawVariantPanelRef"
+            class="fixed z-[100] w-56 rounded-lg border border-border bg-popover p-1.5 shadow-lg"
+            :style="{top: `${rawVariantPanelPos.top}px`, left: `${rawVariantPanelPos.left}px`}"
+            @mousedown.stop
+          >
+            <p class="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              Backbone
+            </p>
+            <button
+              v-for="v in rawModelVariants"
+              :key="v.id"
+              type="button"
+              class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs transition-colors hover:bg-secondary/50"
+              :class="selectedRawVariant === v.id ? 'bg-secondary/40 text-foreground' : 'text-foreground/80'"
+              @click="selectRawVariant(v.id)"
+            >
+              <span class="min-w-0 flex-1 truncate">{{ v.name }}</span>
+              <Check v-if="selectedRawVariant === v.id" class="h-3.5 w-3.5 shrink-0 text-primary" />
+            </button>
+          </div>
+        </Teleport>
 
         <div class="h-px bg-border" />
 
@@ -1318,6 +1550,7 @@ watch(imagePreviewZoom, (z) => {
           <div class="flex items-center gap-2">
             <!-- Analysis center drawer trigger -->
             <button
+              ref="analysisDrawerTriggerRef"
               type="button"
               class="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1 text-[10px] font-bold transition-all hover:border-primary/50 hover:text-primary"
               :disabled="plotData.length === 0"
@@ -1363,6 +1596,15 @@ watch(imagePreviewZoom, (z) => {
           </div>
           <div class="flex items-center gap-3">
             <button
+              v-if="highlightReturnView && activeView === 'distribution'"
+              type="button"
+              class="flex items-center gap-1 rounded border border-border bg-background px-2 py-0.5 text-[9px] font-bold text-muted-foreground transition-colors hover:border-primary/40 hover:text-primary"
+              @click="returnFromHighlight"
+            >
+              <ArrowLeft class="h-2.5 w-2.5" />
+              返回{{ analysisViewLabel(highlightReturnView) }}
+            </button>
+            <button
               v-if="highlightLabels.length && activeView === 'distribution'"
               type="button"
               class="flex items-center gap-1 rounded bg-primary/15 px-2 py-0.5 text-[9px] font-bold text-primary ring-1 ring-primary/30"
@@ -1400,54 +1642,54 @@ watch(imagePreviewZoom, (z) => {
             </div>
             <template v-else-if="relations">
               <div v-if="activeView === 'headline'" class="min-h-0 flex-1 space-y-3 overflow-y-auto">
-                <h3 class="text-sm font-semibold">{{ analysisViewLabel('headline') }}</h3>
+                <AnalysisViewHeader view="headline" />
                 <HeadlineScore :headline="relations.headline" />
               </div>
 
               <div v-else-if="activeView === 'confusion'" class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
                 <div class="shrink-0">
-                  <h3 class="text-sm font-semibold">{{ analysisViewLabel('confusion') }}</h3>
-                  <p class="text-[11px] text-muted-foreground">行 = 真实类，值 = 该类样本的 k 近邻落入各列类别的占比（%）。对角线 = 纯度。点击格子在散点中高亮相关两类。</p>
+                  <AnalysisViewHeader view="confusion">
+                    <p class="text-[11px] text-muted-foreground">行 = 真实类，值 = 该类样本的 k 近邻落入各列类别的占比（%）。对角线 = 纯度。</p>
+                  </AnalysisViewHeader>
                 </div>
                 <ConfusionHeatmap class="min-h-0 flex-1" :labels="relations.labels" :matrix="relations.confusion" mode="confusion" :threshold="confusionThreshold" @select="onHeatmapSelect('confusion', $event)" />
               </div>
 
               <div v-else-if="activeView === 'centroid'" class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
                 <div class="shrink-0">
-                  <h3 class="text-sm font-semibold">{{ analysisViewLabel('centroid') }}</h3>
-                  <p class="text-[11px] text-muted-foreground">类心 = 各类归一化均值向量，值 = 类心间余弦相似度。越接近 1 越相似。</p>
+                  <AnalysisViewHeader view="centroid">
+                    <p class="text-[11px] text-muted-foreground">类心 = 各类归一化均值向量，值 = 类心间余弦相似度。越接近 1 越相似。</p>
+                  </AnalysisViewHeader>
                 </div>
                 <ConfusionHeatmap class="min-h-0 flex-1" :labels="relations.labels" :matrix="relations.centroidSim" mode="similarity" :threshold="simThreshold" @select="onHeatmapSelect('centroid', $event)" />
               </div>
 
               <div v-else-if="activeView === 'dendrogram'" class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
-                <h3 class="shrink-0 text-sm font-semibold">{{ analysisViewLabel('dendrogram') }}</h3>
+                <AnalysisViewHeader view="dendrogram" class="shrink-0" />
                 <ClassDendrogram class="min-h-0 flex-1" :root="relations.linkage" :labels="relations.labels" :merge-threshold="1 - simThreshold" @highlight="highlightPair" />
               </div>
 
               <div v-else-if="activeView === 'graph'" class="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden">
-                <h3 class="shrink-0 text-sm font-semibold">{{ analysisViewLabel('graph') }}</h3>
+                <AnalysisViewHeader view="graph" class="shrink-0" />
                 <ClassGraph class="min-h-0 flex-1" :labels="relations.labels" :counts="relations.counts" :centroid-sim="relations.centroidSim" :edge-threshold="simThreshold * 0.85" @highlight="highlightPair" />
               </div>
 
               <div v-else-if="activeView === 'warnings'" class="min-h-0 flex-1 space-y-3 overflow-y-auto">
-                <div>
-                  <h3 class="text-sm font-semibold">{{ analysisViewLabel('warnings') }}</h3>
+                <AnalysisViewHeader view="warnings">
                   <p class="text-[11px] text-muted-foreground">点击可在分布散点中仅高亮该类别对。阈值可在「分析中心」中调整。</p>
-                </div>
+                </AnalysisViewHeader>
                 <WarningList :labels="relations.labels" :confusion="relations.confusion" :centroid-sim="relations.centroidSim" :confusion-threshold="confusionThreshold" :sim-threshold="simThreshold" @highlight="highlightPair" />
               </div>
 
               <div v-else-if="activeView === 'perclass'" class="min-h-0 flex-1 space-y-3 overflow-y-auto">
-                <h3 class="text-sm font-semibold">{{ analysisViewLabel('perclass') }}</h3>
+                <AnalysisViewHeader view="perclass" />
                 <PerClassCards :per-class="relations.perClass" :labels="relations.labels" @highlight="highlightPair" />
               </div>
 
               <div v-else-if="activeView === 'mislabels'" class="min-h-0 flex-1 space-y-3 overflow-y-auto">
-                <div>
-                  <h3 class="text-sm font-semibold">{{ analysisViewLabel('mislabels') }}</h3>
+                <AnalysisViewHeader view="mislabels">
                   <p class="text-[11px] text-muted-foreground">样本的 k 近邻多数属于其他类别。点击图片查看原图与标注。</p>
-                </div>
+                </AnalysisViewHeader>
                 <MislabelList :mislabels="relations.mislabels" :threshold="mislabelThreshold" @preview="previewMislabel" />
               </div>
             </template>
@@ -1508,6 +1750,7 @@ watch(imagePreviewZoom, (z) => {
         </div>
 
         <RelationsDrawer
+          ref="analysisDrawerRef"
           :open="drawerOpen"
           :active-view="activeView"
           :k="relationsK"
@@ -1684,7 +1927,7 @@ watch(imagePreviewZoom, (z) => {
                   :points="label.points.map(([x, y]: [number, number]) => `${x},${y}`).join(' ')"
                   fill="rgba(99, 102, 241, 0.42)"
                   stroke="rgb(199, 210, 254)"
-                  :stroke-width="0.004 / previewEffectiveScale"
+                  :stroke-width="previewAnnotationStrokeWidth"
                   stroke-linejoin="round"
                 />
               </svg>

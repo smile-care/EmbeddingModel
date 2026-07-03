@@ -3,7 +3,7 @@
 Two responsibilities live here:
 
 1. Config building — merge ``supcon_config.yaml`` + ``data_cluster.yaml`` with an
-   experiment's stored overrides (``build_infer_config`` / ``_build_default_model_config``).
+   experiment's stored overrides (``build_infer_config`` / ``_build_raw_model_config``).
 2. Embedding computation — load a model and run the forward pass.  These are the
    low-level ``_*_raw`` helpers, kept here (rather than in ``embedding_model``)
    because they are only consumed by the web platform; ``embedding_model`` stays
@@ -36,9 +36,6 @@ from embedding_model.supcon.models.backbone.dinov3_convnext import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 
-# Stable id used by the API/UI to mean "no trained model — use the pretrained backbone".
-DEFAULT_MODEL_ID = "default"
-DEFAULT_MODEL_NAME = "默认预训练模型"
 INDUSTRIAL_MODEL_ID = "industrial_pretrained"
 INDUSTRIAL_MODEL_NAME = "工业预训练模型"
 
@@ -281,10 +278,10 @@ def compute_supcon_embeddings(
     )
 
 
-def _build_default_model_config() -> tuple[dict[str, Any], int]:
-    """Resolve the DINOv3 RAW ConvNeXt config from data_cluster.yaml ``default_model``."""
+def _build_raw_model_config(model_id: str) -> tuple[dict[str, Any], int]:
+    """Resolve one DINOv3 RAW ConvNeXt config from ``default_models.<model_id>``."""
     base = build_platform_supcon_base()
-    backbone, backbone_config_path, pretrained_path = resolve_default_model()
+    backbone, backbone_config_path, pretrained_path = resolve_default_model(model_id)
     model_cfg: dict[str, Any] = {"backbone": backbone}
     if backbone_config_path:
         model_cfg["backbone_config_path"] = backbone_config_path
@@ -364,14 +361,15 @@ def _inspect_checkpoint(ckpt_path: str | Path) -> tuple[bool, bool]:
     return use_moco, has_trained_head
 
 
-def compute_default_embeddings(
+def compute_raw_embeddings(
+    model_id: str,
     image_paths: list[Path],
     mask_paths: list[Path | None] | None = None,
     batch_size: int = 16,
     device: str | None = None,
 ) -> np.ndarray:
-    """Compute fixed DINOv3 RAW ConvNeXt-Tiny embeddings for the default model."""
-    model_cfg, image_size = _build_default_model_config()
+    """Compute DINOv3 RAW ConvNeXt embeddings for a ``default_models`` entry."""
+    model_cfg, image_size = _build_raw_model_config(model_id)
     return _compute_backbone_embeddings_raw(
         model_config=model_cfg,
         image_paths=image_paths,

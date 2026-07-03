@@ -98,6 +98,7 @@ def project_2d(
         random_state=random_state,
         init="pca",
         learning_rate="auto",
+        n_jobs=1,
     )
     return _pad_to_2d(tsne.fit_transform(reduced))
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed} from 'vue';
+import {computed, ref} from 'vue';
 import {
   Activity, BarChart3, GitBranch, Grid3x3, LayoutGrid, Network,
   RefreshCw, ScatterChart, ShieldAlert, Sparkles, Star, X,
@@ -69,10 +69,14 @@ const mislabelPct = computed({
   get: () => Math.round(props.mislabelThreshold * 100),
   set: (v: number) => emit('update:mislabelThreshold', v / 100),
 });
+
+const rootRef = ref<HTMLElement | null>(null);
+defineExpose({rootEl: rootRef});
 </script>
 
 <template>
   <aside
+    ref="rootRef"
     class="flex h-full shrink-0 flex-col overflow-hidden border-border bg-background shadow-lg transition-[width,border-color] duration-200 ease-out"
     :class="open ? 'w-[320px] border-l' : 'w-0 border-l-0 pointer-events-none'"
     :aria-hidden="!open"

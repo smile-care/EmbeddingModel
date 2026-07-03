@@ -22,10 +22,14 @@ from data_cluster.app.services.storage import url_to_fs_path
 from data_cluster.dl.projection import (anomaly_scores_per_class, anomaly_scores_vs_golden,
                                         project_2d)
 from data_cluster.dl.relations import CropMeta, compute_relations
-from data_cluster.dl.inference import (DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME,
-                                       INDUSTRIAL_MODEL_ID, INDUSTRIAL_MODEL_NAME,
-                                       compute_default_embeddings,
+from data_cluster.dl.config_resolve import (
+    default_model_ids,
+    list_default_models,
+    resolve_default_model,
+)
+from data_cluster.dl.inference import (INDUSTRIAL_MODEL_ID, INDUSTRIAL_MODEL_NAME,
                                        compute_industrial_pretrained_embeddings,
+                                       compute_raw_embeddings,
                                        compute_supcon_embeddings)
 
 router = APIRouter(tags=["inference"])
@@ -150,21 +154,27 @@ def _run_to_summary(run: InferenceRun, db: Session) -> InferenceRunSummary:
 def _run_to_detail(run: InferenceRun, db: Session) -> InferenceRunDetail:
     s = _run_to_summary(run, db)
     base = s.model_dump(by_alias=False, mode="python")
-    cached = (
-        db.query(InferenceRunProjection.algorithm)
-        .filter(InferenceRunProjection.run_id == run.id)
-        .all()
-    )
-    cached_algos = [r[0] for r in cached]
     current_fp, stale = _analysis_stale_for_run(run, db)
     result_json = run.result_json
-    if stale and isinstance(result_json, dict):
-        # Do not expose stale scatter coordinates to the client.
+    cached_algos: list[str] = []
+    if not stale and current_fp and run.dataset_mode == "existing" and run.dataset_id:
+        cached_algos = _cached_algorithms_for_fingerprint(db, run.id, current_fp)
+        algo = (run.algorithm or "tsne").lower()
+        proj = _get_valid_projection(db, run.id, algo, current_fp)
+        if proj:
+            base_payload = dict(result_json) if isinstance(result_json, dict) else {}
+            result_json = {
+                **{k: v for k, v in base_payload.items() if k not in ("points", "labels", "fingerprint")},
+                "labels": proj.labels,
+                "points": proj.points,
+                "fingerprint": current_fp,
+            }
+    elif stale and isinstance(result_json, dict):
         result_json = {k: v for k, v in result_json.items() if k not in ("points", "labels")}
     return InferenceRunDetail(
         **base,
         result_json=result_json,
-        cached_algorithms=cached_algos if not stale else [],
+        cached_algorithms=cached_algos,
         analysis_stale=stale,
         analysis_fingerprint=current_fp,
     )
@@ -294,6 +304,16 @@ async def patch_inference_run(
             row.selected_class_ids = list(data["classIds"] or []) or None
         if "algorithm" in data and data["algorithm"] is not None:
             row.algorithm = str(data["algorithm"]).lower()
+            if row.dataset_mode == "existing" and row.dataset_id:
+                try:
+                    req = _analyze_request_for_run(row)
+                    rows, _ln, _la = _resolve_analysis_rows(req, db)
+                    fp = _analysis_fingerprint(req, db, rows)
+                    proj = _get_valid_projection(db, run_id, row.algorithm, fp)
+                    if proj:
+                        _apply_result_json(row, list(proj.labels), list(proj.points), fp)
+                except HTTPException:
+                    pass
         if "viewMode" in data and data["viewMode"] is not None:
             row.view_mode = data["viewMode"]
         db.commit()
@@ -330,22 +350,108 @@ async def delete_inference_embedding_cache(run_id: str, db: Session = Depends(ge
         if not row:
             raise HTTPException(status_code=404, detail="Inference run not found")
         delete_embeddings(get_settings(), run_id)
+        _delete_run_projections(db, run_id)
+        if isinstance(row.result_json, dict):
+            row.result_json = {
+                k: v
+                for k, v in row.result_json.items()
+                if k not in ("points", "labels", "fingerprint")
+            }
+            db.commit()
 
     await loop.run_in_executor(None, _delete_cache)
     return {"success": True}
 
 
-def _upsert_projection(db: Session, run_id: str, algorithm: str, labels: list, points: list) -> None:
+def _delete_run_projections(db: Session, run_id: str) -> None:
+    db.query(InferenceRunProjection).filter(InferenceRunProjection.run_id == run_id).delete()
+
+
+def _purge_stale_projections(db: Session, run_id: str, fingerprint: str) -> None:
+    db.query(InferenceRunProjection).filter(
+        InferenceRunProjection.run_id == run_id,
+        InferenceRunProjection.fingerprint != fingerprint,
+    ).delete(synchronize_session=False)
+
+
+def _get_valid_projection(
+    db: Session, run_id: str, algorithm: str, fingerprint: str
+) -> InferenceRunProjection | None:
+    proj = (
+        db.query(InferenceRunProjection)
+        .filter(
+            InferenceRunProjection.run_id == run_id,
+            InferenceRunProjection.algorithm == algorithm.lower(),
+        )
+        .first()
+    )
+    if not proj or not proj.fingerprint or proj.fingerprint != fingerprint:
+        return None
+    return proj
+
+
+def _cached_algorithms_for_fingerprint(db: Session, run_id: str, fingerprint: str) -> list[str]:
+    rows = (
+        db.query(InferenceRunProjection.algorithm)
+        .filter(
+            InferenceRunProjection.run_id == run_id,
+            InferenceRunProjection.fingerprint == fingerprint,
+        )
+        .all()
+    )
+    return [r[0] for r in rows]
+
+
+def _apply_result_json(
+    row: InferenceRun, labels: list, points: list, fingerprint: str
+) -> None:
+    row.result_json = {"labels": labels, "points": points, "fingerprint": fingerprint}
+
+
+def _upsert_projection(
+    db: Session,
+    run_id: str,
+    algorithm: str,
+    labels: list,
+    points: list,
+    fingerprint: str,
+) -> None:
+    algo = algorithm.lower()
     existing = (
         db.query(InferenceRunProjection)
-        .filter(InferenceRunProjection.run_id == run_id, InferenceRunProjection.algorithm == algorithm)
+        .filter(InferenceRunProjection.run_id == run_id, InferenceRunProjection.algorithm == algo)
         .first()
     )
     if existing:
         existing.labels = labels
         existing.points = points
+        existing.fingerprint = fingerprint
     else:
-        db.add(InferenceRunProjection(run_id=run_id, algorithm=algorithm, labels=labels, points=points))
+        db.add(
+            InferenceRunProjection(
+                run_id=run_id,
+                algorithm=algo,
+                labels=labels,
+                points=points,
+                fingerprint=fingerprint,
+            )
+        )
+
+
+def _try_serve_cached_analysis(
+    db: Session, row: InferenceRun, req: AnalyzeRequest, run_id: str
+) -> bool:
+    """Return cached scatter for the current algorithm when fingerprint still matches."""
+    rows, _label_names, _label_arr = _resolve_analysis_rows(req, db)
+    fp = _analysis_fingerprint(req, db, rows)
+    proj = _get_valid_projection(db, run_id, row.algorithm.lower(), fp)
+    if not proj:
+        return False
+    _apply_result_json(row, list(proj.labels), list(proj.points), fp)
+    row.status = "Completed"
+    db.commit()
+    db.refresh(row)
+    return True
 
 
 @router.post("/inference/runs/{run_id}/analyze", response_model=InferenceRunDetail)
@@ -371,7 +477,13 @@ async def execute_inference_run(
                 golden_crop_ids=list(row.golden_crop_ids or []),
                 class_ids=list(row.selected_class_ids or []),
             )
-            # 推理计算（GPU/CPU 密集）放线程池，不阻塞事件循环
+
+            def _maybe_cached() -> bool:
+                return _try_serve_cached_analysis(db, row, req, run_id)
+
+            if await loop.run_in_executor(None, _maybe_cached):
+                return _run_to_detail(row, db)
+
             resp = await loop.run_in_executor(None, _analyze_embeddings, req, db, run_id)
             labels = list(resp.labels)
             points = [p.model_dump(by_alias=True) for p in resp.points]
@@ -379,9 +491,11 @@ async def execute_inference_run(
             def _save_result():
                 rows, _label_names, _label_arr = _resolve_analysis_rows(req, db)
                 fp = _analysis_fingerprint(req, db, rows)
-                row.result_json = {"labels": labels, "points": points, "fingerprint": fp}
+                _apply_result_json(row, labels, points, fp)
                 row.status = "Completed"
-                _upsert_projection(db, run_id, row.algorithm.lower(), labels, points)
+                algo = row.algorithm.lower()
+                _upsert_projection(db, run_id, algo, labels, points, fp)
+                _purge_stale_projections(db, run_id, fp)
                 db.commit()
                 db.refresh(row)
 
@@ -398,7 +512,7 @@ async def execute_inference_run(
                 points = body.points
                 row.result_json = {"labels": labels, "points": points}
                 row.status = "Completed"
-                _upsert_projection(db, run_id, row.algorithm.lower(), labels, points)
+                _upsert_projection(db, run_id, row.algorithm.lower(), labels, points, "upload")
                 db.commit()
                 db.refresh(row)
 
@@ -425,15 +539,27 @@ async def get_run_projection(
     loop = asyncio.get_event_loop()
 
     def _query():
-        return (
-            db.query(InferenceRunProjection)
-            .filter(InferenceRunProjection.run_id == run_id, InferenceRunProjection.algorithm == algo)
-            .first()
+        row = db.get(InferenceRun, run_id)
+        if not row or row.dataset_mode != "existing" or not row.dataset_id:
+            return None
+        req = AnalyzeRequest(
+            dataset_id=row.dataset_id,
+            method=algo,
+            experiment_id=row.model_id,
+            model_id=row.model_id,
+            golden_crop_ids=list(row.golden_crop_ids or []),
+            class_ids=list(row.selected_class_ids or []),
         )
+        rows, _ln, _la = _resolve_analysis_rows(req, db)
+        fp = _analysis_fingerprint(req, db, rows)
+        return _get_valid_projection(db, run_id, algo, fp)
 
     proj = await loop.run_in_executor(None, _query)
     if not proj:
-        raise HTTPException(status_code=404, detail=f"No cached projection for algorithm '{algo}'")
+        raise HTTPException(
+            status_code=404,
+            detail=f"No valid cached projection for algorithm '{algo}' (missing or stale)",
+        )
     return ProjectionOut(algorithm=proj.algorithm, labels=proj.labels, points=proj.points)
 
 
@@ -466,15 +592,28 @@ async def compute_run_projection(
         golden_crop_ids=list(row.golden_crop_ids or []),
         class_ids=list(row.selected_class_ids or []),
     )
-    # Reuse the cached embeddings: switching algorithm only reruns project_2d.
-    resp = await loop.run_in_executor(None, _analyze_embeddings, req, db, run_id)
-    labels = list(resp.labels)
-    points = [p.model_dump(by_alias=True) for p in resp.points]
+
+    def _compute_or_load():
+        rows, _label_names, _label_arr = _resolve_analysis_rows(req, db)
+        fp = _analysis_fingerprint(req, db, rows)
+        cached = _get_valid_projection(db, run_id, algo, fp)
+        if cached:
+            labels = list(cached.labels)
+            points = [dict(p) for p in cached.points]
+            return labels, points, fp, True
+        resp = _analyze_embeddings(req, db, run_id)
+        labels = list(resp.labels)
+        points = [p.model_dump(by_alias=True) for p in resp.points]
+        return labels, points, fp, False
+
+    labels, points, fp, from_cache = await loop.run_in_executor(None, _compute_or_load)
 
     def _save():
-        _upsert_projection(db, run_id, algo, labels, points)
+        if not from_cache:
+            _upsert_projection(db, run_id, algo, labels, points, fp)
+            _purge_stale_projections(db, run_id, fp)
         if row.algorithm.lower() == algo:
-            row.result_json = {"labels": labels, "points": points}
+            _apply_result_json(row, labels, points, fp)
         db.commit()
 
     await loop.run_in_executor(None, _save)
@@ -483,7 +622,7 @@ async def compute_run_projection(
 
 @router.get("/models", response_model=list[ModelInfo])
 async def list_models(db: Session = Depends(get_db)) -> list[ModelInfo]:
-    """Return the default pretrained model first, then any completed experiments."""
+    """Return configured DINOv3 RAW models, industrial pretrained, then completed experiments."""
     loop = asyncio.get_event_loop()
     rows = await loop.run_in_executor(
         None,
@@ -493,9 +632,12 @@ async def list_models(db: Session = Depends(get_db)) -> list[ModelInfo]:
         .all()
     )
     models = [
-        ModelInfo(id=DEFAULT_MODEL_ID, name=DEFAULT_MODEL_NAME, type="Pretrained"),
-        ModelInfo(id=INDUSTRIAL_MODEL_ID, name=INDUSTRIAL_MODEL_NAME, type="Pretrained"),
+        ModelInfo(id=m["id"], name=m["name"], type="Pretrained")
+        for m in list_default_models()
     ]
+    models.append(
+        ModelInfo(id=INDUSTRIAL_MODEL_ID, name=INDUSTRIAL_MODEL_NAME, type="Pretrained")
+    )
     models.extend(ModelInfo(id=e.id, name=e.name, type="Trained") for e in rows)
     return models
 
@@ -541,31 +683,26 @@ def _compute_run_embeddings(
     """Run the (GPU) forward pass for the resolved rows."""
     settings = get_settings()
     eid = req.experiment_id or req.model_id
-    use_default = (not eid) or eid == DEFAULT_MODEL_ID
-    use_industrial = eid == INDUSTRIAL_MODEL_ID
-
-    exp: Experiment | None = None
-    checkpoint_path: Path | None = None
-    if not use_default and not use_industrial:
-        exp = db.get(Experiment, eid)
-        if not exp:
-            use_default = True
-        else:
-            checkpoint = exp.checkpoint_path
-            if not checkpoint:
-                raise HTTPException(status_code=422, detail="所选实验没有 checkpoint_path，无法进行推理。")
-            checkpoint_path = Path(checkpoint)
-            if not checkpoint_path.is_file():
-                raise HTTPException(status_code=422, detail=f"模型 checkpoint 不存在: {checkpoint_path}")
+    if not eid:
+        raise HTTPException(status_code=422, detail="请选择模型。")
 
     paths = [_crop_fs_path(settings, crop) for crop, _n, _li in rows]
     mask_paths = [_crop_mask_fs_path(settings, crop) for crop, _n, _li in rows]
 
-    if use_default:
-        return compute_default_embeddings(image_paths=paths, mask_paths=mask_paths)
-    if use_industrial:
+    if eid in default_model_ids():
+        return compute_raw_embeddings(model_id=eid, image_paths=paths, mask_paths=mask_paths)
+    if eid == INDUSTRIAL_MODEL_ID:
         return compute_industrial_pretrained_embeddings(image_paths=paths, mask_paths=mask_paths)
-    assert checkpoint_path is not None and exp is not None
+
+    exp = db.get(Experiment, eid)
+    if not exp:
+        raise HTTPException(status_code=404, detail=f"未知模型: {eid}")
+    checkpoint = exp.checkpoint_path
+    if not checkpoint:
+        raise HTTPException(status_code=422, detail="所选实验没有 checkpoint_path，无法进行推理。")
+    checkpoint_path = Path(checkpoint)
+    if not checkpoint_path.is_file():
+        raise HTTPException(status_code=422, detail=f"模型 checkpoint 不存在: {checkpoint_path}")
     return compute_supcon_embeddings(
         checkpoint_path=checkpoint_path,
         image_paths=paths,
@@ -582,8 +719,17 @@ def _path_mtime_token(path: Path | None) -> str:
 
 def _model_cache_key(req: AnalyzeRequest, db: Session) -> str:
     """Stable identifier for the model producing embeddings (includes checkpoint mtime)."""
-    eid = str(req.experiment_id or req.model_id or DEFAULT_MODEL_ID)
-    if eid in (DEFAULT_MODEL_ID, INDUSTRIAL_MODEL_ID):
+    eid = str(req.experiment_id or req.model_id or "")
+    if not eid:
+        return ""
+    if eid in default_model_ids():
+        try:
+            _backbone, _bb_cfg, pretrained_path = resolve_default_model(eid)
+            ckpt = Path(pretrained_path) if pretrained_path else None
+            return f"{eid}:{_path_mtime_token(ckpt)}"
+        except ValueError:
+            return eid
+    if eid == INDUSTRIAL_MODEL_ID:
         return eid
     exp = db.get(Experiment, eid)
     if not exp or not exp.checkpoint_path:

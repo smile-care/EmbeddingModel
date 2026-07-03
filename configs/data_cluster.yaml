@@ -34,13 +34,26 @@ data_cluster:
       pretrained_path: "checkpoints/supcon_models/0701_convnext_tiny/final_model.pth"
 
 
-  # ---------- 默认预训练模型（"默认预训练模型"选项使用） ----------
-  # 使用原始 DINOv3 backbone 权重 + 全局平均池化（无训练 head）。
-  # 这是"默认预训练模型"的唯一路径来源，避免在代码中写死。
-  # backbone_config 复用 pretrained_models.<backbone>.backbone_config，无需在此重复配置。
-  default_model:
-    backbone: "convnext_tiny"
-    pretrained_path: "pretrain_ckpts/convnext_tiny.pth"
+  # ---------- DINOv3 RAW 推理模型（推理页下拉选项） ----------
+  # key 即 API / UI 的 model_id；使用原始 DINOv3 backbone + 全局平均池化（无训练 head）。
+  # backbone_config 复用 configs/backbone/<backbone>.yaml，无需在此重复。
+  default_models:
+    convnext_tiny:
+      name: "Tiny"
+      backbone: convnext_tiny
+      pretrained_path: "pretrain_ckpts/convnext_tiny.pth"
+    convnext_small:
+      name: "Small"
+      backbone: convnext_small
+      pretrained_path: "pretrain_ckpts/convnext_small.pth"
+    convnext_base:
+      name: "Base"
+      backbone: convnext_base
+      pretrained_path: "pretrain_ckpts/convnext_base.pth"
+    convnext_large:
+      name: "Large"
+      backbone: convnext_large
+      pretrained_path: "pretrain_ckpts/convnext_large.pth"
 
   # ---------- 训练默认参数 ----------
   # Web UI 创建实验时可覆盖这些值

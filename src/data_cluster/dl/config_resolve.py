@@ -93,26 +93,42 @@ def resolve_backbone_config_path(backbone_name: str) -> str | None:
     return None
 
 
-def resolve_default_model() -> tuple[str, str | None, str | None]:
-    """Resolve the platform "default pretrained model" from data_cluster.yaml.
+def list_default_models() -> list[dict[str, str]]:
+    """Configured DINOv3 RAW models for inference (``default_models`` block)."""
+    dc = load_dc_section()
+    raw = dc.get("default_models", {})
+    if not isinstance(raw, dict):
+        return []
+    out: list[dict[str, str]] = []
+    for model_id, entry in raw.items():
+        if not isinstance(entry, dict):
+            continue
+        name = entry.get("name") or model_id
+        out.append({"id": str(model_id), "name": str(name)})
+    return out
 
-    Reads ``data_cluster.default_model`` — the single source of truth for the raw
-    DINOv3 backbone used by the "默认预训练模型" option — so the path is never
-    hardcoded in Python.
+
+def default_model_ids() -> frozenset[str]:
+    return frozenset(m["id"] for m in list_default_models())
+
+
+def resolve_default_model(model_id: str) -> tuple[str, str | None, str | None]:
+    """Resolve one DINOv3 RAW model from ``default_models.<model_id>``.
 
     Returns ``(backbone_name, backbone_config_path, pretrained_path)``.
-    Relative paths are resolved against the repo root; falls back to
-    ``pretrain_ckpts/<backbone>.pth`` when the config omits ``pretrained_path``.
     """
     dc = load_dc_section()
-    dm = dc.get("default_model", {})
-    if not isinstance(dm, dict):
-        dm = {}
+    models = dc.get("default_models", {})
+    if not isinstance(models, dict):
+        raise ValueError(f"Unknown default model: {model_id}")
+    entry = models.get(model_id)
+    if not isinstance(entry, dict):
+        raise ValueError(f"Unknown default model: {model_id}")
 
-    backbone = dm.get("backbone") or "convnext_tiny"
+    backbone = entry.get("backbone") or model_id
     backbone_config_path = resolve_backbone_config_path(backbone)
 
-    raw = dm.get("pretrained_path")
+    raw = entry.get("pretrained_path")
     if isinstance(raw, str) and raw.strip():
         p = Path(raw.strip())
         pretrained_path = str(p if p.is_absolute() else (_REPO_ROOT / p).resolve())

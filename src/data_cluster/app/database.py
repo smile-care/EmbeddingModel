@@ -86,6 +86,7 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("importStage", "VARCHAR"),
         ("importMessage", "TEXT"),
     ],
+    "InferenceRunProjection": [("fingerprint", "VARCHAR")],
 }
 
 

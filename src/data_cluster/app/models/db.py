@@ -247,6 +247,8 @@ class InferenceRunProjection(Base):
     algorithm: Mapped[str] = mapped_column(String, nullable=False)  # "tsne" | "umap" | "pca"
     labels: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
     points: Mapped[list[Any]] = mapped_column(JSON, nullable=False, default=list)
+    #: Content fingerprint (model + crops + filters) when this projection was computed.
+    fingerprint: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, default=datetime.utcnow)
 
     run: Mapped["InferenceRun"] = relationship("InferenceRun", back_populates="projections")
