@@ -24,6 +24,17 @@ export function staticUrl(url: string | null | undefined): string {
   return apiUrl(url);
 }
 
+/**
+ * Resolve a small cached thumbnail for a `/static/...` image, used in grids so
+ * the browser never downloads/decodes the full multi-MB original. Full images
+ * are still loaded on demand in the preview modal via {@link staticUrl}.
+ */
+export function thumbUrl(url: string | null | undefined, size = 384): string {
+  if (!url) return '';
+  if (/^(https?:|blob:|data:)/.test(url)) return url;
+  return apiUrl(`/api/datasets/thumbnail?url=${encodeURIComponent(url)}&size=${size}`);
+}
+
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
@@ -53,6 +64,43 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (res.status === 204) return undefined as T;
   const text = await res.text();
   return (text ? JSON.parse(text) : undefined) as T;
+}
+
+/** POST multipart with upload byte progress (fetch cannot report upload progress). */
+export function uploadFormData<T>(
+  path: string,
+  form: FormData,
+  onUploadProgress?: (percent: number) => void,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', apiUrl(path));
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && onUploadProgress) {
+        onUploadProgress(Math.round((e.loaded / e.total) * 100));
+      }
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          resolve((xhr.responseText ? JSON.parse(xhr.responseText) : undefined) as T);
+        } catch {
+          reject(new ApiError(xhr.status, 'Invalid JSON response'));
+        }
+        return;
+      }
+      let detail = `${xhr.status} ${xhr.statusText}`;
+      try {
+        const data = JSON.parse(xhr.responseText);
+        if (data?.detail) detail = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+      } catch {
+        /* ignore */
+      }
+      reject(new ApiError(xhr.status, detail));
+    };
+    xhr.onerror = () => reject(new ApiError(0, '网络错误：无法访问后端。请确认后端已启动。'));
+    xhr.send(form);
+  });
 }
 
 function jsonInit(method: string, body: unknown): RequestInit {
@@ -117,9 +165,21 @@ export interface DatasetSummary {
   size?: string | null;
   items: number;
   status: string;
+  importProgress?: number;
+  importStage?: string | null;
+  importMessage?: string | null;
   createdAt: string;
   updatedAt: string;
   defectClasses: DefectClass[];
+}
+
+export interface DatasetImportStatus {
+  id: string;
+  status: string;
+  items: number;
+  importProgress: number;
+  importStage?: string | null;
+  importMessage?: string | null;
 }
 
 export interface DatasetDetail extends DatasetSummary {
@@ -139,8 +199,15 @@ export const DatasetsApi = {
 
   get: (id: string) => request<DatasetDetail>(`/api/datasets/${id}`),
 
-  create: (form: FormData) =>
-    request<{id: string; name: string; items: number}>('/api/datasets', {method: 'POST', body: form}),
+  create: (form: FormData, onUploadProgress?: (percent: number) => void) =>
+    uploadFormData<{id: string; name: string; items: number; status: string}>(
+      '/api/datasets',
+      form,
+      onUploadProgress,
+    ),
+
+  getImportStatus: (id: string) =>
+    request<DatasetImportStatus>(`/api/datasets/${id}/import-status`),
 
   remove: (id: string) => request<{success: boolean}>(`/api/datasets/${id}`, {method: 'DELETE'}),
 
@@ -231,6 +298,48 @@ export interface ModelInfo {
   type: string;
 }
 
+// ── Category relation analysis ───────────────────────────────────────────────
+export interface RelationsPerClass {
+  label: string;
+  count: number;
+  compactness: number | null;
+  silhouette: number | null;
+  nearestOtherLabel: string | null;
+  nearestOtherSim: number | null;
+}
+export interface RelationsMislabel {
+  cropId: string;
+  url: string;
+  sourceImageId?: string | null;
+  instanceIndex?: number | null;
+  currentLabel: string;
+  suggestedLabel: string;
+  crossFraction: number;
+  suggestedShare: number;
+}
+export interface RelationsLinkageNode {
+  name: string | null;
+  height: number;
+  children: RelationsLinkageNode[];
+}
+export interface RelationsHeadline {
+  purity: number | null;
+  meanSilhouette: number | null;
+  nClasses: number;
+  nSamples: number;
+}
+export interface RelationsOut {
+  labels: string[];
+  counts: number[];
+  k: number;
+  confusion: number[][];
+  centroidSim: number[][];
+  perClass: RelationsPerClass[];
+  linkage: RelationsLinkageNode | null;
+  mislabels: RelationsMislabel[];
+  headline: RelationsHeadline;
+}
+
 export const InferenceApi = {
   listModels: () => request<ModelInfo[]>('/api/models'),
   listRuns: () => request<any[]>('/api/inference/runs'),
@@ -244,6 +353,10 @@ export const InferenceApi = {
     request<any>(`/api/inference/runs/${id}/projections/${algo}`),
   computeProjection: (id: string, algo: string) =>
     request<any>(`/api/inference/runs/${id}/projections/${algo}`, {method: 'POST'}),
+  getRelations: (id: string, k?: number) =>
+    request<RelationsOut>(
+      `/api/inference/runs/${id}/relations${k != null ? `?k=${k}` : ''}`,
+    ),
   listUploadCategories: () => request<any[]>('/api/inference/upload-categories'),
   createUploadCategory: (body: unknown) =>
     request<any>('/api/inference/upload-categories', jsonInit('POST', body)),

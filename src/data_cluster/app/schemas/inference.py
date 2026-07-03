@@ -129,3 +129,23 @@ class ProjectionOut(BaseModel):
     algorithm: str
     labels: list[str]
     points: list[dict[str, Any]]
+
+
+class RelationsOut(BaseModel):
+    """Inter-class relation analysis payload.
+
+    Raw matrices/lists are returned so the frontend can apply thresholds/warning
+    levels client-side (instant sliders). Keys are already camelCase.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    labels: list[str]
+    counts: list[int]
+    k: int
+    confusion: list[list[float]]
+    centroidSim: list[list[float]]
+    perClass: list[dict[str, Any]]
+    linkage: dict[str, Any] | None = None
+    mislabels: list[dict[str, Any]] = Field(default_factory=list)
+    headline: dict[str, Any]

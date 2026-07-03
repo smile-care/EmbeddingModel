@@ -1,9 +1,9 @@
 import asyncio
 import json
-import zipfile
 from io import BytesIO
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi.responses import FileResponse
 from PIL import Image as PILImage
 from sqlalchemy.orm import Session, selectinload
 
@@ -13,12 +13,17 @@ from data_cluster.app.models.db import (AnnotationRegion, CropImage, Dataset, De
                                         Image)
 from data_cluster.app.schemas.dataset import (AnnotationRegionOut, AnnotationSaveRequest,
                                               CropImageOut, DatasetCreateResponse,
-                                              DatasetDetail, DatasetSummary, DefectClassCreate,
+                                              DatasetDetail, DatasetImportStatus,
+                                              DatasetSummary, DefectClassCreate,
                                               DefectClassOut, DefectClassUpdate, ImageOut,
                                               ImageUploadResponse)
 from data_cluster.dl.crop import generate_crops_for_image
+from data_cluster.app.services.dataset_import_job import (run_images_import_job,
+                                                            run_zip_import_job,
+                                                            schedule_dataset_import)
+from data_cluster.app.services.dataset_import_progress import update_import_progress
 from data_cluster.app.services.storage import (dataset_upload_dir_bytes, delete_dataset_files,
-                                               ensure_upload_root, extract_zip_to_dataset,
+                                               ensure_upload_root, get_or_create_thumbnail,
                                                human_size, save_upload_file, url_to_fs_path)
 from data_cluster.app.services.dataset_import_log import log_import
 
@@ -79,6 +84,9 @@ def _serialize_summary(ds: Dataset, image_count: int | None = None) -> DatasetSu
         size=ds.size,
         items=image_count if image_count is not None else ds.items,
         status=ds.status,
+        import_progress=ds.import_progress,
+        import_stage=ds.import_stage,
+        import_message=ds.import_message,
         created_at=ds.created_at,
         updated_at=ds.updated_at,
         defect_classes=[_serialize_class(c) for c in sorted(ds.defect_classes, key=lambda c: (c.sort_order, c.name))],
@@ -151,6 +159,47 @@ async def list_datasets(db: Session = Depends(get_db)) -> list[DatasetSummary]:
     return [_serialize_summary(ds, image_count=cnt) for ds, cnt in rows]
 
 
+# Registered before "/{dataset_id}" so the literal path is not captured as an id.
+@router.get("/thumbnail")
+async def get_thumbnail(
+    url: str = Query(..., description="A /static/... image URL to thumbnail"),
+    size: int = Query(384, ge=32, le=1024),
+) -> FileResponse:
+    """Serve a small cached JPEG thumbnail for grid previews (lazy-generated)."""
+    if not url.startswith("/static/"):
+        raise HTTPException(status_code=400, detail="url must be a /static/ path")
+    settings = get_settings()
+    loop = asyncio.get_event_loop()
+    path = await loop.run_in_executor(None, get_or_create_thumbnail, settings, url, size)
+    if not path:
+        raise HTTPException(status_code=404, detail="Image not found")
+    return FileResponse(
+        path,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
+@router.get("/{dataset_id}/import-status", response_model=DatasetImportStatus)
+async def get_import_status(dataset_id: str, db: Session = Depends(get_db)) -> DatasetImportStatus:
+    loop = asyncio.get_event_loop()
+
+    def _query():
+        return db.get(Dataset, dataset_id)
+
+    ds = await loop.run_in_executor(None, _query)
+    if not ds:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    return DatasetImportStatus(
+        id=ds.id,
+        status=ds.status,
+        items=ds.items,
+        import_progress=ds.import_progress,
+        import_stage=ds.import_stage,
+        import_message=ds.import_message,
+    )
+
+
 @router.get("/{dataset_id}", response_model=DatasetDetail)
 async def get_dataset(dataset_id: str, db: Session = Depends(get_db)) -> DatasetDetail:
     loop = asyncio.get_event_loop()
@@ -196,7 +245,16 @@ async def create_dataset(
     loop = asyncio.get_event_loop()
 
     def _create_ds():
-        ds = Dataset(name=name, type=type, items=0, status="Processing", size=None)
+        ds = Dataset(
+            name=name,
+            type=type,
+            items=0,
+            status="Processing",
+            size=None,
+            import_stage="uploading",
+            import_progress=0.0,
+            import_message="正在接收文件…",
+        )
         db.add(ds)
         db.commit()
         db.refresh(ds)
@@ -209,59 +267,38 @@ async def create_dataset(
             log_import(f"[{ds.id}] 上传数据集「{name}」: 开始处理 zip ({zip_file.filename})")
             raw = await zip_file.read()
             log_import(f"[{ds.id}] zip 已接收 ({human_size(len(raw))})")
-            try:
-                records, total_bytes, url_annotations = await loop.run_in_executor(
-                    None, extract_zip_to_dataset, settings, ds.id, raw
-                )
-            except zipfile.BadZipFile as e:
-                raise HTTPException(status_code=400, detail="Invalid zip file") from e
-            await loop.run_in_executor(
-                None, _persist_zip_records, db, settings, ds, records, total_bytes, url_annotations
+            update_import_progress(
+                ds.id,
+                "extracting",
+                sub_progress=0.0,
+                message="文件已接收，开始解压…",
+                force=True,
             )
-            log_import(f"[{ds.id}] 数据集「{name}」导入完成")
+            schedule_dataset_import(run_zip_import_job, ds.id, name, raw)
         elif file_list:
             log_import(f"[{ds.id}] 上传数据集「{name}」: 开始处理 {len(file_list)} 张图片")
             contents_list = await asyncio.gather(*[f.read() for f in file_list])
-            results = await asyncio.gather(*[
-                save_upload_file(settings, ds.id, "", upload, contents=contents)
-                for upload, contents in zip(file_list, contents_list)
-            ])
-
-            def _persist_images():
-                total_bytes = 0
-                images = []
-                for i, ((url, nbytes), contents) in enumerate(zip(results, contents_list), 1):
-                    log_import(f"[{ds.id}] 保存图片 ({i}/{len(file_list)})")
-                    w, h = _image_dims(contents)
-                    img = Image(
-                        url=url,
-                        dataset_id=ds.id,
-                        file_path=str(url_to_fs_path(settings, url)),
-                        width=w,
-                        height=h,
-                        source="batch",
-                        annotation_status="unannotated",
-                    )
-                    images.append(img)
-                    total_bytes += nbytes
-                db.add_all(images)
-                # pre-register any class names supplied so the annotator has them ready
-                cache: dict[str, DefectClass] = {}
-                for label in labels:
-                    if label.strip():
-                        _get_or_create_class(db, ds.id, label, cache)
-                ds.items = len(images)
-                ds.size = human_size(total_bytes) if total_bytes else None
-                ds.status = "Ready"
-                db.commit()
-
-            await loop.run_in_executor(None, _persist_images)
-            log_import(f"[{ds.id}] 数据集「{name}」导入完成 ({len(file_list)} 张图片)")
+            payloads = [
+                (upload.filename or f"image_{i}.jpg", contents)
+                for i, (upload, contents) in enumerate(zip(file_list, contents_list), 1)
+            ]
+            update_import_progress(
+                ds.id,
+                "saving",
+                sub_progress=0.0,
+                message=f"开始保存 {len(payloads)} 张图片…",
+                force=True,
+            )
+            schedule_dataset_import(run_images_import_job, ds.id, name, payloads, labels)
         else:
             def _mark_ready():
                 ds.status = "Ready"
+                ds.import_stage = "done"
+                ds.import_progress = 100.0
+                ds.import_message = None
                 db.commit()
                 db.refresh(ds)
+
             await loop.run_in_executor(None, _mark_ready)
 
     except HTTPException:
@@ -271,8 +308,7 @@ async def create_dataset(
         await loop.run_in_executor(None, _rollback_dataset, db, settings, ds.id)
         raise
 
-    await loop.run_in_executor(None, db.refresh, ds)
-    return DatasetCreateResponse(id=ds.id, name=ds.name, items=ds.items)
+    return DatasetCreateResponse(id=ds.id, name=ds.name, items=ds.items, status=ds.status)
 
 
 def _rollback_dataset(db: Session, settings, dataset_id: str) -> None:
@@ -290,83 +326,6 @@ def _image_dims(contents: bytes) -> tuple[int | None, int | None]:
             return im.width, im.height
     except Exception:
         return None, None
-
-
-def _persist_zip_records(
-    db: Session,
-    settings,
-    dataset: Dataset,
-    records: list[tuple[str, str]],
-    total_bytes: int,
-    url_annotations: dict[str, dict],
-) -> None:
-    """Persist zip import: folder name -> DefectClass, sidecar labels -> regions."""
-    from data_cluster.app.models.db import Annotation
-
-    cache: dict[str, DefectClass] = {}
-    image_count = 0
-    annotated_images: list[Image] = []
-
-    log_import(
-        f"[{dataset.id}] 写入数据库: {len(records)} 张图片, "
-        f"{len(url_annotations)} 张带标注"
-    )
-
-    for category_name, url in records:
-        cls = _get_or_create_class(db, dataset.id, category_name, cache)
-        ann_data = url_annotations.get(url)
-        annotated = bool(ann_data and ann_data.get("labels"))
-        img = Image(
-            url=url,
-            dataset_id=dataset.id,
-            file_path=str(url_to_fs_path(settings, url)),
-            source="zip",
-            annotation_status="annotated" if annotated else "unannotated",
-        )
-        db.add(img)
-        db.flush()
-        image_count += 1
-
-        if ann_data:
-            db.add(Annotation(
-                image_id=img.id,
-                shape_type=ann_data.get("shape_type"),
-                network_type=ann_data.get("network_type"),
-                payload=dict(ann_data),
-            ))
-            for order, label in enumerate(ann_data.get("labels") or []):
-                if not isinstance(label, dict):
-                    continue
-                db.add(AnnotationRegion(
-                    image_id=img.id,
-                    class_id=None if label.get("isSubtract") else cls.id,
-                    points=label.get("points") or [],
-                    is_subtract=bool(label.get("isSubtract", False)),
-                    order=order,
-                ))
-        if annotated:
-            annotated_images.append(img)
-
-    dataset.items = image_count
-    dataset.size = human_size(total_bytes) if total_bytes else None
-    dataset.status = "Ready"
-    db.flush()
-
-    # Auto-generate crops for annotated images so the zip upload is truly one-click.
-    crop_total = len(annotated_images)
-    if crop_total:
-        log_import(f"[{dataset.id}] 开始生成裁剪图: {crop_total} 张原图")
-    for i, img in enumerate(annotated_images, 1):
-        db.expire(img, ["regions"])
-        try:
-            log_import(f"[{dataset.id}] 裁剪 ({i}/{crop_total}) image={img.id}")
-            crops = generate_crops_for_image(db=db, settings=settings, image=img, dataset_id=dataset.id)
-            log_import(f"[{dataset.id}] 裁剪 ({i}/{crop_total}) -> {len(crops)} 个 crop")
-        except Exception as exc:  # noqa: BLE001 - don't fail whole import on one bad image
-            log_import(f"[{dataset.id}] 裁剪失败 image={img.id}: {exc}")
-    if crop_total:
-        log_import(f"[{dataset.id}] 裁剪图生成完成")
-    db.commit()
 
 
 @router.delete("/{dataset_id}")

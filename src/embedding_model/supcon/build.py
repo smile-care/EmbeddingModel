@@ -10,6 +10,7 @@ stays in sync.
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any, Optional
 
 import torch
@@ -57,6 +58,64 @@ def _resolve_queue_size(moco_config: dict[str, Any]) -> int:
         return int(raw)
     except (TypeError, ValueError):
         return 16384
+
+
+def extract_model_state_dict(checkpoint: object) -> dict[str, torch.Tensor]:
+    """Parse ``model_state_dict`` / ``state_dict`` / ``model`` from a checkpoint."""
+    if not isinstance(checkpoint, dict):
+        raise ValueError(f"checkpoint 必须是 dict，当前类型: {type(checkpoint)}")
+
+    for key in ("model_state_dict", "state_dict", "model"):
+        state = checkpoint.get(key)
+        if isinstance(state, dict) and state:
+            return state
+
+    if checkpoint and all(isinstance(k, str) for k in checkpoint.keys()):
+        sample_keys = list(checkpoint.keys())[:5]
+        if any(
+            k.startswith(prefix)
+            for k in sample_keys
+            for prefix in (
+                "backbone.",
+                "query_encoder.",
+                "momentum_encoder.",
+                "feature_fusion.",
+                "projection_head.",
+            )
+        ):
+            return checkpoint  # type: ignore[return-value]
+
+    raise ValueError(
+        "无法在 checkpoint 中找到 model_state_dict / state_dict / model"
+    )
+
+
+def is_full_supcon_state_dict(state_dict: dict[str, torch.Tensor]) -> bool:
+    """True when the checkpoint includes trained fusion/head (not backbone-only)."""
+    return any(
+        "feature_fusion." in k or "projection_head." in k
+        for k in state_dict
+    )
+
+
+def normalize_state_dict_for_supcon_model(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Map MoCo ``query_encoder.*`` keys to ConvNeXtModel/ViTModel layout; drop momentum copy."""
+    normalized: dict[str, torch.Tensor] = {}
+    for key, value in state_dict.items():
+        if key.startswith("momentum_encoder."):
+            continue
+        if key.startswith("query_encoder."):
+            normalized[key[len("query_encoder."):]] = value
+        else:
+            normalized[key] = value
+    return normalized
+
+
+def is_full_supcon_checkpoint(path: str | Path) -> bool:
+    """Peek at a .pth file to see if it contains fusion/head weights."""
+    ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
+    state = extract_model_state_dict(ckpt)
+    return is_full_supcon_state_dict(state)
 
 
 def resolve_backbone_config(

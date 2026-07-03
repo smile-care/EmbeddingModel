@@ -24,7 +24,21 @@ async def lifespan(_app: FastAPI):
     # On startup, any experiment still marked "Running" means the process was
     # killed mid-training. Reset them so users can retry or delete them.
     _reset_stale_running_experiments()
+    _sweep_orphan_embedding_cache()
     yield
+
+
+def _sweep_orphan_embedding_cache() -> None:
+    """Drop cached embedding npz files whose inference run no longer exists."""
+    from data_cluster.app.models.db import InferenceRun
+    from data_cluster.app.services.embedding_cache import sweep_orphans
+
+    db = SessionLocal()
+    try:
+        valid = {r.id for r in db.query(InferenceRun.id).all()}
+    finally:
+        db.close()
+    sweep_orphans(get_settings(), valid)
 
 
 def _reset_stale_running_experiments() -> None:

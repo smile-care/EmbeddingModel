@@ -46,6 +46,7 @@ def denormalize_image(
 def plot_loss_curve(
     train_losses: List[float],
     val_losses: Optional[List[float]] = None,
+    val_epochs: Optional[List[int]] = None,
     save_path: Optional[str] = None,
     title: str = "Training Loss"
 ):
@@ -55,13 +56,17 @@ def plot_loss_curve(
     Args:
         train_losses: 训练损失列表
         val_losses: 验证损失列表（可选）
+        val_epochs: 验证对应的 epoch 编号（与 val_losses 等长；缺省则按 1..N 绘制）
         save_path: 保存路径
         title: 图表标题
     """
     plt.figure(figsize=(10, 6))
-    plt.plot(train_losses, label='Train Loss', linewidth=2)
+    plt.plot(range(1, len(train_losses) + 1), train_losses, label='Train Loss', linewidth=2)
     if val_losses:
-        plt.plot(val_losses, label='Val Loss', linewidth=2)
+        if val_epochs and len(val_epochs) == len(val_losses):
+            plt.plot(val_epochs, val_losses, label='Val Loss', linewidth=2, marker='o')
+        else:
+            plt.plot(val_losses, label='Val Loss', linewidth=2)
     plt.xlabel('Epoch', fontsize=12)
     plt.ylabel('Loss', fontsize=12)
     plt.title(title, fontsize=14)

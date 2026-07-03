@@ -65,6 +65,9 @@ class DatasetSummary(BaseModel):
     size: str | None = None
     items: int = 0
     status: str = "Ready"
+    import_progress: float = Field(default=0.0, serialization_alias="importProgress")
+    import_stage: str | None = Field(default=None, serialization_alias="importStage")
+    import_message: str | None = Field(default=None, serialization_alias="importMessage")
     created_at: datetime = Field(serialization_alias="createdAt")
     updated_at: datetime = Field(serialization_alias="updatedAt")
     defect_classes: list[DefectClassOut] = Field(default_factory=list, serialization_alias="defectClasses")
@@ -106,6 +109,18 @@ class DatasetCreateResponse(BaseModel):
     id: str
     name: str
     items: int
+    status: str = "Processing"
+
+
+class DatasetImportStatus(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, serialize_by_alias=True)
+
+    id: str
+    status: str
+    items: int = 0
+    import_progress: float = Field(default=0.0, serialization_alias="importProgress")
+    import_stage: str | None = Field(default=None, serialization_alias="importStage")
+    import_message: str | None = Field(default=None, serialization_alias="importMessage")
 
 
 class ImageUploadResponse(BaseModel):

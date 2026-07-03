@@ -1,12 +1,15 @@
+import hashlib
 import json
 import re
 import shutil
 import uuid
 import zipfile
+from collections.abc import Callable
 from io import BytesIO
 from pathlib import Path
 
 from fastapi import UploadFile
+from PIL import Image as PILImage
 
 from data_cluster.app.config import Settings
 from data_cluster.app.services.dataset_import_log import log_import
@@ -49,6 +52,48 @@ def url_to_fs_path(settings: Settings, url: str | None) -> Path | None:
     return settings.upload_dir / rel
 
 
+def thumbnails_dir(settings: Settings) -> Path:
+    """Directory holding cached JPEG thumbnails for grid previews."""
+    return settings.upload_dir / "_thumbnails"
+
+
+def get_or_create_thumbnail(
+    settings: Settings, static_url: str, size: int = 384
+) -> Path | None:
+    """Return a cached JPEG thumbnail for a ``/static/...`` image, generating it lazily.
+
+    The cache key includes the source mtime+size so edited/replaced files are
+    regenerated automatically. Returns ``None`` if the source is missing or
+    cannot be decoded.
+    """
+    src = url_to_fs_path(settings, static_url)
+    if not src or not src.is_file():
+        return None
+    try:
+        st = src.stat()
+    except OSError:
+        return None
+
+    key_src = f"{static_url}|{size}|{int(st.st_mtime)}|{st.st_size}"
+    key = hashlib.md5(key_src.encode("utf-8")).hexdigest()
+    out_dir = thumbnails_dir(settings)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out = out_dir / f"{key}.jpg"
+    if out.is_file():
+        return out
+
+    try:
+        with PILImage.open(src) as im:
+            im = im.convert("RGB")
+            im.thumbnail((size, size), PILImage.Resampling.LANCZOS)
+            tmp = out.with_suffix(".tmp.jpg")
+            im.save(tmp, format="JPEG", quality=80, optimize=True)
+            tmp.replace(out)
+    except Exception:
+        return None
+    return out
+
+
 def slug_model_folder(name: str) -> str:
     """Safe directory segment for a model name as shown in the UI (under checkpoints/)."""
     s = name.strip().replace(" ", "_")
@@ -81,10 +126,43 @@ def _count_common_prefix_depth(paths: list[str]) -> int:
     return depth
 
 
-def unique_filename(original: str) -> str:
+def _image_ext_from_bytes(data: bytes) -> str:
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return ".png"
+    if data[:2] == b"\xff\xd8":
+        return ".jpg"
+    if data[:2] == b"BM":
+        return ".bmp"
+    if data[:4] == b"GIF8":
+        return ".gif"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+
+def _file_stem(filename: str) -> str:
+    """Stem used to pair images with JSON sidecars (extensionless names stay as-is)."""
+    p = Path(filename)
+    ext = p.suffix.lower()
+    if ext in _IMAGE_EXTS or ext == ".json":
+        return p.stem
+    return filename
+
+
+def _is_zip_image(filename: str, json_stems: set[str]) -> bool:
+    ext = Path(filename).suffix.lower()
+    if ext in _IMAGE_EXTS:
+        return True
+    if ext == ".json":
+        return False
+    # Extensionless files are images when a matching .json sidecar exists.
+    return _file_stem(filename) in json_stems
+
+
+def unique_filename(original: str, *, content_ext: str | None = None) -> str:
     ext = Path(original).suffix.lower()
     if ext not in _IMAGE_EXTS:
-        ext = ".jpg"
+        ext = content_ext or ".jpg"
     return f"{uuid.uuid4().hex}{ext}"
 
 
@@ -163,10 +241,28 @@ async def save_upload_file(
     return original_static_url(dataset_id, fname), len(contents)
 
 
+def save_upload_bytes_sync(
+    settings: Settings,
+    dataset_id: str,
+    original: str,
+    contents: bytes,
+) -> tuple[str, int]:
+    """Synchronous variant used by background import jobs."""
+    ensure_upload_root(settings)
+    dest_dir = original_images_dir(settings, dataset_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    fname = unique_filename(original or "image.jpg")
+    path = dest_dir / fname
+    path.write_bytes(contents)
+    return original_static_url(dataset_id, fname), len(contents)
+
+
 def extract_zip_to_dataset(
     settings: Settings,
     dataset_id: str,
     data: bytes,
+    *,
+    on_extract_progress: Callable[[int, int, str], None] | None = None,
 ) -> tuple[list[tuple[str, str]], int, dict[str, dict]]:
     """Extract images and JSON annotations from a zip archive.
 
@@ -192,10 +288,26 @@ def extract_zip_to_dataset(
     with zipfile.ZipFile(BytesIO(data)) as zf:
         valid = [i for i in zf.infolist() if not i.is_dir() and is_safe_zip_path(i.filename)]
         strip_n = _count_common_prefix_depth([i.filename for i in valid])
+
+        json_stems_by_category: dict[str, set[str]] = {}
+        for info in valid:
+            parts = info.filename.replace("\\", "/").strip("/").split("/")[strip_n:]
+            if len(parts) < 2:
+                continue
+            filename = parts[-1]
+            if Path(filename).suffix.lower() == ".json":
+                category_name = parts[0]
+                json_stems_by_category.setdefault(category_name, set()).add(_file_stem(filename))
+
         image_total = 0
         for info in valid:
             parts = info.filename.replace("\\", "/").strip("/").split("/")[strip_n:]
-            if len(parts) >= 2 and Path(parts[-1]).suffix.lower() in _IMAGE_EXTS:
+            if len(parts) < 2:
+                continue
+            category_name = parts[0]
+            filename = parts[-1]
+            json_stems = json_stems_by_category.get(category_name, set())
+            if _is_zip_image(filename, json_stems):
                 image_total += 1
         log_import(f"[{dataset_id}] 开始解压 zip（约 {image_total} 张图片）")
         image_idx = 0
@@ -208,11 +320,12 @@ def extract_zip_to_dataset(
             filename = parts[-1]
             if not filename:
                 continue
-            stem = Path(filename).stem
+            stem = _file_stem(filename)
             ext = Path(filename).suffix.lower()
             key = (category_name, stem)
+            json_stems = json_stems_by_category.get(category_name, set())
 
-            if ext in _IMAGE_EXTS:
+            if _is_zip_image(filename, json_stems):
                 image_idx += 1
                 log_import(
                     f"[{dataset_id}] 解压 ({image_idx}/{image_total}) "
@@ -222,11 +335,14 @@ def extract_zip_to_dataset(
                 total_bytes += len(raw)
                 dest_dir = original_images_dir(settings, dataset_id)
                 dest_dir.mkdir(parents=True, exist_ok=True)
-                fname = unique_filename(filename)
+                detected_ext = _image_ext_from_bytes(raw) if ext not in _IMAGE_EXTS else None
+                fname = unique_filename(filename, content_ext=detected_ext)
                 (dest_dir / fname).write_bytes(raw)
                 url = original_static_url(dataset_id, fname)
                 records.append((category_name, url))
                 stem_to_url[key] = url
+                if on_extract_progress and image_total:
+                    on_extract_progress(image_idx, image_total, f"[{category_name}] {filename}")
 
             elif ext == ".json":
                 try:

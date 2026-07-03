@@ -1,15 +1,12 @@
 # ============================================================
 # DataCluster 平台配置文件
 # 此文件为 DataCluster 模块的独立配置，包括：
-#   1. 各 backbone 对应的预训练权重路径
+#   1. 各架构变体对应的预训练 Embedding 模型权重路径
 #   2. Web UI 训练/数据加载默认参数（epochs、batch_size 等）
 #   3. 存储路径
 #
-# 模型架构 / MoCo / 损失 与命令行训练共用 configs/supcon_config.yaml，
-# 由 supcon_config_path 指定，避免两套参数不一致导致权重无法复用。
-#
-# 注意：训练默认会加载下方 backbones.<backbone>.pretrained_path 指定的
-#       backbone 预训练权重（除非实验 config 显式提供 pretrainedPath 覆盖）。
+# 注意：训练默认会加载下方 pretrained_models.<backbone>.pretrained_path 指定的
+#       预训练权重（完整 SupCon 或仅 backbone；实验 config 可显式覆盖 pretrainedPath）。
 # ============================================================
 
 data_cluster:
@@ -17,21 +14,33 @@ data_cluster:
   # 与 scripts/train_supcon.py 共用的 SupCon 配置（model / moco / loss 等）
   supcon_config_path: "configs/supcon_config.yaml"
 
-  # ---------- Backbone 预训练权重配置 ----------
-  # key 对应 exp config 中的 backbone 参数
-  backbones:
+  # ---------- 预训练 Embedding 模型配置 ----------
+  # key：与实验 config 的 backbone 字段一致（架构标识，如 convnext_tiny），不是「仅 backbone 权重」。
+  # 每项包含：
+  #   backbone_config  - 该变体的 backbone 架构定义（configs/backbone/*.yaml）
+  #   pretrained_path  - Web 训练启动时加载的默认权重（见下方说明）
+  #
+  # pretrained_path 支持两类 checkpoint：
+  #   1. 完整 SupCon 权重（backbone + feature_fusion + projection_head）
+  #      推荐：命令行 MoCo 训练产物经 scripts/convert_checkpoint_to_weights.py --strip-moco 转换后使用
+  #      加载：strict=True 全量匹配；键名须与 ConvNeXtModel/ViTModel 一致（backbone.* 等，无 query_encoder. 前缀）
+  #   2. 仅 DINOv3 backbone（pretrain_ckpts/<backbone>.pth）
+  #      加载：构建时只注入 backbone.stages.*，fusion/head 随机初始化
+  #
+  # 实验 config 的 pretrainedPath 可覆盖此处路径（优先级更高）。
+  pretrained_models:
     convnext_tiny:
       backbone_config: "configs/backbone/convnext_tiny.yaml"
-      pretrained_path: "checkpoints/supcon_models/0701_convnext_tiny/checkpoint_epoch_100.pth"
-    # convnext_small:
-    #   backbone_config: "configs/backbone/convnext_small.yaml"
-    #   pretrained_path: "pretrain_ckpts/dinov3_convnext_small.pth"
-    # convnext_base:
-    #   backbone_config: "configs/backbone/convnext_base.yaml"
-    #   pretrained_path: "pretrain_ckpts/dinov3_convnext_base.pth"
-    # convnext_large:
-    #   backbone_config: "configs/backbone/convnext_large.yaml"
-    #   pretrained_path: "pretrain_ckpts/dinov3_convnext_large.pth"
+      pretrained_path: "checkpoints/supcon_models/0701_convnext_tiny/final_model.pth"
+
+
+  # ---------- 默认预训练模型（"默认预训练模型"选项使用） ----------
+  # 使用原始 DINOv3 backbone 权重 + 全局平均池化（无训练 head）。
+  # 这是"默认预训练模型"的唯一路径来源，避免在代码中写死。
+  # backbone_config 复用 pretrained_models.<backbone>.backbone_config，无需在此重复配置。
+  default_model:
+    backbone: "convnext_tiny"
+    pretrained_path: "pretrain_ckpts/convnext_tiny.pth"
 
   # ---------- 训练默认参数 ----------
   # Web UI 创建实验时可覆盖这些值
@@ -41,10 +50,10 @@ data_cluster:
     learning_rate: 1e-4
     weight_decay: 0.05
     backbone_lr_ratio: 0.1
-    save_interval: 5
     use_amp: false
-    eval_interval: 1
+    eval_interval: 10
     lr_scheduler: "cosine"   # 'cosine' | 'step'
+    # Web 训练仅保留最终 current_model.pth，不使用 save_interval
 
   training_strategy:
     freeze_backbone_epochs: 100
@@ -53,7 +62,7 @@ data_cluster:
   data:
     image_size: 224
     batch_size: 16
-    num_workers: 4
+    num_workers: 2
     pin_memory: true
     persistent_workers: true
     prefetch_factor: 2

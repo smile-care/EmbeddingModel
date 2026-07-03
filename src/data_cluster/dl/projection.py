@@ -1,10 +1,57 @@
 from typing import Literal
 
 import numpy as np
+import umap
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
 ProjectionMethod = Literal["tsne", "umap", "pca"]
+
+#: Cap for PCA pre-reduction fed into t-SNE/UMAP (denoise + speed up).
+_PCA_PREREDUCE_DIMS = 50
+
+
+def _pad_to_2d(coords: np.ndarray) -> np.ndarray:
+    """Guarantee an (n, 2) result even for degenerate 0/1-D projections."""
+    if coords.ndim == 1:
+        coords = coords.reshape(-1, 1)
+    if coords.shape[1] >= 2:
+        return coords[:, :2]
+    pad = np.zeros((coords.shape[0], 2 - coords.shape[1]), dtype=coords.dtype)
+    return np.hstack([coords, pad])
+
+
+def _l2_normalize(embeddings: np.ndarray) -> np.ndarray:
+    """Unit-normalize rows so Euclidean geometry matches cosine similarity.
+
+    Embeddings are compared by cosine elsewhere in the pipeline; normalizing up
+    front lets t-SNE use its PCA-friendly Euclidean path while still reflecting
+    cosine structure, and makes UMAP's cosine metric well-conditioned.
+    """
+    norms = np.linalg.norm(embeddings, axis=1, keepdims=True)
+    return embeddings / (norms + 1e-12)
+
+
+def _adaptive_perplexity(n: int) -> float:
+    """t-SNE perplexity ~2% of samples, clamped to [5, 50] and kept < n."""
+    target = float(np.clip(round(0.02 * n), 5, 50))
+    # sklearn requires perplexity < n; (n-1)/3 keeps it comfortably valid.
+    return max(2.0, min(target, (n - 1) / 3.0))
+
+
+def _adaptive_n_neighbors(n: int) -> int:
+    """UMAP n_neighbors ~2% of samples, clamped to [10, 50] and kept < n."""
+    target = int(np.clip(round(0.02 * n), 10, 50))
+    return max(2, min(target, n - 1))
+
+
+def _prereduce(embeddings: np.ndarray, n: int, random_state: int) -> np.ndarray:
+    """PCA-reduce high-dim embeddings before manifold learning when beneficial."""
+    d = embeddings.shape[1]
+    dims = min(_PCA_PREREDUCE_DIMS, d, n - 1)
+    if dims >= 2 and d > dims:
+        return PCA(n_components=dims, random_state=random_state).fit_transform(embeddings)
+    return embeddings
 
 
 def project_2d(
@@ -12,48 +59,47 @@ def project_2d(
     method: ProjectionMethod,
     random_state: int = 42,
 ) -> np.ndarray:
+    """Project embeddings to 2D with parameters auto-adapted to the sample count.
+
+    All tunables (perplexity, n_neighbors, PCA pre-reduction) are derived from the
+    number of samples ``n`` and dimensionality ``d`` so callers never need to pass
+    algorithm-specific knobs. Embeddings are L2-normalized so results reflect the
+    cosine geometry used elsewhere in the pipeline.
+    """
     n = embeddings.shape[0]
     if n == 0:
         return np.zeros((0, 2))
+
+    emb = _l2_normalize(np.asarray(embeddings, dtype=np.float64))
+
     if n < 3:
-        pca = PCA(n_components=min(2, n), random_state=random_state)
-        return pca.fit_transform(embeddings)
+        pca = PCA(n_components=min(2, n, emb.shape[1]), random_state=random_state)
+        return _pad_to_2d(pca.fit_transform(emb))
 
     if method == "pca":
-        pca = PCA(n_components=2, random_state=random_state)
-        return pca.fit_transform(embeddings)
+        pca = PCA(n_components=min(2, emb.shape[1]), random_state=random_state)
+        return _pad_to_2d(pca.fit_transform(emb))
 
     if method == "umap":
-        try:
-            import umap
+        reducer = umap.UMAP(
+            n_components=2,
+            n_neighbors=_adaptive_n_neighbors(n),
+            min_dist=0.1,
+            metric="cosine",
+            random_state=random_state,
+        )
+        return _pad_to_2d(reducer.fit_transform(emb))
 
-            n_neighbors = max(2, min(15, n - 1))
-            reducer = umap.UMAP(
-                n_components=2,
-                n_neighbors=n_neighbors,
-                min_dist=0.1,
-                random_state=random_state,
-            )
-            return reducer.fit_transform(embeddings)
-        except Exception:
-            pca = PCA(n_components=2, random_state=random_state)
-            return pca.fit_transform(embeddings)
-
-    # tsne
-    if n > 50:
-        pca = PCA(n_components=min(50, embeddings.shape[1]), random_state=random_state)
-        emb = pca.fit_transform(embeddings)
-    else:
-        emb = embeddings
-    perplexity = max(2.0, min(30.0, float(n - 1) / 3.0))
+    # tsne — Euclidean on L2-normalized (≈cosine), PCA pre-reduced + PCA init.
+    reduced = _prereduce(emb, n, random_state)
     tsne = TSNE(
         n_components=2,
-        perplexity=perplexity,
+        perplexity=_adaptive_perplexity(n),
         random_state=random_state,
         init="pca",
         learning_rate="auto",
     )
-    return tsne.fit_transform(emb)
+    return _pad_to_2d(tsne.fit_transform(reduced))
 
 
 def anomaly_scores_per_class(embeddings: np.ndarray, label_indices: np.ndarray) -> np.ndarray:

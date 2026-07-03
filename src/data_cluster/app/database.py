@@ -81,6 +81,11 @@ _ADDED_COLUMNS: dict[str, list[tuple[str, str]]] = {
         ("runProgress", "FLOAT DEFAULT 0"),
         ("runMetrics", "JSON"),
     ],
+    "Dataset": [
+        ("importProgress", "FLOAT DEFAULT 0"),
+        ("importStage", "VARCHAR"),
+        ("importMessage", "TEXT"),
+    ],
 }
 
 

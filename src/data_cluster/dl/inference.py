@@ -25,6 +25,7 @@ from data_cluster.dl.config_resolve import (
     load_dc_section,
     resolve_backbone_config_path,
     resolve_backbone_pretrained_path,
+    resolve_default_model,
 )
 from embedding_model.supcon.build import build_supcon_model
 from embedding_model.supcon.datasets.supcon_dataset import MaskSoftDilation
@@ -281,13 +282,14 @@ def compute_supcon_embeddings(
 
 
 def _build_default_model_config() -> tuple[dict[str, Any], int]:
-    """Resolve the fixed DINOv3 RAW ConvNeXt-Tiny config."""
+    """Resolve the DINOv3 RAW ConvNeXt config from data_cluster.yaml ``default_model``."""
     base = build_platform_supcon_base()
-    model_cfg = {
-        "backbone": "convnext_tiny",
-        "backbone_config_path": str(_REPO_ROOT / "configs" / "backbone" / "convnext_tiny.yaml"),
-        "pretrained_path": str(_REPO_ROOT / "pretrain_ckpts" / "convnext_tiny.pth"),
-    }
+    backbone, backbone_config_path, pretrained_path = resolve_default_model()
+    model_cfg: dict[str, Any] = {"backbone": backbone}
+    if backbone_config_path:
+        model_cfg["backbone_config_path"] = backbone_config_path
+    if pretrained_path:
+        model_cfg["pretrained_path"] = pretrained_path
 
     data_cfg = base.get("data", {})
     image_size = data_cfg.get("image_size", 224)

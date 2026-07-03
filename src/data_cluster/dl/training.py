@@ -497,9 +497,6 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
         config, "backboneLrRatio", "backbone_lr_ratio",
         default=float(sup["training"].get("backbone_lr_ratio", 0.1)),
     )
-    sup["training"]["save_interval"] = _coerce_int(
-        config, "saveInterval", "save_interval", default=sup["training"].get("save_interval", 5)
-    )
     sup["training"]["use_amp"] = _coerce_bool(
         config, "useAmp", "use_amp", default=bool(sup["training"].get("use_amp", False))
     )
@@ -531,7 +528,7 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
     if isinstance(embedding_dim, int) and embedding_dim > 0:
         sup["model"]["embedding_dim"] = embedding_dim
 
-    # 预训练权重路径：从 data_cluster.yaml 的 backbones.<backbone>.pretrained_path 加载
+    # 预训练权重路径：从 data_cluster.yaml 的 pretrained_models.<backbone>.pretrained_path 加载
     backbone_name = sup["model"].get("backbone", "convnext_tiny")
     pretrained_path = _resolve_backbone_pretrained_path(backbone_name, config)
     if pretrained_path:
@@ -611,6 +608,7 @@ def run_training_job(experiment_id: str) -> None:
         # Accumulate per-epoch series for live chart rendering
         live_train_losses: list[float] = []
         live_val_losses: list[float] = []
+        live_val_epochs: list[int] = []
         live_margins: list[float] = []
         live_pos_sims: list[float] = []
         live_neg_sims: list[float] = []
@@ -627,21 +625,23 @@ def run_training_job(experiment_id: str) -> None:
 
             if tm.get("loss") is not None:
                 live_train_losses.append(float(tm["loss"]))
+            epoch = int(payload.get("epoch", 0) or 0)
             if vm.get("loss") is not None:
                 live_val_losses.append(float(vm["loss"]))
-            if vm.get("margin") is not None:
-                live_margins.append(float(vm["margin"]))
-            if vm.get("PosSim") is not None:
-                live_pos_sims.append(float(vm["PosSim"]))
-            if vm.get("NegSim") is not None:
-                live_neg_sims.append(float(vm["NegSim"]))
+                if epoch > 0:
+                    live_val_epochs.append(epoch)
+                if vm.get("margin") is not None:
+                    live_margins.append(float(vm["margin"]))
+                if vm.get("PosSim") is not None:
+                    live_pos_sims.append(float(vm["PosSim"]))
+                if vm.get("NegSim") is not None:
+                    live_neg_sims.append(float(vm["NegSim"]))
 
             # 先检查停止标志（不需要 DB IO，极低开销）
             if _stop_flags.get(experiment_id):
                 return True
 
-            epoch = payload.get("epoch", 0)
-            total_epochs = payload.get("total_epochs", 1)
+            total_epochs = int(payload.get("total_epochs", 1) or 1)
             is_last_epoch = (epoch >= total_epochs)
             epochs_since_write = epoch - _last_db_write_epoch[0]
 
@@ -664,6 +664,7 @@ def run_training_job(experiment_id: str) -> None:
                     "liveSeries": {
                         "trainLosses": list(live_train_losses),
                         "valLosses": list(live_val_losses),
+                        "valEpochs": list(live_val_epochs),
                         "margins": list(live_margins),
                         "posSims": list(live_pos_sims),
                         "negSims": list(live_neg_sims),
@@ -696,6 +697,7 @@ def run_training_job(experiment_id: str) -> None:
         summary["liveSeries"] = {
             "trainLosses": live_train_losses,
             "valLosses": live_val_losses,
+            "valEpochs": live_val_epochs,
             "margins": live_margins,
             "posSims": live_pos_sims,
             "negSims": live_neg_sims,

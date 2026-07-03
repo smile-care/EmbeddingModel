@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import {computed, onMounted, onUnmounted, ref} from 'vue';
+import {computed, onMounted, onUnmounted, ref, watch} from 'vue';
 import {
   ArrowLeft, Database, ExternalLink, ImageIcon, Loader2, MoreVertical, PencilLine,
   Plus, Search, Settings2, Tag, Trash2, Upload, X,
 } from 'lucide-vue-next';
 import {
-  ApiError, DatasetsApi, classColor, staticUrl,
+  ApiError, DatasetsApi, classColor, staticUrl, thumbUrl,
   type AnnotationRegion, type CropImage, type DatasetDetail, type DatasetImage,
   type DatasetSummary, type DefectClass, type RegionInput,
 } from '@/lib/api';
@@ -68,7 +68,13 @@ onMounted(() => {
   void fetchDatasets();
   document.addEventListener('keydown', onKeyDown);
 });
-onUnmounted(() => document.removeEventListener('keydown', onKeyDown));
+onUnmounted(() => {
+  document.removeEventListener('keydown', onKeyDown);
+  window.removeEventListener('mousemove', onPanMove);
+  window.removeEventListener('mouseup', onPanEnd);
+  stopImportPolling();
+  if (listPollTimer) clearInterval(listPollTimer);
+});
 
 // ── Crop grouping (crops live inside images of the detail) ────────────────────
 const sourceImageMap = computed(() => {
@@ -128,8 +134,50 @@ const zipFile = ref<File | null>(null);
 const imageFiles = ref<File[]>([]);
 const uploading = ref(false);
 const uploadError = ref<string | null>(null);
+const uploadBytesProgress = ref(0);
+const importProgress = ref(0);
+const importMessage = ref<string | null>(null);
+const importStage = ref<string | null>(null);
+const activeImportId = ref<string | null>(null);
 const zipInputRef = ref<HTMLInputElement | null>(null);
 const imagesInputRef = ref<HTMLInputElement | null>(null);
+
+const IMPORT_STAGE_LABELS: Record<string, string> = {
+  uploading: '上传文件',
+  extracting: '解压 zip',
+  persisting: '写入数据库',
+  cropping: '生成裁剪图',
+  saving: '保存图片',
+  done: '完成',
+  failed: '失败',
+};
+
+const combinedUploadProgress = computed(() => {
+  if (!uploading.value) return 0;
+  if (importStage.value && importStage.value !== 'uploading') {
+    return Math.min(100, Math.round(15 + importProgress.value * 0.85));
+  }
+  return Math.round(uploadBytesProgress.value * 0.15);
+});
+
+const uploadProgressLabel = computed(() => {
+  if (importMessage.value) return importMessage.value;
+  if (importStage.value && IMPORT_STAGE_LABELS[importStage.value]) {
+    return IMPORT_STAGE_LABELS[importStage.value];
+  }
+  if (uploadBytesProgress.value > 0 && uploadBytesProgress.value < 100) {
+    return `上传文件 ${uploadBytesProgress.value}%`;
+  }
+  return '准备上传…';
+});
+
+function resetUploadProgress() {
+  uploadBytesProgress.value = 0;
+  importProgress.value = 0;
+  importMessage.value = null;
+  importStage.value = null;
+  activeImportId.value = null;
+}
 
 function resetUploadForm() {
   uploadName.value = '';
@@ -137,9 +185,69 @@ function resetUploadForm() {
   imageFiles.value = [];
   uploadError.value = null;
   uploadMode.value = 'zip';
+  resetUploadProgress();
   if (zipInputRef.value) zipInputRef.value.value = '';
   if (imagesInputRef.value) imagesInputRef.value.value = '';
 }
+
+let importPollTimer: ReturnType<typeof setInterval> | null = null;
+
+function stopImportPolling() {
+  if (importPollTimer) {
+    clearInterval(importPollTimer);
+    importPollTimer = null;
+  }
+}
+
+async function pollImportStatus(datasetId: string): Promise<'done' | 'failed' | 'processing' | 'missing'> {
+  try {
+    const st = await DatasetsApi.getImportStatus(datasetId);
+    importProgress.value = Math.round(st.importProgress ?? 0);
+    importStage.value = st.importStage ?? null;
+    importMessage.value = st.importMessage ?? null;
+    if (st.status === 'Ready' || st.importStage === 'done') return 'done';
+    if (st.status === 'Failed' || st.importStage === 'failed') return 'failed';
+    return 'processing';
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) return 'missing';
+    return 'processing';
+  }
+}
+
+function startImportPolling(datasetId: string, onComplete: () => void) {
+  stopImportPolling();
+  activeImportId.value = datasetId;
+  void pollImportStatus(datasetId);
+  importPollTimer = setInterval(async () => {
+    const result = await pollImportStatus(datasetId);
+    if (result === 'done') {
+      stopImportPolling();
+      onComplete();
+    } else if (result === 'failed' || result === 'missing') {
+      stopImportPolling();
+      uploadError.value = result === 'failed' ? '导入失败，请查看后端日志。' : '导入中断，数据集可能已被删除。';
+      uploading.value = false;
+      void fetchDatasets();
+    }
+  }, 1000);
+}
+
+const hasProcessingDatasets = computed(() =>
+  datasets.value.some((d) => d.status === 'Processing'),
+);
+
+let listPollTimer: ReturnType<typeof setInterval> | null = null;
+
+watch(hasProcessingDatasets, (processing) => {
+  if (listPollTimer) {
+    clearInterval(listPollTimer);
+    listPollTimer = null;
+  }
+  if (!processing) return;
+  listPollTimer = setInterval(() => {
+    void fetchDatasets();
+  }, 2000);
+}, {immediate: true});
 
 async function handleUploadSubmit(e: Event) {
   e.preventDefault();
@@ -161,13 +269,26 @@ async function handleUploadSubmit(e: Event) {
   }
 
   uploading.value = true;
+  resetUploadProgress();
+  importStage.value = 'uploading';
   try {
-    await DatasetsApi.create(form);
+    const created = await DatasetsApi.create(form, (pct) => {
+      uploadBytesProgress.value = pct;
+    });
+    uploadBytesProgress.value = 100;
+    importStage.value = 'extracting';
+    importProgress.value = 0;
+
+    await new Promise<void>((resolve) => {
+      startImportPolling(created.id, () => resolve());
+    });
+
     await fetchDatasets();
     uploadOpen.value = false;
     resetUploadForm();
   } catch (err) {
     uploadError.value = err instanceof ApiError ? err.message : 'Upload failed.';
+    stopImportPolling();
   } finally {
     uploading.value = false;
   }
@@ -330,13 +451,21 @@ const previewRegions = ref<PreviewRegion[]>([]);
 const showAnnotations = ref(true);
 const previewTraceCrop = ref<CropImage | null>(null);
 const zoom = ref(1);
+const pan = ref({x: 0, y: 0});
+const isPanning = ref(false);
+let panStart = {x: 0, y: 0, panX: 0, panY: 0};
+
+function resetView() {
+  zoom.value = 1;
+  pan.value = {x: 0, y: 0};
+}
 
 function openImagePreview(img: DatasetImage) {
   previewTraceCrop.value = null;
   previewImage.value = staticUrl(img.url);
   previewRegions.value = img.regions.map((r) => ({points: r.points, isSubtract: r.isSubtract, classId: r.classId}));
   showAnnotations.value = true;
-  zoom.value = 1;
+  resetView();
 }
 
 function openCropPreview(crop: CropImage) {
@@ -348,7 +477,7 @@ function openCropPreview(crop: CropImage) {
     classId: crop.classId,
   }));
   showAnnotations.value = true;
-  zoom.value = 1;
+  resetView();
 }
 
 function traceToSource() {
@@ -362,13 +491,14 @@ function traceToSource() {
     ? [{points: region.points, isSubtract: region.isSubtract, classId: region.classId}]
     : src.regions.map((r) => ({points: r.points, isSubtract: r.isSubtract, classId: r.classId}));
   previewTraceCrop.value = null;
-  zoom.value = 1;
+  resetView();
 }
 
 function closePreview() {
   previewImage.value = null;
   previewRegions.value = [];
   previewTraceCrop.value = null;
+  resetView();
 }
 
 function onKeyDown(e: KeyboardEvent) {
@@ -381,7 +511,29 @@ function onKeyDown(e: KeyboardEvent) {
 }
 function onPreviewWheel(e: WheelEvent) {
   e.preventDefault();
-  zoom.value = Math.min(6, Math.max(0.35, zoom.value * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  const next = Math.min(6, Math.max(0.35, zoom.value * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
+  zoom.value = next;
+  if (next <= 1) pan.value = {x: 0, y: 0};
+}
+
+function onPanStart(e: MouseEvent) {
+  if (e.button !== 0) return;
+  isPanning.value = true;
+  panStart = {x: e.clientX, y: e.clientY, panX: pan.value.x, panY: pan.value.y};
+  window.addEventListener('mousemove', onPanMove);
+  window.addEventListener('mouseup', onPanEnd);
+}
+function onPanMove(e: MouseEvent) {
+  if (!isPanning.value) return;
+  pan.value = {
+    x: panStart.panX + (e.clientX - panStart.x),
+    y: panStart.panY + (e.clientY - panStart.y),
+  };
+}
+function onPanEnd() {
+  isPanning.value = false;
+  window.removeEventListener('mousemove', onPanMove);
+  window.removeEventListener('mouseup', onPanEnd);
 }
 </script>
 
@@ -439,7 +591,7 @@ function onPreviewWheel(e: WheelEvent) {
           :key="img.id"
           class="group relative aspect-square overflow-hidden rounded-lg border border-border"
         >
-          <img :src="staticUrl(img.url)" alt="" class="h-full w-full cursor-pointer object-cover" @click="openImagePreview(img)" />
+          <img :src="thumbUrl(img.url, 384)" alt="" loading="lazy" decoding="async" class="h-full w-full cursor-pointer bg-secondary/20 object-cover" @click="openImagePreview(img)" />
           <!-- status badge -->
           <div
             class="absolute left-1 top-1 rounded px-1.5 py-0.5 text-[9px] font-medium leading-none"
@@ -488,7 +640,7 @@ function onPreviewWheel(e: WheelEvent) {
             class="group relative aspect-square cursor-pointer overflow-hidden rounded-md border border-border transition-transform hover:scale-[1.03]"
             @click="openCropPreview(crop)"
           >
-            <img :src="staticUrl(crop.url)" alt="" class="h-full w-full object-cover" />
+            <img :src="thumbUrl(crop.url, 200)" alt="" loading="lazy" decoding="async" class="h-full w-full bg-secondary/20 object-cover" />
             <div class="absolute inset-0 flex items-center justify-center bg-black/40 opacity-0 transition-opacity group-hover:opacity-100">
               <ExternalLink class="h-4 w-4 text-white" />
             </div>
@@ -577,9 +729,22 @@ function onPreviewWheel(e: WheelEvent) {
             <td class="px-6 py-4 text-muted-foreground">{{ ds.size ?? '—' }}</td>
             <td class="px-6 py-4 text-muted-foreground">{{ ds.items }}</td>
             <td class="px-6 py-4">
+              <div v-if="ds.status === 'Processing'" class="min-w-[8rem] space-y-1">
+                <div class="flex items-center justify-between gap-2 text-xs">
+                  <span class="text-amber-500">{{ ds.importMessage || IMPORT_STAGE_LABELS[ds.importStage ?? ''] || 'Processing' }}</span>
+                  <span class="shrink-0 tabular-nums text-muted-foreground">{{ Math.round(ds.importProgress ?? 0) }}%</span>
+                </div>
+                <div class="h-1.5 overflow-hidden rounded-full bg-secondary/60">
+                  <div
+                    class="h-full rounded-full bg-amber-500 transition-[width] duration-300"
+                    :style="{width: `${Math.round(ds.importProgress ?? 0)}%`}"
+                  />
+                </div>
+              </div>
               <span
+                v-else
                 class="rounded-full px-2 py-1 text-xs"
-                :class="ds.status === 'Ready' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-amber-500/10 text-amber-500'"
+                :class="ds.status === 'Ready' ? 'bg-emerald-500/10 text-emerald-500' : 'bg-rose-500/10 text-rose-500'"
               >{{ ds.status }}</span>
             </td>
             <td class="relative px-6 py-4 text-right" :class="activeMenuId === ds.id && 'z-30'">
@@ -717,9 +882,21 @@ function onPreviewWheel(e: WheelEvent) {
               </button>
             </template>
             <p v-if="uploadError" class="text-xs text-rose-500">{{ uploadError }}</p>
+            <div v-if="uploading" class="space-y-2 rounded-lg border border-border bg-secondary/10 px-3 py-3">
+              <div class="flex items-center justify-between gap-3 text-xs">
+                <span class="truncate text-muted-foreground">{{ uploadProgressLabel }}</span>
+                <span class="shrink-0 font-medium tabular-nums">{{ combinedUploadProgress }}%</span>
+              </div>
+              <div class="h-2 overflow-hidden rounded-full bg-secondary/60">
+                <div
+                  class="h-full rounded-full bg-primary transition-[width] duration-300 ease-out"
+                  :style="{width: `${combinedUploadProgress}%`}"
+                />
+              </div>
+            </div>
             <div class="flex justify-end gap-2 pt-2">
               <button type="button" :disabled="uploading" class="rounded-md border border-border px-3 py-2 text-sm hover:bg-secondary/50" @click="uploadOpen = false">Cancel</button>
-              <button type="submit" :disabled="uploading" class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">{{ uploading ? 'Uploading…' : 'Upload' }}</button>
+              <button type="submit" :disabled="uploading" class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">{{ uploading ? 'Processing…' : 'Upload' }}</button>
             </div>
           </form>
         </div>
@@ -739,8 +916,17 @@ function onPreviewWheel(e: WheelEvent) {
             <button class="flex h-8 w-8 items-center justify-center rounded-full bg-black/50 text-white hover:bg-white/20" @click="closePreview"><X class="h-4 w-4" /></button>
           </div>
         </div>
-        <div class="relative flex h-full w-full items-center justify-center overflow-hidden" @click.stop @wheel.prevent="onPreviewWheel">
-          <div class="relative inline-block leading-none" :style="{transform: `scale(${zoom})`, transition: 'transform 0.15s ease'}">
+        <div
+          class="relative flex h-full w-full items-center justify-center overflow-hidden"
+          :class="zoom > 1 ? (isPanning ? 'cursor-grabbing' : 'cursor-grab') : ''"
+          @click.stop
+          @wheel.prevent="onPreviewWheel"
+          @mousedown="onPanStart"
+        >
+          <div
+            class="relative inline-block leading-none"
+            :style="{transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transition: isPanning ? 'none' : 'transform 0.15s ease'}"
+          >
             <img :src="previewImage" alt="Preview" class="block max-h-[calc(100vh-6rem)] w-auto max-w-[calc(100vw-4rem)] rounded-xl shadow-2xl" draggable="false" />
             <svg v-if="previewRegions.length && showAnnotations" class="pointer-events-none absolute inset-0 h-full w-full rounded-xl" viewBox="0 0 1 1" preserveAspectRatio="none">
               <polygon
@@ -755,7 +941,7 @@ function onPreviewWheel(e: WheelEvent) {
             </svg>
           </div>
         </div>
-        <p class="pointer-events-none absolute bottom-3 left-0 right-0 text-center text-[11px] text-white/25">Scroll to zoom · Space toggles labels · Esc to close</p>
+        <p class="pointer-events-none absolute bottom-3 left-0 right-0 text-center text-[11px] text-white/25">Scroll to zoom · Drag to pan · Space toggles labels · Esc to close</p>
       </div>
     </Transition>
   </Teleport>

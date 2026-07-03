@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     project_root: Path = _repo_root()
     static_mount_path: str = "/static"
     checkpoints_dir: Path = Path("data/data_cluster/checkpoints")
+    #: Regenerable per-run full-dim embedding cache (npz) for relation analysis.
+    inference_cache_dir: Path = Path("data/data_cluster/inference_cache")
 
     def model_post_init(self, __context) -> None:
         root = self.project_root.resolve()
@@ -25,6 +27,8 @@ class Settings(BaseSettings):
             self.upload_dir = (root / self.upload_dir).resolve()
         if not self.checkpoints_dir.is_absolute():
             self.checkpoints_dir = (root / self.checkpoints_dir).resolve()
+        if not self.inference_cache_dir.is_absolute():
+            self.inference_cache_dir = (root / self.inference_cache_dir).resolve()
 
         url = self.database_url
         sqlite_prefix = "sqlite:///"

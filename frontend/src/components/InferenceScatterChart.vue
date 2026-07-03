@@ -20,7 +20,7 @@ import VChart from 'vue-echarts';
 import type {ECharts} from 'echarts';
 import {categoryChartColor, staticUrl} from '@/lib/api';
 
-const props = defineProps<{plotData: PlotPoint[]; labelList: string[]}>();
+const props = defineProps<{plotData: PlotPoint[]; labelList: string[]; highlightLabels?: string[]}>();
 const emit = defineEmits<{preview: [point: PlotPoint]}>();
 
 type ChartPublicApi = {
@@ -318,15 +318,18 @@ onBeforeUnmount(() => {
 const chartOption = computed(() => {
   const clusters = [...new Set(props.plotData.map((p) => p.cluster))].sort((a, b) => a - b);
   const n = props.labelList.length || clusters.length;
+  const hl = props.highlightLabels && props.highlightLabels.length ? new Set(props.highlightLabels) : null;
   const series = clusters.map((ci) => {
     const pts = props.plotData.filter((p) => p.cluster === ci);
     const label = pts[0]?.label || props.labelList[ci] || `Cluster ${ci + 1}`;
     const color = categoryChartColor(ci, n);
+    const dimmed = hl != null && !hl.has(label);
     return {
       name: label,
       type: 'scatter',
-      symbolSize: 9,
-      itemStyle: {color, borderColor: 'transparent'},
+      symbolSize: dimmed ? 6 : 9,
+      itemStyle: {color, borderColor: 'transparent', opacity: dimmed ? 0.12 : 1},
+      z: dimmed ? 1 : 5,
       data: pts.map((p) => ({
         value: [p.x, p.y],
         raw: p,

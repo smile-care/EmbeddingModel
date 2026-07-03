@@ -132,6 +132,9 @@ const trainLosses = computed<number[]>(() =>
 const valLosses = computed<number[]>(() =>
   liveSeries.value?.valLosses ?? summary.value?.val_losses ?? [],
 );
+const valEpochs = computed<number[]>(() =>
+  liveSeries.value?.valEpochs ?? summary.value?.val_epochs ?? [],
+);
 const liveMargins = computed<number[]>(() => liveSeries.value?.margins ?? []);
 const livePosSims = computed<number[]>(() => liveSeries.value?.posSims ?? []);
 const liveNegSims = computed<number[]>(() => liveSeries.value?.negSims ?? []);
@@ -143,10 +146,48 @@ const lastTrainMetrics = computed(() =>
   bodyMetrics.value?.train ?? summary.value?.last_train_metrics ?? null,
 );
 
-const epochs = computed(() => {
-  const len = Math.max(trainLosses.value.length, valLosses.value.length);
-  return Array.from({length: len}, (_, i) => i + 1);
+const epochs = computed(() =>
+  Array.from({length: trainLosses.value.length}, (_, i) => i + 1),
+);
+
+/** 将稀疏验证序列按真实 epoch 对齐到与 train 相同的横轴（非验证 epoch 为 null）。 */
+function alignSeriesToEpochs(
+  series: number[],
+  evalEpochs: number[],
+  totalEpochs: number,
+): (number | null)[] {
+  const data: (number | null)[] = Array(totalEpochs).fill(null);
+  for (let i = 0; i < series.length; i++) {
+    const ep = evalEpochs[i] ?? i + 1;
+    if (ep >= 1 && ep <= totalEpochs) {
+      data[ep - 1] = series[i];
+    }
+  }
+  return data;
+}
+
+const resolvedValEpochs = computed(() => {
+  const losses = valLosses.value;
+  const recorded = valEpochs.value;
+  if (recorded.length === losses.length && recorded.length > 0) {
+    return recorded;
+  }
+  // 旧数据无 valEpochs 时回退为连续编号（与历史行为一致）
+  return losses.map((_, i) => i + 1);
 });
+
+const valLossSeriesData = computed(() =>
+  alignSeriesToEpochs(valLosses.value, resolvedValEpochs.value, trainLosses.value.length),
+);
+const marginSeriesData = computed(() =>
+  alignSeriesToEpochs(liveMargins.value, resolvedValEpochs.value, trainLosses.value.length),
+);
+const posSimSeriesData = computed(() =>
+  alignSeriesToEpochs(livePosSims.value, resolvedValEpochs.value, trainLosses.value.length),
+);
+const negSimSeriesData = computed(() =>
+  alignSeriesToEpochs(liveNegSims.value, resolvedValEpochs.value, trainLosses.value.length),
+);
 
 function getNumericMetric(source: Record<string, any> | null | undefined, ...keys: string[]) {
   for (const key of keys) {
@@ -158,9 +199,7 @@ function getNumericMetric(source: Record<string, any> | null | undefined, ...key
   return null;
 }
 
-const marginEpochs = computed(() =>
-  Array.from({length: liveMargins.value.length}, (_, i) => i + 1),
-);
+const marginEpochs = computed(() => epochs.value);
 
 const valMargin = computed(() => {
   const v = getNumericMetric(lastValMetrics.value, 'Margin', 'margin');
@@ -286,8 +325,10 @@ const lossChartOption = computed(() => ({
   tooltip: {
     ...TOOLTIP_STYLE,
     formatter: (params: any[]) => {
-      const epoch = params[0].dataIndex + 1;
-      const rows = params.map(
+      const epoch = epochs.value[params[0].dataIndex] ?? params[0].dataIndex + 1;
+      const rows = params
+        .filter((p) => p.value != null && p.value !== '')
+        .map(
         (p) => `<div style="display:flex;justify-content:space-between;gap:16px;margin-top:4px">` +
           `<span style="color:#a1a1aa">${p.marker}${p.seriesName}</span>` +
           `<b>${Number(p.value).toFixed(4)}</b></div>`,
@@ -305,7 +346,8 @@ const lossChartOption = computed(() => ({
       itemStyle: {color: '#a855f7'},
     },
     ...(valLosses.value.length > 0 ? [{
-      name: 'Val Loss', type: 'line', data: valLosses.value,
+      name: 'Val Loss', type: 'line', data: valLossSeriesData.value,
+      connectNulls: true,
       smooth: 0.3, symbolSize: 4,
       lineStyle: {color: '#10b981', width: 2, type: 'dashed'},
       itemStyle: {color: '#10b981'},
@@ -324,8 +366,10 @@ const marginChartOption = computed(() => ({
   tooltip: {
     ...TOOLTIP_STYLE,
     formatter: (params: any[]) => {
-      const epoch = params[0].dataIndex + 1;
-      const rows = params.map(
+      const epoch = marginEpochs.value[params[0].dataIndex] ?? params[0].dataIndex + 1;
+      const rows = params
+        .filter((p) => p.value != null && p.value !== '')
+        .map(
         (p) => `<div style="display:flex;justify-content:space-between;gap:16px;margin-top:4px">` +
           `<span style="color:#a1a1aa">${p.marker}${p.seriesName}</span>` +
           `<b>${Number(p.value).toFixed(4)}</b></div>`,
@@ -337,19 +381,22 @@ const marginChartOption = computed(() => ({
   yAxis: valueYAxis((v) => v.toFixed(2)),
   series: [
     {
-      name: 'Pos Sim', type: 'line', data: livePosSims.value,
+      name: 'Pos Sim', type: 'line', data: posSimSeriesData.value,
+      connectNulls: true,
       smooth: 0.3, symbolSize: 4,
       lineStyle: {color: '#10b981', width: 2},
       itemStyle: {color: '#10b981'},
     },
     {
-      name: 'Neg Sim', type: 'line', data: liveNegSims.value,
+      name: 'Neg Sim', type: 'line', data: negSimSeriesData.value,
+      connectNulls: true,
       smooth: 0.3, symbolSize: 4,
       lineStyle: {color: '#f43f5e', width: 2},
       itemStyle: {color: '#f43f5e'},
     },
     {
-      name: 'Margin', type: 'line', data: liveMargins.value,
+      name: 'Margin', type: 'line', data: marginSeriesData.value,
+      connectNulls: true,
       smooth: 0.3, symbolSize: 4,
       lineStyle: {color: '#f59e0b', width: 2, type: 'dashed'},
       itemStyle: {color: '#f59e0b'},

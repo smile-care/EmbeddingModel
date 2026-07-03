@@ -13,11 +13,14 @@ from data_cluster.app.schemas.inference import (AnalyzeRequest, AnalyzeResponse,
                                                 InferenceRunAnalyzeUpload, InferenceRunCreate,
                                                 InferenceRunDetail, InferenceRunPatch,
                                                 InferenceRunSummary, ModelInfo, PlotPoint,
-                                                ProjectionOut, UploadCategoryCreate,
+                                                ProjectionOut, RelationsOut, UploadCategoryCreate,
                                                 UploadCategoryOut, UploadCategoryPatch)
+from data_cluster.app.services.embedding_cache import (delete_embeddings, load_embeddings,
+                                                       save_embeddings)
 from data_cluster.app.services.storage import url_to_fs_path
 from data_cluster.dl.projection import (anomaly_scores_per_class, anomaly_scores_vs_golden,
                                         project_2d)
+from data_cluster.dl.relations import CropMeta, compute_relations
 from data_cluster.dl.inference import (DEFAULT_MODEL_ID, DEFAULT_MODEL_NAME,
                                        INDUSTRIAL_MODEL_ID, INDUSTRIAL_MODEL_NAME,
                                        compute_default_embeddings,
@@ -299,6 +302,7 @@ async def delete_inference_run(run_id: str, db: Session = Depends(get_db)) -> di
             raise HTTPException(status_code=404, detail="Inference run not found")
         db.delete(row)
         db.commit()
+        delete_embeddings(get_settings(), run_id)
 
     await loop.run_in_executor(None, _delete)
     return {"success": True}
@@ -341,7 +345,7 @@ async def execute_inference_run(
                 class_ids=list(row.selected_class_ids or []),
             )
             # 推理计算（GPU/CPU 密集）放线程池，不阻塞事件循环
-            resp = await loop.run_in_executor(None, _analyze_embeddings, req, db)
+            resp = await loop.run_in_executor(None, _analyze_embeddings, req, db, run_id)
             labels = list(resp.labels)
             points = [p.model_dump(by_alias=True) for p in resp.points]
 
@@ -433,7 +437,8 @@ async def compute_run_projection(
         golden_crop_ids=list(row.golden_crop_ids or []),
         class_ids=list(row.selected_class_ids or []),
     )
-    resp = await loop.run_in_executor(None, _analyze_embeddings, req, db)
+    # Reuse the cached embeddings: switching algorithm only reruns project_2d.
+    resp = await loop.run_in_executor(None, _analyze_embeddings, req, db, run_id)
     labels = list(resp.labels)
     points = [p.model_dump(by_alias=True) for p in resp.points]
 
@@ -466,37 +471,18 @@ async def list_models(db: Session = Depends(get_db)) -> list[ModelInfo]:
     return models
 
 
-def _analyze_embeddings(req: AnalyzeRequest, db: Session) -> AnalyzeResponse:
-    settings = get_settings()
+def _resolve_analysis_rows(
+    req: AnalyzeRequest, db: Session
+) -> tuple[list[tuple[CropImage, str, int]], list[str], np.ndarray]:
+    """Validate dataset/classes and build the ordered crop rows (no GPU work)."""
     ds = (
         db.query(Dataset)
-        .options(
-            selectinload(Dataset.crop_images).selectinload(CropImage.defect_class),
-        )
+        .options(selectinload(Dataset.crop_images).selectinload(CropImage.defect_class))
         .filter(Dataset.id == req.dataset_id)
         .first()
     )
     if not ds:
         raise HTTPException(status_code=404, detail="Dataset not found")
-
-    eid = req.experiment_id or req.model_id
-    use_default = (not eid) or eid == DEFAULT_MODEL_ID
-    use_industrial = eid == INDUSTRIAL_MODEL_ID
-
-    exp: Experiment | None = None
-    checkpoint_path: Path | None = None
-    if not use_default and not use_industrial:
-        exp = db.get(Experiment, eid)
-        if not exp:
-            # Unknown model id: fall back to the default pretrained backbone.
-            use_default = True
-        else:
-            checkpoint = exp.checkpoint_path
-            if not checkpoint:
-                raise HTTPException(status_code=422, detail="所选实验没有 checkpoint_path，无法进行推理。")
-            checkpoint_path = Path(checkpoint)
-            if not checkpoint_path.is_file():
-                raise HTTPException(status_code=422, detail=f"模型 checkpoint 不存在: {checkpoint_path}")
 
     if req.class_ids and len(req.class_ids) < 2:
         raise HTTPException(status_code=422, detail="至少需要选择 2 个类别进行分析。")
@@ -510,34 +496,111 @@ def _analyze_embeddings(req: AnalyzeRequest, db: Session) -> AnalyzeResponse:
             status_code=422,
             detail="至少需要 2 个类别且每个类别有可用 crop 才能进行分析。",
         )
-
     if not rows:
         raise HTTPException(
             status_code=422,
             detail="当前数据集没有可用于分析的 crop 图片，请先生成裁剪图。",
         )
 
-    paths = []
-    mask_paths = []
-    label_indices = []
-    for crop, _name, li in rows:
-        paths.append(_crop_fs_path(settings, crop))
-        mask_paths.append(_crop_mask_fs_path(settings, crop))
-        label_indices.append(li)
-    label_arr = np.array(label_indices, dtype=int)
+    label_arr = np.array([li for _crop, _name, li in rows], dtype=int)
+    return rows, label_names, label_arr
+
+
+def _compute_run_embeddings(
+    req: AnalyzeRequest, db: Session, rows: list[tuple[CropImage, str, int]]
+) -> np.ndarray:
+    """Run the (GPU) forward pass for the resolved rows."""
+    settings = get_settings()
+    eid = req.experiment_id or req.model_id
+    use_default = (not eid) or eid == DEFAULT_MODEL_ID
+    use_industrial = eid == INDUSTRIAL_MODEL_ID
+
+    exp: Experiment | None = None
+    checkpoint_path: Path | None = None
+    if not use_default and not use_industrial:
+        exp = db.get(Experiment, eid)
+        if not exp:
+            use_default = True
+        else:
+            checkpoint = exp.checkpoint_path
+            if not checkpoint:
+                raise HTTPException(status_code=422, detail="所选实验没有 checkpoint_path，无法进行推理。")
+            checkpoint_path = Path(checkpoint)
+            if not checkpoint_path.is_file():
+                raise HTTPException(status_code=422, detail=f"模型 checkpoint 不存在: {checkpoint_path}")
+
+    paths = [_crop_fs_path(settings, crop) for crop, _n, _li in rows]
+    mask_paths = [_crop_mask_fs_path(settings, crop) for crop, _n, _li in rows]
 
     if use_default:
-        emb = compute_default_embeddings(image_paths=paths, mask_paths=mask_paths)
-    elif use_industrial:
-        emb = compute_industrial_pretrained_embeddings(image_paths=paths, mask_paths=mask_paths)
-    else:
-        assert checkpoint_path is not None and exp is not None
-        emb = compute_supcon_embeddings(
-            checkpoint_path=checkpoint_path,
-            image_paths=paths,
-            mask_paths=mask_paths,
-            exp_config=exp.config if isinstance(exp.config, dict) else None,
+        return compute_default_embeddings(image_paths=paths, mask_paths=mask_paths)
+    if use_industrial:
+        return compute_industrial_pretrained_embeddings(image_paths=paths, mask_paths=mask_paths)
+    assert checkpoint_path is not None and exp is not None
+    return compute_supcon_embeddings(
+        checkpoint_path=checkpoint_path,
+        image_paths=paths,
+        mask_paths=mask_paths,
+        exp_config=exp.config if isinstance(exp.config, dict) else None,
+    )
+
+
+def _model_cache_key(req: AnalyzeRequest) -> str:
+    """Stable identifier for the model producing embeddings (cache invalidation)."""
+    return str(req.experiment_id or req.model_id or DEFAULT_MODEL_ID)
+
+
+def _load_or_compute_embeddings(
+    req: AnalyzeRequest,
+    db: Session,
+    rows: list[tuple[CropImage, str, int]],
+    label_names: list[str],
+    label_arr: np.ndarray,
+    run_id: str | None,
+) -> np.ndarray:
+    """Return embeddings for rows, reusing the per-run npz cache when it matches.
+
+    The cache is keyed by run and validated against the current model, crop id
+    ordering and label set, so a stale cache (model switched, dataset edited,
+    classes changed) is recomputed instead of silently reused.
+    """
+    settings = get_settings()
+    crop_ids = [crop.id for crop, _n, _li in rows]
+    model_key = _model_cache_key(req)
+
+    if run_id:
+        cached = load_embeddings(settings, run_id)
+        if (
+            cached is not None
+            and cached.get("model_key") == model_key
+            and cached["crop_ids"] == crop_ids
+            and cached["label_names"] == label_names
+            and cached["emb"].shape[0] == len(crop_ids)
+        ):
+            return cached["emb"]
+
+    emb = _compute_run_embeddings(req, db, rows)
+    if run_id:
+        save_embeddings(
+            settings,
+            run_id,
+            emb=emb,
+            crop_ids=crop_ids,
+            label_indices=label_arr,
+            label_names=label_names,
+            model_key=model_key,
         )
+    return emb
+
+
+def _analyze_embeddings(
+    req: AnalyzeRequest,
+    db: Session,
+    run_id: str | None = None,
+) -> AnalyzeResponse:
+    rows, label_names, label_arr = _resolve_analysis_rows(req, db)
+    emb = _load_or_compute_embeddings(req, db, rows, label_names, label_arr, run_id)
+
     coords = project_2d(emb, req.method)
 
     # Golden-anchored anomaly when reference crops are supplied; else self-anchored.
@@ -570,7 +633,51 @@ def _analyze_embeddings(req: AnalyzeRequest, db: Session) -> AnalyzeResponse:
     return AnalyzeResponse(points=points, labels=label_names)
 
 
+def _compute_run_relations(run_id: str, db: Session, k: int | None) -> RelationsOut:
+    row = db.get(InferenceRun, run_id)
+    if not row:
+        raise HTTPException(status_code=404, detail="Inference run not found")
+    if row.dataset_mode != "existing" or not row.dataset_id:
+        raise HTTPException(
+            status_code=400, detail="关系分析仅支持 existing 数据集模式的推理任务。"
+        )
+
+    req = AnalyzeRequest(
+        dataset_id=row.dataset_id,
+        method=row.algorithm.lower() if row.algorithm else "tsne",
+        experiment_id=row.model_id,
+        model_id=row.model_id,
+        golden_crop_ids=list(row.golden_crop_ids or []),
+        class_ids=list(row.selected_class_ids or []),
+    )
+    rows, label_names, label_arr = _resolve_analysis_rows(req, db)
+    emb = _load_or_compute_embeddings(req, db, rows, label_names, label_arr, run_id)
+
+    crop_meta: list[CropMeta] = [
+        {
+            "id": crop.id,
+            "url": crop.url,
+            "source_image_id": crop.source_image_id,
+            "instance_index": crop.instance_index,
+        }
+        for crop, _n, _li in rows
+    ]
+    payload = compute_relations(emb, label_arr, label_names, crop_meta, k=k)
+    return RelationsOut(**payload)
+
+
 @router.post("/inference/analyze", response_model=AnalyzeResponse)
 async def analyze_embeddings(req: AnalyzeRequest, db: Session = Depends(get_db)) -> AnalyzeResponse:
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(None, _analyze_embeddings, req, db)
+
+
+@router.get("/inference/runs/{run_id}/relations", response_model=RelationsOut)
+async def get_run_relations(
+    run_id: str,
+    k: int | None = None,
+    db: Session = Depends(get_db),
+) -> RelationsOut:
+    """Inter-class relation analysis for a completed run (uses cached embeddings)."""
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, _compute_run_relations, run_id, db, k)

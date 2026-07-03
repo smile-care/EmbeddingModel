@@ -21,6 +21,9 @@ class Dataset(Base):
     size: Mapped[str | None] = mapped_column(String, nullable=True)
     items: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String, default="Ready")
+    import_progress: Mapped[float] = mapped_column("importProgress", Float, default=0.0)
+    import_stage: Mapped[str | None] = mapped_column("importStage", String, nullable=True)
+    import_message: Mapped[str | None] = mapped_column("importMessage", Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column("createdAt", DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         "updatedAt", DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

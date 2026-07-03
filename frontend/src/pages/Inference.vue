@@ -28,7 +28,16 @@ import {
 } from 'lucide-vue-next';
 import InferenceScatterChart from '@/components/InferenceScatterChart.vue';
 import type {PlotPoint} from '@/components/InferenceScatterChart.vue';
-import {DatasetsApi, InferenceApi, categoryChartColor, classColor, staticUrl, type AnnotationRegion, type CropImage, type DatasetImage, type DefectClass} from '@/lib/api';
+import RelationsDrawer, {type ViewKey} from '@/components/relations/RelationsDrawer.vue';
+import HeadlineScore from '@/components/relations/HeadlineScore.vue';
+import ConfusionHeatmap from '@/components/relations/ConfusionHeatmap.vue';
+import ClassDendrogram from '@/components/relations/ClassDendrogram.vue';
+import ClassGraph from '@/components/relations/ClassGraph.vue';
+import WarningList from '@/components/relations/WarningList.vue';
+import PerClassCards from '@/components/relations/PerClassCards.vue';
+import MislabelList from '@/components/relations/MislabelList.vue';
+import {DatasetsApi, InferenceApi, categoryChartColor, classColor, staticUrl, type AnnotationRegion, type CropImage, type DatasetImage, type DefectClass, type RelationsMislabel, type RelationsOut} from '@/lib/api';
+import {SlidersHorizontal} from 'lucide-vue-next';
 
 // ── constants ──────────────────────────────────────────────────────────────
 /** Always-available baseline model (server returns this as the first entry too). */
@@ -74,6 +83,81 @@ const classFilterExpanded = ref(true);
 const analysisLabels = ref<string[]>([]);
 const algorithm = ref<AlgoKey>('TSNE');
 const viewMode = ref<'distribution' | 'anomaly'>('distribution');
+// ── analysis center (drawer) ─────────────────────────────────────────────────
+const activeView = ref<ViewKey>('distribution');
+const drawerOpen = ref(false);
+const relations = ref<RelationsOut | null>(null);
+const relationsLoading = ref(false);
+const relationsError = ref<string | null>(null);
+const relationsRunId = ref<string | null>(null);
+const relationsK = ref(0); // 0 => backend auto (adaptive)
+const confusionThreshold = ref(0.3);
+const simThreshold = ref(0.85);
+const mislabelThreshold = ref(0.5);
+const highlightLabels = ref<string[]>([]);
+const RELATION_VIEWS: ViewKey[] = ['headline', 'confusion', 'centroid', 'dendrogram', 'graph', 'warnings', 'perclass', 'mislabels'];
+const relationsAvailable = computed(() => relations.value != null);
+
+function selectView(v: ViewKey) {
+  activeView.value = v;
+  if (v === 'distribution' || v === 'anomaly') {
+    viewMode.value = v;
+    highlightLabels.value = [];
+  } else if (relations.value == null && !relationsLoading.value) {
+    void loadRelations();
+  }
+}
+
+async function loadRelations(force = false) {
+  const runId = selectedRunId.value;
+  if (!runId) return;
+  if (!force && relations.value != null && relationsRunId.value === runId) return;
+  relationsLoading.value = true;
+  relationsError.value = null;
+  try {
+    const k = relationsK.value > 0 ? relationsK.value : undefined;
+    const data = await InferenceApi.getRelations(runId, k);
+    relations.value = data;
+    relationsRunId.value = runId;
+    if (relationsK.value === 0) relationsK.value = data.k;
+  } catch (e: any) {
+    relationsError.value = e?.message || '关系分析加载失败';
+    relations.value = null;
+  } finally {
+    relationsLoading.value = false;
+  }
+}
+
+function reloadRelationsK() {
+  void loadRelations(true);
+}
+
+function highlightPair(labels: string[]) {
+  highlightLabels.value = labels;
+  activeView.value = 'distribution';
+  viewMode.value = 'distribution';
+}
+
+function onHeatmapSelect(mode: 'confusion' | 'centroid', payload: {i: number; j: number}) {
+  const labs = relations.value?.labels ?? [];
+  const a = labs[payload.i];
+  const b = labs[payload.j];
+  if (a && b) highlightPair(a === b ? [a] : [a, b]);
+}
+
+function previewMislabel(item: RelationsMislabel) {
+  openPreview({
+    id: item.cropId,
+    x: 0,
+    y: 0,
+    cluster: 0,
+    url: item.url,
+    label: item.currentLabel,
+    sourceImageId: item.sourceImageId ?? undefined,
+    instanceIndex: item.instanceIndex ?? undefined,
+  } as PlotPoint);
+}
+
 const isAnalyzing = ref(false);
 const loadingAlgos = ref<Set<AlgoKey>>(new Set());
 const cachedAlgos = ref<Set<AlgoKey>>(new Set());
@@ -393,6 +477,13 @@ onMounted(() => {
 watch(selectedRunId, (id) => {
   editingRunName.value = false;
   runNameDraft.value = '';
+  // Invalidate cached relations; embeddings differ per run.
+  relations.value = null;
+  relationsRunId.value = null;
+  relationsK.value = 0;
+  relationsError.value = null;
+  highlightLabels.value = [];
+  if (RELATION_VIEWS.includes(activeView.value)) activeView.value = viewMode.value;
   if (id) void loadRunDetail(id);
   else { plotData.value = []; analysisLabels.value = []; cachedAlgos.value = new Set(); }
 });
@@ -625,6 +716,10 @@ async function handleRunAnalysis() {
 
   isAnalyzing.value = true;
   cachedAlgos.value = new Set();
+  // New forward pass -> stale relations cache.
+  relations.value = null;
+  relationsRunId.value = null;
+  relationsK.value = 0;
   try {
     const row = await InferenceApi.analyze(runId) as {resultJson?: {labels?: string[]; points?: any[]}; cachedAlgorithms?: string[]};
     if (row.resultJson?.points) {
@@ -1154,18 +1249,29 @@ watch(imagePreviewZoom, (z) => {
         <!-- Toolbar -->
         <div class="flex shrink-0 items-center justify-between gap-3 border-b border-border bg-secondary/5 px-4 py-2.5">
           <div class="flex items-center gap-2">
+            <!-- Analysis center drawer trigger -->
+            <button
+              type="button"
+              class="flex items-center gap-1.5 rounded-lg border border-border bg-background px-3 py-1 text-[10px] font-bold transition-all hover:border-primary/50 hover:text-primary"
+              :disabled="plotData.length === 0"
+              :class="plotData.length === 0 ? 'opacity-50' : ''"
+              @click="drawerOpen = true"
+            >
+              <SlidersHorizontal class="h-3 w-3" />分析中心
+            </button>
+
             <!-- View toggle -->
             <div class="flex rounded-lg bg-secondary/20 p-0.5">
-              <button type="button" class="flex items-center gap-1.5 rounded px-3 py-1 text-[10px] font-bold transition-all" :class="viewMode === 'distribution' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'" @click="viewMode = 'distribution'">
+              <button type="button" class="flex items-center gap-1.5 rounded px-3 py-1 text-[10px] font-bold transition-all" :class="activeView === 'distribution' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'" @click="selectView('distribution')">
                 <Activity class="h-3 w-3" />分布视图
               </button>
-              <button type="button" class="flex items-center gap-1.5 rounded px-3 py-1 text-[10px] font-bold transition-all" :class="viewMode === 'anomaly' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'" @click="viewMode = 'anomaly'">
+              <button type="button" class="flex items-center gap-1.5 rounded px-3 py-1 text-[10px] font-bold transition-all" :class="activeView === 'anomaly' ? 'bg-background text-foreground shadow-sm' : 'text-muted-foreground hover:text-foreground'" @click="selectView('anomaly')">
                 <LayoutGrid class="h-3 w-3" />异常视图
               </button>
             </div>
 
             <!-- Algorithm tabs -->
-            <template v-if="viewMode === 'distribution'">
+            <template v-if="activeView === 'distribution'">
               <div class="mx-1 h-4 w-px bg-border" />
               <div class="flex items-center gap-1">
                 <button
@@ -1186,20 +1292,92 @@ watch(imagePreviewZoom, (z) => {
             </template>
           </div>
           <div class="flex items-center gap-3">
+            <button
+              v-if="highlightLabels.length && activeView === 'distribution'"
+              type="button"
+              class="flex items-center gap-1 rounded bg-primary/15 px-2 py-0.5 text-[9px] font-bold text-primary ring-1 ring-primary/30"
+              @click="highlightLabels = []"
+            >
+              高亮：{{ highlightLabels.join(' · ') }}
+              <X class="h-2.5 w-2.5" />
+            </button>
             <span class="text-[10px] text-muted-foreground">{{ plotData.length }} 条</span>
-            <span v-if="viewMode === 'distribution'" class="rounded bg-secondary/20 px-2 py-0.5 text-[9px] text-muted-foreground">滚轮缩放 · 拖动平移</span>
+            <span v-if="activeView === 'distribution'" class="rounded bg-secondary/20 px-2 py-0.5 text-[9px] text-muted-foreground">滚轮缩放 · 拖动平移</span>
           </div>
         </div>
 
         <!-- Chart area -->
         <div class="relative min-h-0 flex-1 overflow-hidden">
           <!-- Distribution scatter -->
-          <div v-if="viewMode === 'distribution'" class="h-full w-full">
-            <InferenceScatterChart v-if="plotData.length > 0" :plot-data="plotData" :label-list="labelList" @preview="openPreview" />
+          <div v-if="activeView === 'distribution'" class="h-full w-full">
+            <InferenceScatterChart v-if="plotData.length > 0" :plot-data="plotData" :label-list="labelList" :highlight-labels="highlightLabels" @preview="openPreview" />
             <div v-else class="flex h-full flex-col items-center justify-center gap-4 text-muted-foreground">
               <div class="rounded-full bg-secondary/20 p-5"><ImageIcon class="h-8 w-8 opacity-20" /></div>
               <p class="max-w-xs text-center text-sm italic">选择模型与数据集后，点击「Run Analysis」可视化特征分布。</p>
             </div>
+          </div>
+
+          <!-- Relation analysis views -->
+          <div v-else-if="activeView !== 'anomaly'" class="h-full overflow-y-auto p-5">
+            <div v-if="relationsLoading" class="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+              <RefreshCw class="h-6 w-6 animate-spin" />
+              <p class="text-sm">正在计算类别关系分析…</p>
+            </div>
+            <div v-else-if="relationsError" class="flex h-full flex-col items-center justify-center gap-3 text-rose-500">
+              <AlertCircle class="h-6 w-6" />
+              <p class="text-sm">{{ relationsError }}</p>
+              <button type="button" class="rounded-lg border border-border px-3 py-1 text-xs hover:bg-secondary/30" @click="loadRelations(true)">重试</button>
+            </div>
+            <template v-else-if="relations">
+              <HeadlineScore v-if="activeView === 'headline'" :headline="relations.headline" />
+
+              <div v-else-if="activeView === 'confusion'" class="space-y-3">
+                <div>
+                  <h3 class="text-sm font-semibold">kNN 跨类混淆矩阵</h3>
+                  <p class="text-[11px] text-muted-foreground">行 = 真实类，值 = 该类样本的 k 近邻落入各列类别的占比（%）。对角线 = 纯度。点击格子在散点中高亮相关两类。</p>
+                </div>
+                <ConfusionHeatmap :labels="relations.labels" :matrix="relations.confusion" mode="confusion" :threshold="confusionThreshold" @select="onHeatmapSelect('confusion', $event)" />
+              </div>
+
+              <div v-else-if="activeView === 'centroid'" class="space-y-3">
+                <div>
+                  <h3 class="text-sm font-semibold">类心余弦相似度矩阵</h3>
+                  <p class="text-[11px] text-muted-foreground">类心 = 各类归一化均值向量，值 = 类心间余弦相似度。越接近 1 越相似。</p>
+                </div>
+                <ConfusionHeatmap :labels="relations.labels" :matrix="relations.centroidSim" mode="similarity" :threshold="simThreshold" @select="onHeatmapSelect('centroid', $event)" />
+              </div>
+
+              <div v-else-if="activeView === 'dendrogram'" class="space-y-3">
+                <h3 class="text-sm font-semibold">类别层次聚类树状图</h3>
+                <ClassDendrogram :root="relations.linkage" :labels="relations.labels" :merge-threshold="1 - simThreshold" @highlight="highlightPair" />
+              </div>
+
+              <div v-else-if="activeView === 'graph'" class="space-y-3">
+                <h3 class="text-sm font-semibold">类别关系图</h3>
+                <ClassGraph :labels="relations.labels" :counts="relations.counts" :centroid-sim="relations.centroidSim" :edge-threshold="simThreshold * 0.85" @highlight="highlightPair" />
+              </div>
+
+              <div v-else-if="activeView === 'warnings'" class="space-y-3">
+                <div>
+                  <h3 class="text-sm font-semibold">相似/混淆类别警告</h3>
+                  <p class="text-[11px] text-muted-foreground">点击可在分布散点中仅高亮该类别对。阈值可在「分析中心」中调整。</p>
+                </div>
+                <WarningList :labels="relations.labels" :confusion="relations.confusion" :centroid-sim="relations.centroidSim" :confusion-threshold="confusionThreshold" :sim-threshold="simThreshold" @highlight="highlightPair" />
+              </div>
+
+              <div v-else-if="activeView === 'perclass'" class="space-y-3">
+                <h3 class="text-sm font-semibold">每类质量</h3>
+                <PerClassCards :per-class="relations.perClass" :labels="relations.labels" @highlight="highlightPair" />
+              </div>
+
+              <div v-else-if="activeView === 'mislabels'" class="space-y-3">
+                <div>
+                  <h3 class="text-sm font-semibold">疑似误标清单</h3>
+                  <p class="text-[11px] text-muted-foreground">样本的 k 近邻多数属于其他类别。点击图片查看原图与标注。</p>
+                </div>
+                <MislabelList :mislabels="relations.mislabels" :threshold="mislabelThreshold" @preview="previewMislabel" />
+              </div>
+            </template>
           </div>
 
           <!-- Anomaly grid -->
@@ -1257,6 +1435,25 @@ watch(imagePreviewZoom, (z) => {
       </div>
     </div>
   </div>
+
+  <!-- ════════════════ ANALYSIS CENTER DRAWER ════════════════ -->
+  <RelationsDrawer
+    :open="drawerOpen"
+    :active-view="activeView"
+    :k="relationsK"
+    :confusion-threshold="confusionThreshold"
+    :sim-threshold="simThreshold"
+    :mislabel-threshold="mislabelThreshold"
+    :loading="relationsLoading"
+    :relations-available="relationsAvailable"
+    @close="drawerOpen = false"
+    @update:active-view="selectView"
+    @update:k="relationsK = $event"
+    @update:confusion-threshold="confusionThreshold = $event"
+    @update:sim-threshold="simThreshold = $event"
+    @update:mislabel-threshold="mislabelThreshold = $event"
+    @reload-k="reloadRelationsK"
+  />
 
   <!-- ════════════════ GOLDEN SELECTION MODAL ════════════════ -->
   <Teleport to="body">

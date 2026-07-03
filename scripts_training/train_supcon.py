@@ -1082,6 +1082,9 @@ def main():
             save_path=str(checkpoint_dir / "loss_curve.png"),
             title="SupCon Training Loss",
         )
+        final_model_path = checkpoint_dir / "final_model.pth"
+        torch.save({'model_state_dict': raw_model.state_dict()}, final_model_path)
+        logger.info(f"最终模型已保存: {final_model_path}")
 
     logger.info("训练完成！")
     if is_main and supcon_config['supcon']['output'].get('use_wandb', False) and wandb is not None:

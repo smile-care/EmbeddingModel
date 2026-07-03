@@ -5,13 +5,14 @@
   * 构建模型并加载预训练 backbone（委托 ``build_supcon_model``）
   * 标准监督对比损失训练，可选先冻结 backbone 若干 epoch 再解冻
   * 每个 epoch 通过 ``progress_callback`` 上报进度与指标
-  * 保存 checkpoint、绘制 loss 曲线
+  * 训练结束（或用户中止）时保存唯一 checkpoint、绘制 loss 曲线
 
 刻意不包含 MoCo、多尺度训练、重复采样、混合精度 (AMP) 等额外功能；
 如需这些能力请使用 ``scripts/train_supcon.py`` 独立训练脚本。
 """
 from __future__ import annotations
 
+import math
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -24,7 +25,13 @@ import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
-from embedding_model.supcon.build import build_supcon_model
+from embedding_model.supcon.build import (
+    build_supcon_model,
+    extract_model_state_dict,
+    is_full_supcon_checkpoint,
+    is_full_supcon_state_dict,
+    normalize_state_dict_for_supcon_model,
+)
 from embedding_model.supcon.datasets.manifest_triplet_dataset import DataClusterTripletDataset
 from embedding_model.supcon.datasets.supcon_dataset import SupConDataset
 from embedding_model.supcon.models.losses import SupervisedContrastiveLoss
@@ -33,6 +40,13 @@ from embedding_model.utils.metrics import similarity_distribution_stats
 from embedding_model.utils.visualization import plot_loss_curve
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+# Web 平台常见场景是几十张图的小样本 finetune：一个 epoch 可能只有个位数
+# batch。此时多进程 DataLoader 每个 epoch 重新调度 worker 的 IPC 开销，
+# 比几个 batch 本身的计算时间还长，表现为「每个 epoch 训练完就卡一下」。
+# 低于该阈值时自动退化为主进程同步加载（num_workers=0），数据集较大时
+# 仍使用配置的多进程 worker。
+MIN_BATCHES_PER_EPOCH_FOR_WORKERS = 8
 
 
 class SupconTrainer:
@@ -99,6 +113,26 @@ class SupconTrainer:
             return DataClusterTripletDataset
         return SupConDataset
 
+    def _build_loader_kwargs(self, dataset_len: int, batch_size: int) -> dict:
+        """按数据集大小自适应选择 num_workers（见 ``MIN_BATCHES_PER_EPOCH_FOR_WORKERS``）。"""
+        num_workers = int(self.data_config.get("num_workers", 4))
+        batches_per_epoch = math.ceil(dataset_len / batch_size) if batch_size > 0 else 0
+        if num_workers > 0 and batches_per_epoch < MIN_BATCHES_PER_EPOCH_FOR_WORKERS:
+            self.logger.info(
+                f"每 epoch 仅 {batches_per_epoch} 个 batch（阈值 {MIN_BATCHES_PER_EPOCH_FOR_WORKERS}），"
+                f"关闭多进程 DataLoader (num_workers {num_workers}->0) 避免小数据集下的 worker 调度开销。"
+            )
+            num_workers = 0
+
+        loader_kwargs = {
+            "num_workers": num_workers,
+            "pin_memory": bool(self.data_config.get("pin_memory", True)),
+        }
+        if num_workers > 0:
+            loader_kwargs["persistent_workers"] = bool(self.data_config.get("persistent_workers", True))
+            loader_kwargs["prefetch_factor"] = max(2, int(self.data_config.get("prefetch_factor", 2)))
+        return loader_kwargs
+
     def _setup_data(self, data_config_paths: list) -> None:
         """构建数据集与 DataLoader。训练集与验证集共用同一份样本。"""
         logger = self.logger
@@ -123,17 +157,10 @@ class SupconTrainer:
         logger.info(f"训练样本: {len(train_dataset)}, 图像尺度: {self.image_size}")
 
         batch_size = min(self.data_config["batch_size"], max(1, len(train_dataset)))
-        num_workers = int(self.data_config.get("num_workers", 4))
-        loader_kwargs = {
-            "num_workers": num_workers,
-            "pin_memory": bool(self.data_config.get("pin_memory", True)),
-        }
-        if num_workers > 0:
-            loader_kwargs["persistent_workers"] = bool(self.data_config.get("persistent_workers", True))
-            loader_kwargs["prefetch_factor"] = max(2, int(self.data_config.get("prefetch_factor", 2)))
+        train_loader_kwargs = self._build_loader_kwargs(len(train_dataset), batch_size)
 
         self.train_dataloader = DataLoader(
-            train_dataset, batch_size=batch_size, shuffle=True, **loader_kwargs
+            train_dataset, batch_size=batch_size, shuffle=True, **train_loader_kwargs
         )
 
         self.val_dataloader = None
@@ -145,16 +172,31 @@ class SupconTrainer:
                 image_size=self.image_size,
             )
             logger.info(f"验证样本: {len(val_dataset)} (与训练集共用)")
+            val_loader_kwargs = self._build_loader_kwargs(len(val_dataset), batch_size)
             self.val_dataloader = DataLoader(
-                val_dataset, batch_size=batch_size, shuffle=False, **loader_kwargs
+                val_dataset, batch_size=batch_size, shuffle=False, **val_loader_kwargs
             )
 
     # ----------------------------------------------------------------- model
+    def _resolve_pretrained_path(self) -> Optional[Path]:
+        """实验 ``pretrainedPath`` 优先，否则使用 ``model_config['pretrained_path']``。"""
+        if self.pretrained_path:
+            return Path(self.pretrained_path)
+        raw = self.model_config.get("pretrained_path")
+        return Path(raw) if raw else None
+
     def _setup_model(self) -> None:
         freeze_backbone = int(self.training_strategy.get("freeze_backbone_epochs", 0)) > 0
         self.logger.info("创建模型...")
+
+        model_config = dict(self.model_config)
+        pretrained_path = self._resolve_pretrained_path()
+        # 完整 SupCon 权重（含 fusion/head）在构建后一次性加载，避免 backbone 构造器只读 stages.*
+        if pretrained_path and pretrained_path.is_file() and is_full_supcon_checkpoint(pretrained_path):
+            model_config.pop("pretrained_path", None)
+
         model, _queue = build_supcon_model(
-            self.model_config,
+            model_config,
             image_size=self.image_size,
             use_moco=False,
             freeze_backbone=freeze_backbone,
@@ -165,29 +207,34 @@ class SupconTrainer:
         self._load_pretrained_weights_if_any()
 
     def _load_pretrained_weights_if_any(self) -> None:
-        """若显式提供 ``pretrained_path``，加载到模型 (strict=False)。
+        """加载预训练权重到模型 (strict=True)。
 
-        注意：backbone 的预训练权重已在 ``build_supcon_model`` 中通过
-        ``model_config['pretrained_path']`` 加载，这里仅用于从一个完整 checkpoint
-        （如上一轮实验产物）继续 finetune。
+        * 完整 SupCon checkpoint（含 feature_fusion / projection_head）：
+          加载 backbone + fusion + head；MoCo 格式会自动剥离 query_encoder 前缀。
+          键不匹配时立即报错，避免静默部分加载。
+        * 仅 backbone 权重（如 DINOv3 原始 ``pretrain_ckpts/*.pth``）：
+          已在 ``build_supcon_model`` 构建时由 backbone 加载，此处仅记录日志。
         """
-        path = self.pretrained_path
+        path = self._resolve_pretrained_path()
         if not path:
             return
-        p = Path(path)
-        if not p.is_file():
-            self.logger.warning(f"预训练权重文件不存在，跳过加载: {p}")
+        if not path.is_file():
+            self.logger.warning(f"预训练权重文件不存在，跳过加载: {path}")
             return
-        self.logger.info(f"加载预训练权重: {p}")
-        ckpt = torch.load(str(p), map_location=self.device, weights_only=False)
+
+        ckpt = torch.load(str(path), map_location=self.device, weights_only=False)
         if not isinstance(ckpt, dict):
             self.logger.warning("预训练文件不是字典，跳过加载")
             return
-        state = ckpt.get("model_state_dict") or ckpt.get("state_dict") or ckpt
-        incompatible = self.model.load_state_dict(state, strict=False)
-        mk = len(getattr(incompatible, "missing_keys", []) or [])
-        uk = len(getattr(incompatible, "unexpected_keys", []) or [])
-        self.logger.info(f"预训练权重已合并 (strict=False)，missing={mk}, unexpected={uk}")
+
+        state = extract_model_state_dict(ckpt)
+        if is_full_supcon_state_dict(state):
+            state = normalize_state_dict_for_supcon_model(state)
+            self.logger.info(f"加载完整 SupCon 预训练权重 (strict=True): {path}")
+            self.model.load_state_dict(state, strict=True)
+            self.logger.info(f"预训练权重已加载，共 {len(state)} 个参数张量")
+        else:
+            self.logger.info(f"backbone 预训练权重已在模型构建时加载: {path}")
 
     def _setup_optimizer_scheduler(self) -> None:
         training_config = self.training_config
@@ -290,7 +337,18 @@ class SupconTrainer:
         }
 
     # ------------------------------------------------------------------- run
-    def _save_checkpoint(self, epoch: int, train_metrics: dict, periodic: bool) -> None:
+    def _purge_legacy_periodic_checkpoints(self) -> None:
+        """Web 训练只保留最终权重，清理历史 periodic checkpoint。"""
+        for old in self.checkpoint_dir.glob("checkpoint_epoch_*.pth"):
+            try:
+                old.unlink()
+            except OSError as exc:
+                self.logger.warning(f"无法删除旧 checkpoint {old}: {exc}")
+
+    def _save_checkpoint(self, epoch: int, train_metrics: dict) -> Path:
+        """保存唯一最终权重 ``current_model.pth``（供推理使用）。"""
+        self._purge_legacy_periodic_checkpoints()
+        path = self.checkpoint_dir / "current_model.pth"
         payload = {
             "epoch": epoch,
             "model_state_dict": self.model.state_dict(),
@@ -299,18 +357,19 @@ class SupconTrainer:
             "train_loss": train_metrics["loss"],
             "config": self.supcon_config,
         }
-        torch.save(payload, self.checkpoint_dir / "current_model.pth")
-        if periodic:
-            torch.save(payload, self.checkpoint_dir / f"checkpoint_epoch_{epoch}.pth")
+        torch.save(payload, path)
+        return path
 
     def run(self) -> dict:
         self.logger.info("开始训练...")
+        self._purge_legacy_periodic_checkpoints()
         train_losses: list[float] = []
         val_losses: list[float] = []
+        val_epochs: list[int] = []
         total_epochs = int(self.training_config["epochs"])
-        save_interval = int(self.training_config.get("save_interval", 5))
         last_train_metrics = None
         last_val_metrics = None
+        last_epoch = 0
 
         for epoch in range(self.start_epoch, total_epochs + 1):
             if self.freeze_epochs > 0 and epoch == self.freeze_epochs + 1:
@@ -320,16 +379,22 @@ class SupconTrainer:
             train_metrics = self.train_epoch(epoch)
             train_losses.append(train_metrics["loss"])
             last_train_metrics = train_metrics
+            last_epoch = epoch
 
             val_metrics = None
             should_eval = (
                 self.use_eval
                 and self.val_dataloader is not None
-                and (epoch % self.eval_interval == 0 or epoch == total_epochs)
+                and (
+                    epoch == self.start_epoch
+                    or epoch % self.eval_interval == 0
+                    or epoch == total_epochs
+                )
             )
             if should_eval:
                 val_metrics = self.validate()
                 val_losses.append(val_metrics["loss"])
+                val_epochs.append(epoch)
                 last_val_metrics = val_metrics
 
             self.scheduler.step()
@@ -346,7 +411,6 @@ class SupconTrainer:
                 )
                 if should_stop:
                     self.logger.info(f"训练在 epoch {epoch} 被用户中止。")
-                    self._save_checkpoint(epoch, train_metrics, periodic=False)
                     break
 
             log_msg = (
@@ -362,11 +426,13 @@ class SupconTrainer:
                 )
             self.logger.info(log_msg)
 
-            self._save_checkpoint(epoch, train_metrics, periodic=(epoch % save_interval == 0))
+        if last_train_metrics is not None:
+            self._save_checkpoint(last_epoch, last_train_metrics)
 
         plot_loss_curve(
             train_losses,
             val_losses if self.use_eval else [],
+            val_epochs=val_epochs if self.use_eval else None,
             save_path=str(self.checkpoint_dir / "loss_curve.png"),
             title="SupCon Training Loss",
         )
@@ -376,6 +442,7 @@ class SupconTrainer:
             "epochs": total_epochs,
             "train_losses": train_losses,
             "val_losses": val_losses,
+            "val_epochs": val_epochs,
             "last_train_metrics": last_train_metrics,
             "last_val_metrics": last_val_metrics,
             "checkpoint_dir": str(self.checkpoint_dir),

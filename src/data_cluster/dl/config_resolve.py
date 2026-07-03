@@ -39,26 +39,35 @@ def load_dc_section() -> dict[str, Any]:
     return copy.deepcopy(section) if isinstance(section, dict) else {}
 
 
+def _get_pretrained_models_section(dc: dict[str, Any]) -> dict[str, Any]:
+    """``pretrained_models`` block (legacy key ``backbones`` still accepted)."""
+    section = dc.get("pretrained_models")
+    if isinstance(section, dict) and section:
+        return section
+    legacy = dc.get("backbones", {})
+    return legacy if isinstance(legacy, dict) else {}
+
+
 def resolve_backbone_pretrained_path(
     backbone_name: str,
     exp_config: dict[str, Any] | None = None,
 ) -> str | None:
-    """Resolve pretrained weights for a backbone.
+    """Resolve pretrained weights for an embedding model variant.
 
     Priority:
       1. explicit experiment override
-      2. data_cluster.yaml ``backbones.<name>.pretrained_path``
+      2. data_cluster.yaml ``pretrained_models.<name>.pretrained_path``
       3. repo default ``pretrain_ckpts/<name>.pth`` when present
     """
     dc = load_dc_section()
-    backbones = dc.get("backbones", {})
+    models = _get_pretrained_models_section(dc)
 
     if isinstance(exp_config, dict):
         raw = exp_config.get("pretrainedPath") or exp_config.get("pretrained_path")
         if isinstance(raw, str) and raw.strip():
             return raw.strip()
 
-    info = backbones.get(backbone_name, {})
+    info = models.get(backbone_name, {})
     if isinstance(info, dict) and info.get("pretrained_path"):
         return str(info["pretrained_path"])
     default_path = _REPO_ROOT / "pretrain_ckpts" / f"{backbone_name}.pth"
@@ -69,7 +78,7 @@ def resolve_backbone_pretrained_path(
 
 def resolve_backbone_config_path(backbone_name: str) -> str | None:
     dc = load_dc_section()
-    info = dc.get("backbones", {}).get(backbone_name, {})
+    info = _get_pretrained_models_section(dc).get(backbone_name, {})
     if isinstance(info, dict):
         raw = info.get("backbone_config")
         if raw:
@@ -82,6 +91,36 @@ def resolve_backbone_config_path(backbone_name: str) -> str | None:
     if default_path.is_file():
         return str(default_path)
     return None
+
+
+def resolve_default_model() -> tuple[str, str | None, str | None]:
+    """Resolve the platform "default pretrained model" from data_cluster.yaml.
+
+    Reads ``data_cluster.default_model`` — the single source of truth for the raw
+    DINOv3 backbone used by the "默认预训练模型" option — so the path is never
+    hardcoded in Python.
+
+    Returns ``(backbone_name, backbone_config_path, pretrained_path)``.
+    Relative paths are resolved against the repo root; falls back to
+    ``pretrain_ckpts/<backbone>.pth`` when the config omits ``pretrained_path``.
+    """
+    dc = load_dc_section()
+    dm = dc.get("default_model", {})
+    if not isinstance(dm, dict):
+        dm = {}
+
+    backbone = dm.get("backbone") or "convnext_tiny"
+    backbone_config_path = resolve_backbone_config_path(backbone)
+
+    raw = dm.get("pretrained_path")
+    if isinstance(raw, str) and raw.strip():
+        p = Path(raw.strip())
+        pretrained_path = str(p if p.is_absolute() else (_REPO_ROOT / p).resolve())
+    else:
+        default_path = _REPO_ROOT / "pretrain_ckpts" / f"{backbone}.pth"
+        pretrained_path = str(default_path) if default_path.is_file() else None
+
+    return backbone, backbone_config_path, pretrained_path
 
 
 def build_platform_supcon_base() -> dict[str, Any]:
@@ -125,7 +164,6 @@ def build_platform_supcon_base() -> dict[str, Any]:
             "learning_rate",
             "weight_decay",
             "backbone_lr_ratio",
-            "save_interval",
             "use_amp",
             "eval_interval",
             "lr_scheduler",
