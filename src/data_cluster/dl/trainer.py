@@ -36,6 +36,7 @@ from torch.utils.data import DataLoader, Sampler
 from tqdm import tqdm
 
 from data_cluster.dl.step_budget import DEFAULT_NUM_CHECKPOINTS, compute_checkpoint_steps
+from data_cluster.dl.config_resolve import normalize_embedding_source
 from embedding_model.supcon.build import (
     build_supcon_model,
 )
@@ -111,6 +112,11 @@ class SupconTrainer:
         self.training_config = sup["training"]
         self.model_config = sup["model"]
         self.loss_config = sup["loss"]
+        self.embedding_source = normalize_embedding_source(
+            sup.get("inference", {}).get("embedding_source")
+            if isinstance(sup.get("inference"), dict)
+            else None
+        )
 
         self.checkpoint_dir = Path(sup["output"]["checkpoint_dir"])
         self.checkpoint_dir.mkdir(parents=True, exist_ok=True)
@@ -328,7 +334,7 @@ class SupconTrainer:
             labels = batch["label"].to(self.device, non_blocking=self.non_blocking)
 
             out = self.model(v1_img, v1_mask, return_features=False)
-            emb = F.normalize(out["representations"], dim=1, p=2, eps=1e-8)
+            emb = F.normalize(out[self.embedding_source], dim=1, p=2, eps=1e-8)
 
             loss = self.criterion(out["projections"], labels)
             total_loss += loss.item()

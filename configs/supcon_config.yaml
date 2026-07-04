@@ -74,6 +74,9 @@ supcon:
     queue_size: [1024, 16000]  # 负样本队列大小，支持 int 或 [min, max]（自适应时按样本数裁剪到此区间）
     loss_type: "supervised"  # loss类型："supervised"（使用相似度矩阵）或 "standard"（标准MoCo InfoNCE）
     queue_device: "gpu"  # 队列存放设备："cpu"（训练时搬到GPU，显存友好）或 "gpu"（常驻GPU，速度更快）
+
+  inference:
+    embedding_source: "representations"  # representations=FeatureFusion输出h，projections=ProjectionHead输出z
   
   # 输出配置
   output:

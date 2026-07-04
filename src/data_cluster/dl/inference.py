@@ -23,9 +23,11 @@ from torchvision import transforms
 from data_cluster.dl.config_resolve import (
     build_platform_supcon_base,
     load_dc_section,
+    normalize_embedding_source,
     resolve_backbone_config_path,
     resolve_backbone_pretrained_path,
     resolve_default_model,
+    resolve_embedding_source,
 )
 from embedding_model.supcon.build import build_supcon_model
 from embedding_model.supcon.datasets.supcon_dataset import MaskSoftDilation
@@ -149,6 +151,7 @@ def _compute_supcon_embeddings_raw(
     """Compute L2-normalized embeddings for a list of (image, optional mask) pairs."""
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     model, use_moco = _load_supcon_model(checkpoint_path, model_config, image_size, use_moco, dev)
+    embedding_source = normalize_embedding_source(model_config.get("embedding_source"))
     image_tf, mask_tf = _build_transforms(image_size)
     mask_dilation = MaskSoftDilation({"enabled": True})
 
@@ -186,7 +189,7 @@ def _compute_supcon_embeddings_raw(
             pred = model(x, m, mode="query", return_features=False)
         else:
             pred = model(x, m, return_features=False)
-        emb = F.normalize(pred["representations"], dim=1, p=2, eps=1e-8)
+        emb = F.normalize(pred[embedding_source], dim=1, p=2, eps=1e-8)
         out.append(emb.cpu().numpy())
 
     if not out:
@@ -227,6 +230,7 @@ def build_infer_config(exp_config: dict[str, Any] | None) -> tuple[dict[str, Any
     data_cfg = base.get("data", {})
     model_cfg = dict(base.get("model", {}))
     moco_cfg = dict(base.get("moco", {}))
+    model_cfg["embedding_source"] = resolve_embedding_source(base, exp_cfg)
 
     image_size = _coerce_image_size(exp_cfg)
     if image_size is not None:
@@ -323,6 +327,7 @@ def _build_industrial_model_config() -> tuple[dict[str, Any], int]:
             model_cfg["pretrained_path"] = str(p)
 
     model_cfg["moco"] = dict(base.get("moco", {}))
+    model_cfg["embedding_source"] = resolve_embedding_source(base)
 
     data_cfg = base.get("data", {})
     image_size = data_cfg.get("image_size", 224)
@@ -338,8 +343,9 @@ def _inspect_checkpoint(ckpt_path: str | Path) -> tuple[bool, bool]:
 
     Returns ``(use_moco, has_trained_head)``:
       * ``use_moco``         - state dict uses ``query_encoder.*`` / ``momentum_encoder.*``
-      * ``has_trained_head`` - a trained projection head is present, so embeddings
-        should come from the head (consistent with training) rather than backbone GAP.
+      * ``has_trained_head`` - a trained SupCon head is present, so model outputs
+        can be read according to the configured embedding_source instead of
+        falling back to raw backbone GAP.
     """
     try:
         ck = torch.load(str(ckpt_path), map_location="cpu", weights_only=False)

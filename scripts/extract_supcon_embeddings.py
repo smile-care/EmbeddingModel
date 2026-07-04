@@ -184,9 +184,17 @@ class SupConEmbeddingExtractor:
             config = load_config(config_path)
             model_config = config['supcon']['model']
             moco_config = config['supcon'].get('moco', {})
+            inference_config = config['supcon'].get('inference', {})
         else:
             model_config = checkpoint.get('config', {}).get('supcon', {}).get('model', {})
             moco_config = checkpoint.get('config', {}).get('supcon', {}).get('moco', {})
+            inference_config = checkpoint.get('config', {}).get('supcon', {}).get('inference', {})
+        self.embedding_source = model_config.get(
+            'embedding_source',
+            inference_config.get('embedding_source', 'representations')
+            if isinstance(inference_config, dict)
+            else 'representations'
+        )
         
         # 检测模型类型：检查checkpoint中是否包含MoCo相关的键
         state_dict = checkpoint.get('model_state_dict', checkpoint)
@@ -323,7 +331,7 @@ class SupConEmbeddingExtractor:
                 outputs = self.model(image_tensor, mask_tensor, mode='query', return_features=False)
             else:
                 outputs = self.model(image_tensor, mask_tensor, return_features=False)
-            embedding = outputs['representations'].cpu().numpy()[0]
+            embedding = outputs[self.embedding_source].cpu().numpy()[0]
         
         return embedding
     
@@ -402,7 +410,7 @@ class SupConEmbeddingExtractor:
                     outputs = self.model(images, masks, mode='query', return_features=False)
                 else:
                     outputs = self.model(images, masks, return_features=False)
-                embeddings = outputs['representations'].cpu().numpy()
+                embeddings = outputs[self.embedding_source].cpu().numpy()
                 
                 # 归一化embeddings（与训练时loss函数中的归一化保持一致）
                 embeddings = F.normalize(

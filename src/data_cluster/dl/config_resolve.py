@@ -11,6 +11,20 @@ from embedding_model.utils.config_loader import load_config
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DC_CONFIG_PATH = _REPO_ROOT / "configs" / "data_cluster.yaml"
 DEFAULT_SUPCON_CONFIG_PATH = _REPO_ROOT / "configs" / "supcon_config.yaml"
+DEFAULT_EMBEDDING_SOURCE = "representations"
+
+_EMBEDDING_SOURCE_ALIASES = {
+    "representations": "representations",
+    "representation": "representations",
+    "features": "representations",
+    "feature": "representations",
+    "h": "representations",
+    "projections": "projections",
+    "projection": "projections",
+    "embeddings": "projections",
+    "embedding": "projections",
+    "z": "projections",
+}
 
 
 def load_dc_config() -> dict[str, Any]:
@@ -37,6 +51,40 @@ def load_supcon_section() -> dict[str, Any]:
 def load_dc_section() -> dict[str, Any]:
     section = load_dc_config().get("data_cluster", {})
     return copy.deepcopy(section) if isinstance(section, dict) else {}
+
+
+def normalize_embedding_source(value: Any, default: str = DEFAULT_EMBEDDING_SOURCE) -> str:
+    """Normalize configured embedding source to a model output key."""
+    if value is None:
+        value = default
+    key = str(value).strip().lower()
+    try:
+        return _EMBEDDING_SOURCE_ALIASES[key]
+    except KeyError as exc:
+        valid = ", ".join(sorted({"representations", "projections"}))
+        raise ValueError(f"embedding_source 必须是 {valid}，当前为 {value!r}") from exc
+
+
+def resolve_embedding_source(
+    base_config: dict[str, Any] | None = None,
+    exp_config: dict[str, Any] | None = None,
+) -> str:
+    """Resolve app embedding source from base config, with experiment override."""
+    base_config = base_config if isinstance(base_config, dict) else {}
+    inference_cfg = base_config.get("inference", {})
+    default = DEFAULT_EMBEDDING_SOURCE
+    if isinstance(inference_cfg, dict):
+        default = normalize_embedding_source(
+            inference_cfg.get("embedding_source", inference_cfg.get("embeddingSource")),
+            default=DEFAULT_EMBEDDING_SOURCE,
+        )
+
+    if isinstance(exp_config, dict):
+        override = exp_config.get("embeddingSource", exp_config.get("embedding_source"))
+        if override is not None:
+            return normalize_embedding_source(override, default=default)
+
+    return default
 
 
 def _get_pretrained_models_section(dc: dict[str, Any]) -> dict[str, Any]:
@@ -155,6 +203,7 @@ def build_platform_supcon_base() -> dict[str, Any]:
         "model": copy.deepcopy(sup.get("model", {})),
         "moco": copy.deepcopy(sup.get("moco", {})),
         "loss": copy.deepcopy(sup.get("loss", {})),
+        "inference": copy.deepcopy(sup.get("inference", {})),
     }
 
     dc_data = dc.get("data", {})
@@ -184,5 +233,13 @@ def build_platform_supcon_base() -> dict[str, Any]:
     default_backbone = (dc_training or {}).get("default_backbone")
     if isinstance(default_backbone, str) and default_backbone.strip():
         merged["model"]["backbone"] = default_backbone.strip()
+
+    dc_inference = dc.get("inference", {})
+    if isinstance(dc_inference, dict):
+        for key in ("embedding_source", "embeddingSource"):
+            if key in dc_inference:
+                merged["inference"]["embedding_source"] = normalize_embedding_source(dc_inference[key])
+
+    merged["inference"]["embedding_source"] = resolve_embedding_source(merged)
 
     return merged

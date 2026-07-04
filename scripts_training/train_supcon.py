@@ -315,6 +315,7 @@ def validate(
     device: torch.device,
     use_moco: bool = False,
     loss_temperature: float = 0.07,
+    embedding_source: str = "representations",
 ) -> dict:
     """
     验证函数，使用相似度分布分析作为评估指标
@@ -338,9 +339,9 @@ def validate(
     nan_embedding_count = 0
     nan_loss_count = 0
 
-    # 收集所有验证集的 projection / representation 和 labels
+    # 收集所有验证集的 projection / configured app embedding 和 labels
     all_projections = []
-    all_representations = []
+    all_app_embeddings = []
     all_labels = []
 
     with torch.no_grad():
@@ -358,14 +359,14 @@ def validate(
                 # 标准SupCon验证
                 outputs1 = model(view1_images, view1_masks, return_features=False)
             projections1 = outputs1['projections']
-            representations1 = outputs1['representations']
+            app_embeddings1 = outputs1[embedding_source]
 
             projections1 = F.normalize(projections1, dim=1, p=2, eps=1e-8)
-            representations1 = F.normalize(representations1, dim=1, p=2, eps=1e-8)
+            app_embeddings1 = F.normalize(app_embeddings1, dim=1, p=2, eps=1e-8)
 
             # 检查输出是否包含NaN或Inf
             if (torch.isnan(projections1).any() or torch.isinf(projections1).any() or
-                torch.isnan(representations1).any() or torch.isinf(representations1).any()):
+                torch.isnan(app_embeddings1).any() or torch.isinf(app_embeddings1).any()):
                 nan_embedding_count += 1
                 skipped_batches += 1
                 if nan_embedding_count <= 5:  # 只打印前5次警告
@@ -394,7 +395,7 @@ def validate(
 
             # 收集 projection / representation and labels
             all_projections.append(projections1.cpu())
-            all_representations.append(representations1.cpu())
+            all_app_embeddings.append(app_embeddings1.cpu())
             all_labels.append(labels.cpu())
 
             total_loss += loss.item()
@@ -408,20 +409,20 @@ def validate(
     if len(all_projections) > 0:
         # 拼接所有输出和labels
         all_projections_tensor = torch.cat(all_projections, dim=0)  # (N, D_z)
-        all_representations_tensor = torch.cat(all_representations, dim=0)  # (N, D_h)
+        all_app_embeddings_tensor = torch.cat(all_app_embeddings, dim=0)  # (N, D_app)
         all_labels_tensor = torch.cat(all_labels, dim=0)  # (N,)
 
         # 将tensor移回device进行计算
         all_projections_tensor = all_projections_tensor.to(device)
-        all_representations_tensor = all_representations_tensor.to(device)
+        all_app_embeddings_tensor = all_app_embeddings_tensor.to(device)
         all_labels_tensor = all_labels_tensor.to(device)
 
-        # 1. 应用侧 representation 指标（主指标）
-        sim_stats = similarity_distribution_stats(all_representations_tensor, all_labels_tensor)
+        # 1. 应用侧 embedding 指标（主指标，来源由配置决定）
+        sim_stats = similarity_distribution_stats(all_app_embeddings_tensor, all_labels_tensor)
         margin_pos_sim = sim_stats['pos_sim']
         margin_neg_sim = sim_stats['neg_sim']
         margin = sim_stats['margin']
-        knn_stats = knn_evaluation(all_representations_tensor, all_labels_tensor, k=10)
+        knn_stats = knn_evaluation(all_app_embeddings_tensor, all_labels_tensor, k=10)
         knn_accuracy = knn_stats.get('knn_accuracy', 0.0)
 
         # 2. projection 指标（loss监督空间诊断）
@@ -801,6 +802,13 @@ def main():
     # 检查是否使用MoCo
     moco_config = supcon_config['supcon'].get('moco', {})
     use_moco = moco_config.get('enabled', False)
+    embedding_source = (
+        supcon_config['supcon']
+        .get('inference', {})
+        .get('embedding_source', 'representations')
+    )
+    if embedding_source not in {'representations', 'projections'}:
+        raise ValueError(f"inference.embedding_source 必须是 representations 或 projections，当前为 {embedding_source!r}")
 
     # 创建模型
     logger.info("创建模型...")
@@ -1003,6 +1011,7 @@ def main():
                     raw_model, val_dl, criterion, device,
                     use_moco=use_moco,
                     loss_temperature=loss_config['supcon']['temperature'],
+                    embedding_source=embedding_source,
                 )
                 val_metrics_per_scene.append((scene_name, vm))
             # 整体验证指标取各场景均值（用于 best_margin / 日志汇总）

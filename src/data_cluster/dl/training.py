@@ -18,6 +18,7 @@ from data_cluster.app.services.storage import experiment_checkpoint_run_dir
 from data_cluster.dl.config_resolve import (
     build_platform_supcon_base,
     resolve_backbone_pretrained_path,
+    resolve_embedding_source,
 )
 from data_cluster.dl.step_budget import recommend_total_steps
 from data_cluster.dl.trainer import SupconTrainer
@@ -553,6 +554,8 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
         config, "device", "trainingDevice",
         default=str(sup["training"].get("device", WEB_DEFAULT_DEVICE)),
     )
+    sup.setdefault("inference", {})
+    sup["inference"]["embedding_source"] = resolve_embedding_source(sup, config)
 
     # --- 模型参数覆盖（架构默认来自 supcon_config.yaml）---
     backbone = config.get("backbone") or config.get("modelName") or config.get("model_name")

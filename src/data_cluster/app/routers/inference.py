@@ -23,9 +23,11 @@ from data_cluster.dl.projection import (anomaly_scores_per_class, anomaly_scores
                                         project_2d)
 from data_cluster.dl.relations import CropMeta, compute_relations
 from data_cluster.dl.config_resolve import (
+    build_platform_supcon_base,
     default_model_ids,
     list_default_models,
     resolve_default_model,
+    resolve_embedding_source,
 )
 from data_cluster.dl.inference import (INDUSTRIAL_MODEL_ID, INDUSTRIAL_MODEL_NAME,
                                        compute_industrial_pretrained_embeddings,
@@ -733,11 +735,13 @@ def _model_cache_key(req: AnalyzeRequest, db: Session) -> str:
         except ValueError:
             return eid
     if eid == INDUSTRIAL_MODEL_ID:
-        return eid
+        source = resolve_embedding_source(build_platform_supcon_base())
+        return f"{eid}:embedding_source={source}"
     exp = db.get(Experiment, eid)
     if not exp or not exp.checkpoint_path:
         return eid
-    return f"{eid}:{_path_mtime_token(Path(exp.checkpoint_path))}"
+    source = resolve_embedding_source(build_platform_supcon_base(), exp.config if isinstance(exp.config, dict) else None)
+    return f"{eid}:{_path_mtime_token(Path(exp.checkpoint_path))}:embedding_source={source}"
 
 
 def _data_fingerprint(settings, rows: list[tuple[CropImage, str, int]]) -> str:

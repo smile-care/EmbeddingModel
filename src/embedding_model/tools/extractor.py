@@ -38,8 +38,16 @@ class EmbeddingExtractor:
         if config_path:
             config = load_config(config_path)
             model_config = config['supcon']['model']
+            inference_config = config['supcon'].get('inference', {})
         else:
             model_config = checkpoint.get('config', {}).get('supcon', {}).get('model', {})
+            inference_config = checkpoint.get('config', {}).get('supcon', {}).get('inference', {})
+        self.embedding_source = model_config.get(
+            'embedding_source',
+            inference_config.get('embedding_source', 'representations')
+            if isinstance(inference_config, dict)
+            else 'representations'
+        )
         
         # 创建模型
         self.model = ConvNeXtModel(
@@ -111,7 +119,7 @@ class EmbeddingExtractor:
         with torch.no_grad():
             mask = torch.ones(1, 1, 224, 224).to(self.device)
             outputs = self.model(image_tensor, mask, return_features=False)
-            embedding = outputs['representations'].cpu().numpy()[0]
+            embedding = outputs[self.embedding_source].cpu().numpy()[0]
         
         return embedding
     
@@ -203,7 +211,7 @@ class EmbeddingExtractor:
                 
                 mask = torch.ones(images.shape[0], 1, images.shape[2], images.shape[3]).to(self.device)
                 outputs = self.model(images, mask, return_features=False)
-                embeddings = outputs['representations'].cpu().numpy()
+                embeddings = outputs[self.embedding_source].cpu().numpy()
                 
                 for i, instance_id in enumerate(instance_ids):
                     embeddings_dict[instance_id] = embeddings[i]
