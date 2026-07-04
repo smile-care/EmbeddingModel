@@ -33,8 +33,18 @@ def _convnext_build_kwargs(model_config: dict[str, Any]) -> dict[str, Any]:
     if use_layers is None:
         use_layers = cnx.get("use_layers", [1, 2, 3])
 
+    embedding_dim = int(model_config.get("embedding_dim", 128))
+    fusion_dim = cnx.get("fusion_dim", model_config.get("fusion_dim", embedding_dim))
+    fusion_dim = int(fusion_dim) if fusion_dim is not None else embedding_dim
+    projection_hidden_dim = cnx.get("projection_hidden_dim", model_config.get("projection_hidden_dim"))
+    projection_hidden_dim = int(projection_hidden_dim) if projection_hidden_dim is not None else None
+
     return {
         "use_layers": list(use_layers),
+        "fusion_dim": fusion_dim,
+        "projection_hidden_dim": projection_hidden_dim,
+        "mask_gating": dict(cnx.get("mask_gating", {})),
+        "pooling": dict(cnx.get("pooling", {"mode": "fg_only"})),
     }
 
 
@@ -42,7 +52,12 @@ def _vit_build_kwargs(model_config: dict[str, Any]) -> dict[str, Any]:
     """Resolve ViT-specific keys from nested supcon config."""
     vit = model_config.get("vit")
     vit = vit if isinstance(vit, dict) else {}
-    return {"cls_weight": float(vit.get("cls_weight", 0.3))}
+    projection_hidden_dim = vit.get("projection_hidden_dim", model_config.get("projection_hidden_dim"))
+    projection_hidden_dim = int(projection_hidden_dim) if projection_hidden_dim is not None else None
+    return {
+        "cls_weight": float(vit.get("cls_weight", 0.3)),
+        "projection_hidden_dim": projection_hidden_dim,
+    }
 
 
 def _resolve_queue_size(moco_config: dict[str, Any]) -> int:

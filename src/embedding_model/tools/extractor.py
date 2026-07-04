@@ -46,7 +46,15 @@ class EmbeddingExtractor:
             backbone_cfg=None,  # 权重已在checkpoint中
             ckpt_path=None,
             embedding_dim=model_config.get('embedding_dim', 128),
+            fusion_dim=model_config.get('convnext', {}).get('fusion_dim', model_config.get('embedding_dim', 128)),
+            projection_hidden_dim=model_config.get('convnext', {}).get(
+                'projection_hidden_dim',
+                model_config.get('projection_hidden_dim')
+            ),
             image_size=224,
+            use_layers=model_config.get('convnext', {}).get('use_layers', [1, 2, 3]),
+            mask_gating=model_config.get('convnext', {}).get('mask_gating', {}),
+            pooling=model_config.get('convnext', {}).get('pooling', {'mode': 'fg_only'}),
         ).to(self.device)
         
         # 加载权重
@@ -103,7 +111,7 @@ class EmbeddingExtractor:
         with torch.no_grad():
             mask = torch.ones(1, 1, 224, 224).to(self.device)
             outputs = self.model(image_tensor, mask, return_features=False)
-            embedding = outputs['embeddings'].cpu().numpy()[0]
+            embedding = outputs['representations'].cpu().numpy()[0]
         
         return embedding
     
@@ -195,7 +203,7 @@ class EmbeddingExtractor:
                 
                 mask = torch.ones(images.shape[0], 1, images.shape[2], images.shape[3]).to(self.device)
                 outputs = self.model(images, mask, return_features=False)
-                embeddings = outputs['embeddings'].cpu().numpy()
+                embeddings = outputs['representations'].cpu().numpy()
                 
                 for i, instance_id in enumerate(instance_ids):
                     embeddings_dict[instance_id] = embeddings[i]

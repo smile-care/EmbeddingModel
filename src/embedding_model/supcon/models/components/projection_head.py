@@ -24,6 +24,7 @@ class ProjectionHead(nn.Module):
     def __init__(
         self,
         input_dim: int,
+        hidden_dim: int | None = None,
         output_dim: int = 128,
     ):
         """
@@ -34,7 +35,7 @@ class ProjectionHead(nn.Module):
         """
         super().__init__()
 
-        hidden_dim = output_dim * 4
+        hidden_dim = hidden_dim or max(input_dim, output_dim * 4)
         prev_dim = input_dim
 
         self.projection = nn.Sequential(

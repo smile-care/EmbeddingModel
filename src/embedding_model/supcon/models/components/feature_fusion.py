@@ -1,6 +1,4 @@
-"""
-多层特征融合模块
-"""
+"""ConvNeXt multi-stage foreground representation fusion."""
 from typing import List, Tuple
 
 import torch
@@ -9,13 +7,20 @@ import torch.nn.functional as F
 
 
 class FeatureFusion(nn.Module):
-    """Backbone 原生多层特征的 mask 加权融合模块。"""
+    """Foreground-only multi-stage representation neck.
+
+    The module pools each selected ConvNeXt stage inside the current instance
+    mask, projects every pooled vector to ``output_dim``, then fuses the
+    concatenated stage vectors into the representation space used by downstream
+    embedding analysis.
+    """
     
     def __init__(
         self,
         feature_dims: List[int],
         output_dim: int = 512,
-        use_layers: List[int] = [1, 2, 3]
+        use_layers: List[int] = [1, 2, 3],
+        pooling_mode: str = "fg_only",
     ):
         """
         初始化特征融合模块
@@ -27,7 +32,11 @@ class FeatureFusion(nn.Module):
         """
         super().__init__()
         
+        if pooling_mode != "fg_only":
+            raise ValueError(f"FeatureFusion 仅支持 foreground-only pooling，当前为 {pooling_mode!r}")
+
         self.use_layers = list(use_layers)
+        self.pooling_mode = pooling_mode
         if not self.use_layers:
             raise ValueError("use_layers 不能为空")
         invalid_layers = [i for i in self.use_layers if i < 0 or i >= len(feature_dims)]

@@ -164,12 +164,12 @@ def train_epoch(
             # MoCo训练流程
             # 1. 使用query_encoder计算view1的query embeddings
             query_outputs1 = model(view1_images, view1_masks, mode='query', return_features=False)
-            query_embeddings1 = query_outputs1['embeddings']
+            query_embeddings1 = query_outputs1['projections']
 
             # 2. 使用momentum_encoder计算view2的key embeddings（用于positive pairs和更新队列）
             with torch.no_grad():
                 key_outputs2 = model(view2_images, view2_masks, mode='key', return_features=False)
-                key_embeddings2 = key_outputs2['embeddings']
+                key_embeddings2 = key_outputs2['projections']
 
             # 3. 获取队列中的负样本
             queue_embeddings, queue_labels = moco_queue.get_queue(device=device)
@@ -223,10 +223,10 @@ def train_epoch(
             # 标准SupCon训练流程
             # 前向传播：分别计算view1和view2的embedding
             outputs1 = model(view1_images, view1_masks, return_features=False)
-            embeddings1 = outputs1['embeddings']
+            embeddings1 = outputs1['projections']
 
             outputs2 = model(view2_images, view2_masks, return_features=False)
-            embeddings2 = outputs2['embeddings']
+            embeddings2 = outputs2['projections']
 
             # 拼接view1和view2的embedding，形成2B大小的batch
             # embeddings: [view1_0, view1_1, ..., view1_B-1, view2_0, view2_1, ..., view2_B-1]
@@ -338,8 +338,9 @@ def validate(
     nan_embedding_count = 0
     nan_loss_count = 0
 
-    # 收集所有验证集的embeddings和labels（用于全局相似度分布分析）
-    all_embeddings = []
+    # 收集所有验证集的 projection / representation 和 labels
+    all_projections = []
+    all_representations = []
     all_labels = []
 
     with torch.no_grad():
@@ -356,17 +357,19 @@ def validate(
             else:
                 # 标准SupCon验证
                 outputs1 = model(view1_images, view1_masks, return_features=False)
-            embeddings1 = outputs1['embeddings']
+            projections1 = outputs1['projections']
+            representations1 = outputs1['representations']
 
-            # 归一化embeddings（L2归一化）
-            embeddings1 = F.normalize(embeddings1, dim=1, p=2, eps=1e-8)
+            projections1 = F.normalize(projections1, dim=1, p=2, eps=1e-8)
+            representations1 = F.normalize(representations1, dim=1, p=2, eps=1e-8)
 
-            # 检查embeddings是否包含NaN或Inf
-            if torch.isnan(embeddings1).any() or torch.isinf(embeddings1).any():
+            # 检查输出是否包含NaN或Inf
+            if (torch.isnan(projections1).any() or torch.isinf(projections1).any() or
+                torch.isnan(representations1).any() or torch.isinf(representations1).any()):
                 nan_embedding_count += 1
                 skipped_batches += 1
                 if nan_embedding_count <= 5:  # 只打印前5次警告
-                    print(f"警告：验证时embeddings包含NaN或Inf，跳过此batch")
+                    print(f"警告：验证时模型输出包含NaN或Inf，跳过此batch")
                 continue
 
             # 对于MoCo，验证时使用标准SupCon loss（因为不需要队列）
@@ -377,9 +380,9 @@ def validate(
                 temp_criterion = SupervisedContrastiveLoss(
                     temperature=loss_temperature,
                 ).to(device)
-                loss = temp_criterion(embeddings1, labels)
+                loss = temp_criterion(projections1, labels)
             else:
-                loss = criterion(embeddings1, labels)
+                loss = criterion(projections1, labels)
 
             # 检查loss是否为NaN或Inf
             if torch.isnan(loss) or torch.isinf(loss) or loss.item() != loss.item():
@@ -389,8 +392,9 @@ def validate(
                     print(f"警告：验证时loss为NaN或Inf，跳过此batch")
                 continue
 
-            # 收集embeddings and labels（用于全局相似度分布分析）
-            all_embeddings.append(embeddings1.cpu())  # 移到CPU以节省GPU内存
+            # 收集 projection / representation and labels
+            all_projections.append(projections1.cpu())
+            all_representations.append(representations1.cpu())
             all_labels.append(labels.cpu())
 
             total_loss += loss.item()
@@ -401,29 +405,41 @@ def validate(
         print(f"验证统计: 跳过{skipped_batches}个batch (NaN embedding: {nan_embedding_count}, NaN loss: {nan_loss_count})")
 
     # 基于整个验证集计算相似度分布统计（核心评估指标）
-    if len(all_embeddings) > 0:
-        # 拼接所有embeddings和labels
-        all_embeddings_tensor = torch.cat(all_embeddings, dim=0)  # (N, D)
+    if len(all_projections) > 0:
+        # 拼接所有输出和labels
+        all_projections_tensor = torch.cat(all_projections, dim=0)  # (N, D_z)
+        all_representations_tensor = torch.cat(all_representations, dim=0)  # (N, D_h)
         all_labels_tensor = torch.cat(all_labels, dim=0)  # (N,)
 
         # 将tensor移回device进行计算
-        all_embeddings_tensor = all_embeddings_tensor.to(device)
+        all_projections_tensor = all_projections_tensor.to(device)
+        all_representations_tensor = all_representations_tensor.to(device)
         all_labels_tensor = all_labels_tensor.to(device)
 
-        # 1. 计算相似度分布统计（Margin指标）
-        sim_stats = similarity_distribution_stats(all_embeddings_tensor, all_labels_tensor)
+        # 1. 应用侧 representation 指标（主指标）
+        sim_stats = similarity_distribution_stats(all_representations_tensor, all_labels_tensor)
         margin_pos_sim = sim_stats['pos_sim']
         margin_neg_sim = sim_stats['neg_sim']
         margin = sim_stats['margin']
-
-        # 2. 计算kNN评估指标
-        knn_stats = knn_evaluation(all_embeddings_tensor, all_labels_tensor, k=10)
+        knn_stats = knn_evaluation(all_representations_tensor, all_labels_tensor, k=10)
         knn_accuracy = knn_stats.get('knn_accuracy', 0.0)
+
+        # 2. projection 指标（loss监督空间诊断）
+        proj_sim_stats = similarity_distribution_stats(all_projections_tensor, all_labels_tensor)
+        projection_margin_pos_sim = proj_sim_stats['pos_sim']
+        projection_margin_neg_sim = proj_sim_stats['neg_sim']
+        projection_margin = proj_sim_stats['margin']
+        projection_knn_stats = knn_evaluation(all_projections_tensor, all_labels_tensor, k=10)
+        projection_knn_accuracy = projection_knn_stats.get('knn_accuracy', 0.0)
     else:
         margin_pos_sim = 0.0
         margin_neg_sim = 0.0
         margin = 0.0
         knn_accuracy = 0.0
+        projection_margin_pos_sim = 0.0
+        projection_margin_neg_sim = 0.0
+        projection_margin = 0.0
+        projection_knn_accuracy = 0.0
 
     return {
         'loss': total_loss / num_batches if num_batches > 0 else 0.0,
@@ -433,6 +449,10 @@ def validate(
         'margin': margin,
         # kNN评估指标（独立指标）
         'knn_accuracy': knn_accuracy,
+        'projection_margin_pos_sim': projection_margin_pos_sim,
+        'projection_margin_neg_sim': projection_margin_neg_sim,
+        'projection_margin': projection_margin,
+        'projection_knn_accuracy': projection_knn_accuracy,
         'skipped_batches': skipped_batches,
     }
 
@@ -495,10 +515,21 @@ def build_model(
     if is_vit:
         vit_cfg = model_config.get('vit', {})
         common_kwargs['cls_weight'] = vit_cfg.get('cls_weight', 0.3)
+        common_kwargs['projection_hidden_dim'] = vit_cfg.get(
+            'projection_hidden_dim',
+            model_config.get('projection_hidden_dim')
+        )
     else:
         cnx_cfg = model_config.get('convnext', {})
         common_kwargs.update(dict(
             use_layers=cnx_cfg.get('use_layers', [1, 2, 3]),
+            fusion_dim=cnx_cfg.get('fusion_dim', model_config.get('embedding_dim')),
+            projection_hidden_dim=cnx_cfg.get(
+                'projection_hidden_dim',
+                model_config.get('projection_hidden_dim')
+            ),
+            mask_gating=cnx_cfg.get('mask_gating', {}),
+            pooling=cnx_cfg.get('pooling', {'mode': 'fg_only'}),
         ))
 
     if use_moco:
@@ -981,6 +1012,10 @@ def main():
                 'margin_neg_sim': sum(m.get('margin_neg_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                 'margin': sum(m.get('margin', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                 'knn_accuracy': sum(m.get('knn_accuracy', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                'projection_margin_pos_sim': sum(m.get('projection_margin_pos_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                'projection_margin_neg_sim': sum(m.get('projection_margin_neg_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                'projection_margin': sum(m.get('projection_margin', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                'projection_knn_accuracy': sum(m.get('projection_knn_accuracy', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
             }
             val_losses.append(val_metrics['loss'])
 
@@ -1005,7 +1040,9 @@ def main():
                 f"\n  [val] 汇总: loss={val_metrics['loss']:.4f}, "
                 f"PosSim={val_metrics.get('margin_pos_sim', 0):.4f}, "
                 f"NegSim={val_metrics.get('margin_neg_sim', 0):.4f}, "
-                f"Margin={val_metrics.get('margin', 0):.4f}, kNN={val_metrics.get('knn_accuracy', 0):.4f}"
+                f"Margin={val_metrics.get('margin', 0):.4f}, kNN={val_metrics.get('knn_accuracy', 0):.4f}, "
+                f"ProjMargin={val_metrics.get('projection_margin', 0):.4f}, "
+                f"ProjKNN={val_metrics.get('projection_knn_accuracy', 0):.4f}"
             )
             if moco_queues is not None:
                 for sn, q in zip(train_scene_names, moco_queues):
@@ -1013,7 +1050,9 @@ def main():
             for sn, vm in val_metrics_per_scene:
                 log_msg += (
                     f"\n  [val] {sn}: loss={vm['loss']:.4f}, "
-                    f"Margin={vm.get('margin', 0):.4f}, kNN={vm.get('knn_accuracy', 0):.4f}"
+                    f"Margin={vm.get('margin', 0):.4f}, kNN={vm.get('knn_accuracy', 0):.4f}, "
+                    f"ProjMargin={vm.get('projection_margin', 0):.4f}, "
+                    f"ProjKNN={vm.get('projection_knn_accuracy', 0):.4f}"
                 )
         logger.info(log_msg)
 
@@ -1037,10 +1076,16 @@ def main():
                 log_dict['val_margin_neg_sim'] = val_metrics.get('margin_neg_sim', 0)
                 log_dict['val_margin'] = val_metrics.get('margin', 0)
                 log_dict['val_knn_accuracy'] = val_metrics.get('knn_accuracy', 0)
+                log_dict['val_projection_margin_pos_sim'] = val_metrics.get('projection_margin_pos_sim', 0)
+                log_dict['val_projection_margin_neg_sim'] = val_metrics.get('projection_margin_neg_sim', 0)
+                log_dict['val_projection_margin'] = val_metrics.get('projection_margin', 0)
+                log_dict['val_projection_knn_accuracy'] = val_metrics.get('projection_knn_accuracy', 0)
                 for sn, vm in val_metrics_per_scene:
                     log_dict[f'val_loss/{sn}'] = vm['loss']
                     log_dict[f'val_margin/{sn}'] = vm.get('margin', 0)
                     log_dict[f'val_knn_accuracy/{sn}'] = vm.get('knn_accuracy', 0)
+                    log_dict[f'val_projection_margin/{sn}'] = vm.get('projection_margin', 0)
+                    log_dict[f'val_projection_knn_accuracy/{sn}'] = vm.get('projection_knn_accuracy', 0)
             wandb.log(log_dict)
 
         # 保存 checkpoint（仅主进程）

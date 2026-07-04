@@ -18,13 +18,21 @@ supcon:
   model:
     backbone: "convnext_tiny"   # ← 只改这里来切换 backbone
 
-    embedding_dim: 256
+    embedding_dim: 256          # ProjectionHead 输出维度 z（对比学习监督空间）
 
     # ----------------------------------------------------------
     # ConvNeXt 管线专用参数（backbone 为 convnext_* 时生效）
     # ----------------------------------------------------------
     convnext:
       use_layers: [1, 2, 3]     # 原生多层 mask pooling 的 stage 索引（0=4x, 1=8x, 2=16x, 3=32x）
+      fusion_dim: 768           # FeatureFusion 输出维度 h（应用分析表征空间）
+      projection_hidden_dim: 1024
+      mask_gating:
+        enabled: true
+        init_gamma: 0.0
+        per_layer: true
+      pooling:
+        mode: "fg_only"
 
     # ----------------------------------------------------------
     # ViT 管线专用参数（backbone 为 vit* 时生效）

@@ -25,10 +25,14 @@ class MoCoModel(nn.Module):
         backbone_cfg: Optional[Union[DINOv3ConvNextConfig, DINOv3ViTConfig]] = None,
         ckpt_path: Optional[str] = None,
         embedding_dim: int = 128,
+        fusion_dim: Optional[int] = None,
+        projection_hidden_dim: Optional[int] = None,
         image_size: int = 224,
         freeze_backbone: bool = False,
         # ConvNeXt 专用
         use_layers: Optional[List[int]] = [1, 2, 3],
+        mask_gating: Optional[dict] = None,
+        pooling: Optional[dict] = None,
         # ViT 专用
         cls_weight: float = 0.3,
         momentum: float = 0.999,
@@ -56,6 +60,7 @@ class MoCoModel(nn.Module):
                 backbone_cfg=backbone_cfg,
                 ckpt_path=ckpt_path,
                 embedding_dim=embedding_dim,
+                projection_hidden_dim=projection_hidden_dim,
                 image_size=image_size,
                 freeze_backbone=freeze_backbone,
                 cls_weight=cls_weight,
@@ -66,9 +71,13 @@ class MoCoModel(nn.Module):
                 backbone_cfg=backbone_cfg,
                 ckpt_path=ckpt_path,
                 embedding_dim=embedding_dim,
+                fusion_dim=fusion_dim,
+                projection_hidden_dim=projection_hidden_dim,
                 image_size=image_size,
                 freeze_backbone=freeze_backbone,
                 use_layers=use_layers,
+                mask_gating=mask_gating,
+                pooling=pooling,
             )
 
         self.query_encoder    = model_cls(**model_kwargs)

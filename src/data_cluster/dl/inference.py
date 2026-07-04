@@ -186,7 +186,7 @@ def _compute_supcon_embeddings_raw(
             pred = model(x, m, mode="query", return_features=False)
         else:
             pred = model(x, m, return_features=False)
-        emb = F.normalize(pred["embeddings"], dim=1, p=2, eps=1e-8)
+        emb = F.normalize(pred["representations"], dim=1, p=2, eps=1e-8)
         out.append(emb.cpu().numpy())
 
     if not out:

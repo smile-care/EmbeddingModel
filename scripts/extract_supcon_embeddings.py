@@ -214,10 +214,21 @@ class SupConEmbeddingExtractor:
         )
         if is_vit:
             common_kwargs['cls_weight'] = model_config.get('vit', {}).get('cls_weight', 0.3)
+            common_kwargs['projection_hidden_dim'] = model_config.get('vit', {}).get(
+                'projection_hidden_dim',
+                model_config.get('projection_hidden_dim')
+            )
         else:
             cnx_cfg = model_config.get('convnext', {})
             common_kwargs.update(dict(
                 use_layers=cnx_cfg.get('use_layers', [1, 2, 3]),
+                fusion_dim=cnx_cfg.get('fusion_dim', model_config.get('embedding_dim', 128)),
+                projection_hidden_dim=cnx_cfg.get(
+                    'projection_hidden_dim',
+                    model_config.get('projection_hidden_dim')
+                ),
+                mask_gating=cnx_cfg.get('mask_gating', {}),
+                pooling=cnx_cfg.get('pooling', {'mode': 'fg_only'}),
             ))
 
         if is_moco_model:
@@ -312,7 +323,7 @@ class SupConEmbeddingExtractor:
                 outputs = self.model(image_tensor, mask_tensor, mode='query', return_features=False)
             else:
                 outputs = self.model(image_tensor, mask_tensor, return_features=False)
-            embedding = outputs['embeddings'].cpu().numpy()[0]
+            embedding = outputs['representations'].cpu().numpy()[0]
         
         return embedding
     
@@ -391,7 +402,7 @@ class SupConEmbeddingExtractor:
                     outputs = self.model(images, masks, mode='query', return_features=False)
                 else:
                     outputs = self.model(images, masks, return_features=False)
-                embeddings = outputs['embeddings'].cpu().numpy()
+                embeddings = outputs['representations'].cpu().numpy()
                 
                 # 归一化embeddings（与训练时loss函数中的归一化保持一致）
                 embeddings = F.normalize(

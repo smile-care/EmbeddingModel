@@ -103,9 +103,13 @@ def main() -> None:
         backbone_cfg=backbone_cfg,
         ckpt_path=str(backbone_ckpt_path),
         embedding_dim=int(model_config["embedding_dim"]),
+        fusion_dim=int(convnext_config.get("fusion_dim", model_config["embedding_dim"])),
+        projection_hidden_dim=convnext_config.get("projection_hidden_dim"),
         image_size=image_size,
         freeze_backbone=False,
         use_layers=list(convnext_config.get("use_layers", [1, 2, 3])),
+        mask_gating=dict(convnext_config.get("mask_gating", {})),
+        pooling=dict(convnext_config.get("pooling", {"mode": "fg_only"})),
     ).to(device)
     model.eval()
 
@@ -147,9 +151,9 @@ def main() -> None:
     print(f"image_size: {image_size}")
     print(f"batch_size: {batch_size}")
     print(f"use_layers: {convnext_config.get('use_layers', [1, 2, 3])}")
-    print(f"features: {tuple(outputs['features'].shape)}")
-    print(f"embeddings: {tuple(outputs['embeddings'].shape)}")
-    print(f"embedding_norm: {outputs['embeddings'].norm(dim=1).tolist()}")
+    print(f"representations: {tuple(outputs['representations'].shape)}")
+    print(f"projections: {tuple(outputs['projections'].shape)}")
+    print(f"projection_norm: {outputs['projections'].norm(dim=1).tolist()}")
     print()
     print(THOP_NOTE)
     print_module_stats("backbone", model.backbone, module_macs["backbone"])

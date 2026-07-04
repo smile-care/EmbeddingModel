@@ -28,6 +28,7 @@ class ViTModel(nn.Module):
         backbone_cfg: Optional[DINOv3ViTConfig] = None,
         ckpt_path: Optional[str] = None,
         embedding_dim: int = 128,
+        projection_hidden_dim: Optional[int] = None,
         image_size: int = 224,
         freeze_backbone: bool = False,
         cls_weight: float = 0.3,
@@ -64,6 +65,7 @@ class ViTModel(nn.Module):
         # ProjectionHead: D → 4 * embedding_dim → embedding_dim
         self.projection_head = ProjectionHead(
             input_dim=D,
+            hidden_dim=projection_hidden_dim,
             output_dim=embedding_dim,
         )
 
@@ -77,26 +79,21 @@ class ViTModel(nn.Module):
         Args:
             x:    (B, C, H, W) 输入图像
             mask: (B, 1, H, W) 前景 mask，值域 [0, 1]
-            return_features: 是否返回 pooling 后的特征向量
+            return_features: 保留旧调用参数；输出始终包含 representations/projections
 
         Returns:
             dict:
-                embeddings:   (B, embedding_dim)
-                features:     pooling 后的特征向量 — 仅 return_features=True
+                representations: pooling 后表征 h
+                projections:     ProjectionHead 输出投影 z
         """
         cls_token, patch_tokens = self.backbone(x, output_hidden_states=True)
-        fused      = self.mask_pooling(cls_token, patch_tokens, mask)
-        embeddings = self.projection_head(fused)
+        representations = self.mask_pooling(cls_token, patch_tokens, mask)
+        projections = self.projection_head(representations)
 
-        if torch.isnan(embeddings).any() or torch.isinf(embeddings).any():
-            embeddings = torch.nan_to_num(embeddings, nan=0.0, posinf=1.0, neginf=-1.0)
+        if torch.isnan(projections).any() or torch.isinf(projections).any():
+            projections = torch.nan_to_num(projections, nan=0.0, posinf=1.0, neginf=-1.0)
 
-        result = {"embeddings": embeddings}
-
-        if return_features:
-            result["features"] = fused
-
-        return result
+        return {"representations": representations, "projections": projections}
 
     def freeze_backbone_layers(self, num_layers: Optional[int] = None) -> None:
         """冻结前 num_layers 个 transformer block（None 表示全部冻结）。"""

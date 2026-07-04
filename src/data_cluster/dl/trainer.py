@@ -38,10 +38,6 @@ from tqdm import tqdm
 from data_cluster.dl.step_budget import DEFAULT_NUM_CHECKPOINTS, compute_checkpoint_steps
 from embedding_model.supcon.build import (
     build_supcon_model,
-    extract_model_state_dict,
-    is_full_supcon_checkpoint,
-    is_full_supcon_state_dict,
-    normalize_state_dict_for_supcon_model,
 )
 from embedding_model.supcon.datasets.manifest_triplet_dataset import DataClusterTripletDataset
 from embedding_model.supcon.datasets.supcon_dataset import SupConDataset
@@ -242,10 +238,6 @@ class SupconTrainer:
 
         model_config = dict(self.model_config)
         pretrained_path = self._resolve_pretrained_path()
-        # 完整 SupCon 权重（含 fusion/head）在构建后一次性加载，避免 backbone 构造器只读 stages.*
-        if pretrained_path and pretrained_path.is_file() and is_full_supcon_checkpoint(pretrained_path):
-            model_config.pop("pretrained_path", None)
-
         model, _queue = build_supcon_model(
             model_config,
             image_size=self.image_size,
@@ -258,13 +250,10 @@ class SupconTrainer:
         self._load_pretrained_weights_if_any()
 
     def _load_pretrained_weights_if_any(self) -> None:
-        """加载预训练权重到模型 (strict=True)。
+        """记录预训练权重加载策略。
 
-        * 完整 SupCon checkpoint（含 feature_fusion / projection_head）：
-          加载 backbone + fusion + head；MoCo 格式会自动剥离 query_encoder 前缀。
-          键不匹配时立即报错，避免静默部分加载。
-        * 仅 backbone 权重（如 DINOv3 原始 ``pretrain_ckpts/*.pth``）：
-          已在 ``build_supcon_model`` 构建时由 backbone 加载，此处仅记录日志。
+        新 ConvNeXt SupCon 结构不迁移旧 fusion/head；backbone 权重已在
+        ``build_supcon_model`` 构建时加载。
         """
         path = self._resolve_pretrained_path()
         if not path:
@@ -273,19 +262,7 @@ class SupconTrainer:
             self.logger.warning(f"预训练权重文件不存在，跳过加载: {path}")
             return
 
-        ckpt = torch.load(str(path), map_location=self.device, weights_only=False)
-        if not isinstance(ckpt, dict):
-            self.logger.warning("预训练文件不是字典，跳过加载")
-            return
-
-        state = extract_model_state_dict(ckpt)
-        if is_full_supcon_state_dict(state):
-            state = normalize_state_dict_for_supcon_model(state)
-            self.logger.info(f"加载完整 SupCon 预训练权重 (strict=True): {path}")
-            self.model.load_state_dict(state, strict=True)
-            self.logger.info(f"预训练权重已加载，共 {len(state)} 个参数张量")
-        else:
-            self.logger.info(f"backbone 预训练权重已在模型构建时加载: {path}")
+        self.logger.info(f"backbone 预训练权重已在模型构建时加载，fusion/head/gating 重新初始化: {path}")
 
     def _setup_optimizer_scheduler(self) -> None:
         training_config = self.training_config
@@ -325,7 +302,7 @@ class SupconTrainer:
         out2 = self.model(v2_img, v2_mask, return_features=False)
 
         # 同一样本的 view1/view2 共享 label，构成 positive pair
-        embeddings = torch.cat([out1["embeddings"], out2["embeddings"]], dim=0)
+        embeddings = torch.cat([out1["projections"], out2["projections"]], dim=0)
         labels_dup = torch.cat([labels, labels], dim=0)
         loss = self.criterion(embeddings, labels_dup)
 
@@ -351,9 +328,9 @@ class SupconTrainer:
             labels = batch["label"].to(self.device, non_blocking=self.non_blocking)
 
             out = self.model(v1_img, v1_mask, return_features=False)
-            emb = F.normalize(out["embeddings"], dim=1, p=2, eps=1e-8)
+            emb = F.normalize(out["representations"], dim=1, p=2, eps=1e-8)
 
-            loss = self.criterion(emb, labels)
+            loss = self.criterion(out["projections"], labels)
             total_loss += loss.item()
             num_batches += 1
             all_embeddings.append(emb.cpu())
