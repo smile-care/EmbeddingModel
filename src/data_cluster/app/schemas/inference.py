@@ -41,9 +41,12 @@ class AnalyzeResponse(BaseModel):
 
 
 class ModelInfo(BaseModel):
+    model_config = {"populate_by_name": True, "serialize_by_alias": True}
+
     id: str
     name: str
     type: str = "Vision"
+    created_at: datetime | None = Field(default=None, serialization_alias="createdAt")
 
 
 class UploadCategoryOut(BaseModel):

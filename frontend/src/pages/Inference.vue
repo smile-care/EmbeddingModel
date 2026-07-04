@@ -15,7 +15,6 @@ import {
   ExternalLink,
   ImageIcon,
   LayoutGrid,
-  Minus,
   MoreVertical,
   Play,
   Plus,
@@ -30,6 +29,8 @@ import {
 import InferenceScatterChart from '@/components/InferenceScatterChart.vue';
 import type {PlotPoint} from '@/components/InferenceScatterChart.vue';
 import RelationsDrawer from '@/components/relations/RelationsDrawer.vue';
+import ImagePreviewModal from '@/components/annotation/ImagePreviewModal.vue';
+import type {AnnotationOverlayRegion} from '@/components/annotation/overlayUtils';
 import {analysisViewLabel, type ViewKey} from '@/components/relations/analysisViews';
 import HeadlineScore from '@/components/relations/HeadlineScore.vue';
 import ConfusionHeatmap from '@/components/relations/ConfusionHeatmap.vue';
@@ -40,6 +41,11 @@ import PerClassCards from '@/components/relations/PerClassCards.vue';
 import AnalysisViewHeader from '@/components/relations/AnalysisViewHeader.vue';
 import MislabelList from '@/components/relations/MislabelList.vue';
 import {DatasetsApi, InferenceApi, categoryChartColor, classColor, staticUrl, type AnnotationRegion, type CropImage, type DatasetImage, type DefectClass, type RelationsMislabel, type RelationsOut} from '@/lib/api';
+import {
+  SCATTER_POINT_SIZE_DEFAULT,
+  SCATTER_POINT_SIZE_MAX,
+  SCATTER_POINT_SIZE_MIN,
+} from '@/lib/scatterPointSize';
 
 // ── constants ──────────────────────────────────────────────────────────────
 const DEFAULT_RAW_GROUP_ID = 'default_pretrained';
@@ -50,17 +56,6 @@ const ALGO_LIST = ['TSNE', 'UMAP', 'PCA'] as const;
 type AlgoKey = (typeof ALGO_LIST)[number];
 
 // ── types ──────────────────────────────────────────────────────────────────
-interface AnnotationLabel {
-  label_id: number;
-  points: [number, number][];
-  isSubtract: boolean;
-}
-interface Annotation {
-  id: string;
-  shapeType?: string | null;
-  networkType?: string | null;
-  labels?: AnnotationLabel[] | null;
-}
 type TraceDatasetImage = DatasetImage;
 interface InferenceRunSummary {
   id: string;
@@ -193,6 +188,11 @@ const isAnalyzing = ref(false);
 const loadingAlgos = ref<Set<AlgoKey>>(new Set());
 const cachedAlgos = ref<Set<AlgoKey>>(new Set());
 const plotData = ref<PlotPoint[]>([]);
+const scatterPointSize = ref(SCATTER_POINT_SIZE_DEFAULT);
+
+function onScatterPointSizeInput(v: number) {
+  scatterPointSize.value = v;
+}
 
 const inferenceDatasetDetail = ref<{id: string; images: TraceDatasetImage[]; defectClasses: DefectClass[]} | null>(null);
 let _loadingRunDetail = false;
@@ -232,70 +232,6 @@ const runNameInputRef = ref<HTMLInputElement | null>(null);
 // ── preview modal state ────────────────────────────────────────────────────
 const previewPoint = ref<PlotPoint | null>(null);
 const previewModalView = ref<'crop' | 'source'>('crop');
-const showPreviewAnnotations = ref(true);
-/** Scale multiplier relative to the fit-to-viewport base scale */
-const imagePreviewZoom = ref(1);
-/** Preview zoom limits (slightly tighter than raw 0.1–8) */
-const PREVIEW_ZOOM_MIN = 0.2;
-const PREVIEW_ZOOM_MAX = 6;
-/** Fit-to-viewport scale computed once the image loads */
-const imagePreviewFitScale = ref(1);
-/** Pan offset in CSS pixels applied *after* scale (so 1px pan = 1px movement on screen) */
-const imagePreviewPan = ref({x: 0, y: 0});
-const imagePreviewWheelRef = ref<HTMLDivElement | null>(null);
-const imagePreviewImgRef = ref<HTMLImageElement | null>(null);
-/** Natural pixel size of the current preview image (updated on load) */
-const imagePreviewNaturalSize = ref({w: 0, h: 0});
-/** Viewport size of the drag area (updated via ResizeObserver) */
-const previewContainerSize = ref({w: 0, h: 0});
-
-/** Combined transform scale = fitScale * userZoom */
-const previewEffectiveScale = computed(() => imagePreviewFitScale.value * imagePreviewZoom.value);
-
-/** Annotation outline width in viewBox units — keeps ~constant screen pixels for any image size/zoom. */
-const previewAnnotationStrokeWidth = computed(() => {
-  const nw = imagePreviewNaturalSize.value.w;
-  const scale = previewEffectiveScale.value;
-  if (!nw || !scale) return 0.002;
-  const targetPx = previewModalView.value === 'source' ? 1.25 : 1.75;
-  return targetPx / (nw * scale);
-});
-
-/** True when scaled image exceeds the viewport — only then allow drag-to-pan */
-const previewCanPan = computed(() => {
-  const nw = imagePreviewNaturalSize.value.w;
-  const nh = imagePreviewNaturalSize.value.h;
-  const cw = previewContainerSize.value.w;
-  const ch = previewContainerSize.value.h;
-  if (!nw || !nh || !cw || !ch) return false;
-  const s = previewEffectiveScale.value;
-  const dw = nw * s;
-  const dh = nh * s;
-  return dw > cw + 0.5 || dh > ch + 0.5;
-});
-
-function updatePreviewContainerSize() {
-  const el = imagePreviewWheelRef.value;
-  if (!el) return;
-  previewContainerSize.value = {w: el.clientWidth, h: el.clientHeight};
-}
-
-function computeFitScale() {
-  const img = imagePreviewImgRef.value;
-  const container = imagePreviewWheelRef.value;
-  if (!img || !container) return;
-  const nw = img.naturalWidth || img.width;
-  const nh = img.naturalHeight || img.height;
-  if (!nw || !nh) return;
-  imagePreviewNaturalSize.value = {w: nw, h: nh};
-  const cw = container.clientWidth - 32;   // 16px padding each side
-  const ch = container.clientHeight - 32;
-  const scale = Math.min(1, cw / nw, ch / nh);
-  imagePreviewFitScale.value = scale;
-  imagePreviewZoom.value = 1;
-  imagePreviewPan.value = {x: 0, y: 0};
-  updatePreviewContainerSize();
-}
 
 // ── helpers ────────────────────────────────────────────────────────────────
 const selectedRun = computed(() => inferenceRuns.value.find((r) => r.id === selectedRunId.value));
@@ -308,9 +244,14 @@ const mainModelOptions = computed(() => {
   const items: {id: string; name: string}[] = [{id: DEFAULT_RAW_GROUP_ID, name: DEFAULT_RAW_GROUP_NAME}];
   const industrial = apiModels.value.find((m) => m.id === INDUSTRIAL_MODEL_ID);
   if (industrial) items.push({id: industrial.id, name: industrial.name});
-  for (const m of apiModels.value) {
-    if (m.type === 'Trained') items.push({id: m.id, name: m.name});
-  }
+  const trained = apiModels.value
+    .filter((m) => m.type === 'Trained')
+    .sort((a, b) => {
+      const ta = a.createdAt ? Date.parse(a.createdAt) : 0;
+      const tb = b.createdAt ? Date.parse(b.createdAt) : 0;
+      return ta - tb;
+    });
+  for (const m of trained) items.push({id: m.id, name: m.name});
   return items;
 });
 
@@ -968,10 +909,6 @@ function findSourceImage(sourceImageId: string): TraceDatasetImage | null {
   return inferenceDatasetDetail.value?.images.find((i) => i.id === sourceImageId) ?? null;
 }
 
-function regionToLabel(r: AnnotationRegion, i: number): AnnotationLabel {
-  return {label_id: i, points: r.points as [number, number][], isSubtract: r.isSubtract};
-}
-
 function findCropInDataset(cropId: string): CropImage | null {
   const detail = inferenceDatasetDetail.value;
   if (!detail) return null;
@@ -982,34 +919,45 @@ function findCropInDataset(cropId: string): CropImage | null {
   return null;
 }
 
-function cropAnnotationFromPoint(p: PlotPoint): Annotation | null {
-  const shapes = p.cropAnnotation?.length
-    ? p.cropAnnotation
-    : findCropInDataset(p.id)?.cropAnnotation;
-  if (!shapes?.length) return null;
-  return {
-    id: p.id,
-    labels: shapes.map((lbl, i) => ({
-      label_id: i,
-      points: lbl.points as [number, number][],
-      isSubtract: lbl.isSubtract,
-    })),
-  };
+function inferenceClassName(classId: string | null | undefined): string {
+  if (!classId) return 'Unassigned';
+  return inferenceDatasetDetail.value?.defectClasses.find((c) => c.id === classId)?.name ?? 'Unknown';
 }
 
-function sourceAnnotationFromPoint(p: PlotPoint): Annotation | null {
-  const img = p.sourceImageId ? findSourceImage(p.sourceImageId) : null;
-  if (!img?.regions?.length) return null;
-  const idx = p.instanceIndex ?? 0;
-  const target = img.regions[idx] ?? null;
-  const labels = target ? [regionToLabel(target, idx)] : img.regions.map(regionToLabel);
-  return {id: img.id, labels};
+function inferenceColorForClass(classId: string | null | undefined, isSubtract?: boolean): string {
+  if (isSubtract) return '#94a3b8';
+  if (!classId) return '#64748b';
+  const cls = inferenceDatasetDetail.value?.defectClasses.find((c) => c.id === classId);
+  return classColor(cls ?? null);
 }
 
-const previewAnnotation = computed((): Annotation | null => {
+const previewOverlayRegions = computed((): AnnotationOverlayRegion[] => {
   const p = previewPoint.value;
-  if (!p?.url) return null;
-  return previewModalView.value === 'crop' ? cropAnnotationFromPoint(p) : sourceAnnotationFromPoint(p);
+  if (!p) return [];
+  if (previewModalView.value === 'crop') {
+    const crop = findCropInDataset(p.id);
+    const shapes = p.cropAnnotation?.length ? p.cropAnnotation : crop?.cropAnnotation;
+    if (!shapes?.length) return [];
+    const classId = crop?.classId ?? null;
+    const clsLabel = p.label ?? inferenceClassName(classId);
+    return shapes.map((shape) => ({
+      points: shape.points,
+      isSubtract: shape.isSubtract,
+      classId,
+      label: shape.isSubtract ? 'Hole' : clsLabel,
+    }));
+  }
+  const img = p.sourceImageId ? findSourceImage(p.sourceImageId) : null;
+  if (!img?.regions?.length) return [];
+  const idx = p.instanceIndex ?? 0;
+  const picked = img.regions[idx];
+  const list = picked ? [picked] : img.regions;
+  return list.map((r) => ({
+    points: r.points,
+    isSubtract: r.isSubtract,
+    classId: r.classId,
+    label: r.isSubtract ? 'Hole' : inferenceClassName(r.classId),
+  }));
 });
 
 const previewDisplayUrl = computed(() => {
@@ -1030,10 +978,6 @@ function openPreview(point: PlotPoint) {
   if (!point.url) return;
   previewPoint.value = point;
   previewModalView.value = 'crop';
-  showPreviewAnnotations.value = true;
-  imagePreviewZoom.value = 1;
-  imagePreviewFitScale.value = 1;
-  imagePreviewPan.value = {x: 0, y: 0};
 }
 
 function closePreview() {
@@ -1041,129 +985,14 @@ function closePreview() {
   previewModalView.value = 'crop';
 }
 
-// ── preview modal: keyboard + wheel — managed manually ─────────────────────
-let _kbdHandler: ((e: KeyboardEvent) => void) | null = null;
-let _wheelHandler: ((e: WheelEvent) => void) | null = null;
-let _wheelEl: HTMLElement | null = null;
-let _prevBodyOverflow = '';
-let _previewResizeObs: ResizeObserver | null = null;
-
-function attachPreviewGlobalHandlers() {
-  detachPreviewGlobalHandlers();
-  _prevBodyOverflow = document.body.style.overflow;
-  document.body.style.overflow = 'hidden';
-
-  _kbdHandler = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') { closePreview(); return; }
-    if (e.key === ' ') {
-      e.preventDefault();
-      if (previewAnnotation.value?.labels?.length) showPreviewAnnotations.value = !showPreviewAnnotations.value;
-    }
-  };
-  window.addEventListener('keydown', _kbdHandler);
-
-  void nextTick(() => {
-    const el = imagePreviewWheelRef.value;
-    if (!el) return;
-    updatePreviewContainerSize();
-    _previewResizeObs = new ResizeObserver(() => {
-      updatePreviewContainerSize();
-    });
-    _previewResizeObs.observe(el);
-    _wheelEl = el;
-    _wheelHandler = (e: WheelEvent) => {
-      e.preventDefault();
-      imagePreviewZoom.value = Math.min(
-        PREVIEW_ZOOM_MAX,
-        Math.max(PREVIEW_ZOOM_MIN, imagePreviewZoom.value - e.deltaY * 0.002),
-      );
-    };
-    el.addEventListener('wheel', _wheelHandler, {passive: false});
-  });
-}
-
-function detachPreviewGlobalHandlers() {
-  if (_kbdHandler) { window.removeEventListener('keydown', _kbdHandler); _kbdHandler = null; }
-  if (_wheelEl && _wheelHandler) { _wheelEl.removeEventListener('wheel', _wheelHandler); _wheelEl = null; _wheelHandler = null; }
-  _previewResizeObs?.disconnect();
-  _previewResizeObs = null;
-  document.body.style.overflow = _prevBodyOverflow;
-}
-
-watch(previewPoint, (p) => {
-  if (p) {
-    imagePreviewZoom.value = 1;
-    imagePreviewFitScale.value = 1;
-    imagePreviewPan.value = {x: 0, y: 0};
-    attachPreviewGlobalHandlers();
-  } else {
-    detachPreviewGlobalHandlers();
-  }
-});
-
-// Also reset pan+fit when switching between crop/source view
-watch(previewModalView, () => {
-  imagePreviewZoom.value = 1;
-  imagePreviewFitScale.value = 1;
-  imagePreviewPan.value = {x: 0, y: 0};
-  // fitScale will be recomputed by onload
-});
-
-watch(previewCanPan, (can) => {
-  if (!can) {
-    imagePreviewPan.value = {x: 0, y: 0};
-    previewDragging.value = false;
-  }
-});
-
 onUnmounted(() => {
   document.removeEventListener('mousedown', onRawVariantPickerOutside);
   document.removeEventListener('mousedown', onAnalysisDrawerOutside);
   window.removeEventListener('scroll', updateRawVariantPanelPos, true);
   window.removeEventListener('resize', updateRawVariantPanelPos);
-  detachPreviewGlobalHandlers();
   _menuCleanup?.();
   const runId = selectedRunId.value;
   if (runId) void InferenceApi.deleteEmbeddingCache(runId).catch(() => {});
-});
-
-// ── preview modal: drag-to-pan ─────────────────────────────────────────────
-// Instead of scrolling an overflow container, we manipulate imagePreviewPan
-// via CSS transform — this works at any zoom level including <100%.
-const previewDragging = ref(false);
-let _dragStartClient = {x: 0, y: 0};
-let _dragStartPan = {x: 0, y: 0};
-const DRAG_THRESHOLD = 4;
-let _didDrag = false;
-
-function onPreviewPointerDown(e: PointerEvent) {
-  if (e.button !== 0) return;
-  if (!previewCanPan.value) return;
-  _didDrag = false;
-  previewDragging.value = true;
-  _dragStartClient = {x: e.clientX, y: e.clientY};
-  _dragStartPan = {...imagePreviewPan.value};
-  (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-}
-
-function onPreviewPointerMove(e: PointerEvent) {
-  if (!previewDragging.value) return;
-  const dx = e.clientX - _dragStartClient.x;
-  const dy = e.clientY - _dragStartClient.y;
-  if (!_didDrag && Math.hypot(dx, dy) < DRAG_THRESHOLD) return;
-  _didDrag = true;
-  imagePreviewPan.value = {x: _dragStartPan.x + dx, y: _dragStartPan.y + dy};
-}
-
-function onPreviewPointerUp(e: PointerEvent) {
-  previewDragging.value = false;
-  (e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId);
-}
-
-// Reset pan when zoom resets to exactly 1 (user clicks zoom-out button back to base)
-watch(imagePreviewZoom, (z) => {
-  if (z === 1) imagePreviewPan.value = {x: 0, y: 0};
-  void nextTick(() => updatePreviewContainerSize());
 });
 </script>
 
@@ -1613,6 +1442,22 @@ watch(imagePreviewZoom, (z) => {
               高亮：{{ highlightLabels.join(' · ') }}
               <X class="h-2.5 w-2.5" />
             </button>
+            <template v-if="activeView === 'distribution'">
+              <div class="mx-1 h-4 w-px bg-border" />
+              <div class="flex items-center gap-2">
+                <span class="shrink-0 text-[10px] text-muted-foreground">散点大小</span>
+                <input
+                  type="range"
+                  class="h-1 w-20 accent-primary"
+                  :min="SCATTER_POINT_SIZE_MIN"
+                  :max="SCATTER_POINT_SIZE_MAX"
+                  step="1"
+                  :value="scatterPointSize"
+                  @input="onScatterPointSizeInput(Number(($event.target as HTMLInputElement).value))"
+                />
+                <span class="w-4 font-mono text-[10px] text-muted-foreground">{{ scatterPointSize }}</span>
+              </div>
+            </template>
             <span class="text-[10px] text-muted-foreground">{{ plotData.length }} 条</span>
             <span v-if="activeView === 'distribution'" class="rounded bg-secondary/20 px-2 py-0.5 text-[9px] text-muted-foreground">滚轮缩放 · 拖动平移</span>
           </div>
@@ -1622,7 +1467,14 @@ watch(imagePreviewZoom, (z) => {
         <div class="relative min-h-0 flex-1 overflow-hidden">
           <!-- Distribution scatter -->
           <div v-if="activeView === 'distribution'" class="h-full w-full">
-            <InferenceScatterChart v-if="plotData.length > 0" :plot-data="plotData" :label-list="labelList" :highlight-labels="highlightLabels" @preview="openPreview" />
+            <InferenceScatterChart
+              v-if="plotData.length > 0"
+              :plot-data="plotData"
+              :label-list="labelList"
+              :highlight-labels="highlightLabels"
+              :point-size="scatterPointSize"
+              @preview="openPreview"
+            />
             <div v-else class="flex h-full flex-col items-center justify-center gap-4 text-muted-foreground">
               <div class="rounded-full bg-secondary/20 p-5"><ImageIcon class="h-8 w-8 opacity-20" /></div>
               <p class="max-w-xs text-center text-sm italic">选择模型与数据集后，点击「Run Analysis」可视化特征分布。</p>
@@ -1845,98 +1697,19 @@ watch(imagePreviewZoom, (z) => {
     </Transition>
   </Teleport>
 
-  <!-- ════════════════ IMAGE PREVIEW MODAL ════════════════ -->
-  <Teleport to="body">
-    <Transition name="fade">
-      <div v-if="previewPoint && previewDisplayUrl" class="fixed inset-0 z-[200] flex flex-col bg-black/88 backdrop-blur-sm" @click.self="closePreview">
-        <!-- Header -->
-        <div class="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3 text-white" @click.stop>
-          <span class="text-xs text-white/70">
-            滚轮缩放 · {{ previewCanPan ? '拖动平移' : '已适配窗口' }} · Esc 关闭 · 空格切换标注
-            <span class="text-white/40"> · {{ previewModalView === 'source' ? '原图' : '裁剪图' }}</span>
-          </span>
-          <div class="flex flex-wrap items-center justify-end gap-2">
-            <button v-if="previewModalView === 'crop' && canTraceSource" type="button" class="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur-sm transition-colors hover:bg-white/20" @click="previewModalView = 'source'">
-              <ExternalLink class="h-3.5 w-3.5" />查看原图
-            </button>
-            <button v-if="previewModalView === 'source'" type="button" class="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur-sm transition-colors hover:bg-white/20" @click="previewModalView = 'crop'">
-              <ArrowLeft class="h-3.5 w-3.5" />裁剪图
-            </button>
-            <div v-if="previewAnnotation?.labels?.length" class="flex items-center gap-1 rounded-lg bg-white/10 px-2 py-1 text-[11px] text-white/80">
-              <button type="button" class="rounded px-1.5 py-0.5 font-medium transition-colors" :class="showPreviewAnnotations ? 'bg-indigo-500/50 text-indigo-100' : 'text-white/40 hover:text-white'" @click="showPreviewAnnotations = !showPreviewAnnotations">
-                {{ showPreviewAnnotations ? '隐藏' : '显示' }}标注
-              </button>
-            </div>
-            <span class="min-w-[3rem] text-center font-mono text-xs tabular-nums text-white/80">{{ Math.round(previewEffectiveScale * 100) }}%</span>
-            <button type="button" class="rounded-md border border-white/20 p-1.5 hover:bg-white/10" aria-label="Zoom out" @click="imagePreviewZoom = Math.max(PREVIEW_ZOOM_MIN, Math.round((imagePreviewZoom - 0.15) * 100) / 100)">
-              <Minus class="h-4 w-4" />
-            </button>
-            <button type="button" class="rounded-md border border-white/20 p-1.5 hover:bg-white/10" aria-label="Zoom in" @click="imagePreviewZoom = Math.min(PREVIEW_ZOOM_MAX, Math.round((imagePreviewZoom + 0.15) * 100) / 100)">
-              <Plus class="h-4 w-4" />
-            </button>
-            <button type="button" class="rounded-md border border-white/20 p-1.5 hover:bg-white/10" aria-label="Close" @click="closePreview">
-              <X class="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-
-        <!-- Drag-to-pan viewport: overflow:hidden, zoom+pan via CSS transform -->
-        <div
-          ref="imagePreviewWheelRef"
-          class="flex min-h-0 flex-1 overflow-hidden"
-          :class="
-            !previewCanPan
-              ? 'cursor-default'
-              : previewDragging
-                ? 'cursor-grabbing select-none'
-                : 'cursor-grab'
-          "
-          @click.stop
-          @pointerdown="onPreviewPointerDown"
-          @pointermove="onPreviewPointerMove"
-          @pointerup="onPreviewPointerUp"
-          @pointercancel="onPreviewPointerUp"
-        >
-          <div class="flex min-h-full w-full items-center justify-center">
-            <!-- Single transform node: scale(fitScale * userZoom) + translate(pan) -->
-            <div
-              class="relative inline-block select-none leading-none"
-              :style="{
-                transform: `translate(${imagePreviewPan.x}px, ${imagePreviewPan.y}px) scale(${previewEffectiveScale})`,
-                transformOrigin: 'center center',
-              }"
-            >
-              <img
-                ref="imagePreviewImgRef"
-                :src="previewDisplayUrl"
-                alt=""
-                draggable="false"
-                class="block select-none"
-                style="display:block; max-width:none; max-height:none;"
-                @load="computeFitScale"
-              />
-              <svg
-                v-if="previewAnnotation?.labels?.length && showPreviewAnnotations"
-                class="pointer-events-none absolute inset-0 h-full w-full"
-                viewBox="0 0 1 1"
-                preserveAspectRatio="none"
-              >
-                <polygon
-                  v-for="(label, idx) in previewAnnotation.labels"
-                  :key="idx"
-                  :points="label.points.map(([x, y]: [number, number]) => `${x},${y}`).join(' ')"
-                  fill="rgba(99, 102, 241, 0.42)"
-                  stroke="rgb(199, 210, 254)"
-                  :stroke-width="previewAnnotationStrokeWidth"
-                  stroke-linejoin="round"
-                />
-              </svg>
-            </div>
-          </div>
-        </div>
-      </div>
-    </Transition>
-  </Teleport>
+  <ImagePreviewModal
+    :open="!!previewPoint && !!previewDisplayUrl"
+    :image-url="previewDisplayUrl"
+    :regions="previewOverlayRegions"
+    :color-for-class="inferenceColorForClass"
+    :label-for-class="inferenceClassName"
+    :view-mode="previewModalView"
+    :can-trace-source="previewModalView === 'crop' && canTraceSource"
+    :show-back-to-crop="previewModalView === 'source'"
+    @close="closePreview"
+    @trace-source="previewModalView = 'source'"
+    @back-to-crop="previewModalView = 'crop'"
+  />
 </template>
 
 <style scoped>

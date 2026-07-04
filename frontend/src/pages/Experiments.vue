@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, nextTick, onUnmounted, ref, watch} from 'vue';
+import {computed, onUnmounted, ref, watch} from 'vue';
 import {
   AlertCircle,
   ArrowLeft,
@@ -9,7 +9,6 @@ import {
   Database,
   ExternalLink,
   Layers,
-  Minus,
   MoreVertical,
   Play,
   Plus,
@@ -19,23 +18,10 @@ import {
   X,
 } from 'lucide-vue-next';
 import VisualizationDashboard from '@/components/VisualizationDashboard.vue';
+import ImagePreviewModal from '@/components/annotation/ImagePreviewModal.vue';
+import type {AnnotationOverlayRegion} from '@/components/annotation/overlayUtils';
 import {cn} from '@/lib/utils';
-import {DatasetsApi, ExperimentsApi, staticUrl, type AnnotationRegion, type CropImage as ApiCropImage, type DatasetImage as ApiDatasetImage, type ExperimentSummary} from '@/lib/api';
-
-interface AnnotationLabel {
-  label_id: number;
-  points: [number, number][];
-  isSubtract: boolean;
-}
-
-interface Annotation {
-  id: string;
-  shapeType?: string | null;
-  networkType?: string | null;
-  labels?: AnnotationLabel[] | null;
-}
-
-type DatasetImage = ApiDatasetImage;
+import {DatasetsApi, ExperimentsApi, classColor, staticUrl, type CropImage as ApiCropImage, type DatasetImage as ApiDatasetImage, type DefectClass, type ExperimentSummary} from '@/lib/api';
 
 interface DatasetCategory {
   id: string;
@@ -48,6 +34,7 @@ interface Dataset {
   categories?: DatasetCategory[];
 }
 
+type DatasetImage = ApiDatasetImage;
 type CropImage = ApiCropImage;
 
 const experiments = ref<any[]>([]);
@@ -71,59 +58,48 @@ const experimentMenuPos = ref<{top: number; left: number} | null>(null);
 /** Full-screen crop preview (data selection): annotation overlay + source trace */
 const previewModalCrop = ref<CropImage | null>(null);
 const previewModalView = ref<'crop' | 'source'>('crop');
-const showPreviewAnnotations = ref(true);
-const previewZoom = ref(1);
-const PREVIEW_ZOOM_MIN = 0.35;
-const PREVIEW_ZOOM_MAX = 4;
-const previewWheelRef = ref<HTMLDivElement | null>(null);
-/** Native scroll only when scaled image exceeds the viewport */
-const experimentsPreviewCanScroll = ref(false);
-
-function measureExperimentsPreviewScroll() {
-  const el = previewWheelRef.value;
-  if (!el) {
-    experimentsPreviewCanScroll.value = false;
-    return;
-  }
-  experimentsPreviewCanScroll.value =
-    el.scrollWidth > el.clientWidth + 2 || el.scrollHeight > el.clientHeight + 2;
-}
 
 const detailImages = ref<DatasetImage[]>([]);
+const detailDefectClasses = ref<DefectClass[]>([]);
 
 function findSourceDatasetImage(sourceImageId: string): DatasetImage | null {
   return detailImages.value.find((i) => i.id === sourceImageId) ?? null;
 }
 
-function cropToPreviewAnnotation(crop: CropImage): Annotation | null {
-  if (!crop.cropAnnotation?.length) return null;
-  return {
-    id: crop.id,
-    labels: crop.cropAnnotation.map((lbl, i) => ({
-      label_id: i,
-      points: lbl.points as [number, number][],
-      isSubtract: lbl.isSubtract,
-    })),
-  };
+function experimentClassName(classId: string | null | undefined): string {
+  if (!classId) return 'Unassigned';
+  return selectedDataset.value?.categories?.find((c) => c.id === classId)?.name ?? 'Unknown';
 }
 
-function regionToLabel(r: AnnotationRegion, i: number): AnnotationLabel {
-  return {label_id: i, points: r.points as [number, number][], isSubtract: r.isSubtract};
+function experimentColorForClass(classId: string | null | undefined, isSubtract?: boolean): string {
+  if (isSubtract) return '#94a3b8';
+  if (!classId) return '#64748b';
+  const cls = detailDefectClasses.value.find((c) => c.id === classId);
+  return classColor(cls ?? null);
 }
 
-function sourceAnnotationForCrop(crop: CropImage): Annotation | null {
-  const img = findSourceDatasetImage(crop.sourceImageId);
-  if (!img?.regions?.length) return null;
-  const idx = crop.instanceIndex;
-  const target = idx != null && idx >= 0 && idx < img.regions.length ? img.regions[idx] : null;
-  const labels = target ? [regionToLabel(target, idx)] : img.regions.map(regionToLabel);
-  return {id: img.id, labels};
-}
-
-const previewAnnotationModal = computed((): Annotation | null => {
+const previewOverlayRegions = computed((): AnnotationOverlayRegion[] => {
   const c = previewModalCrop.value;
-  if (!c) return null;
-  return previewModalView.value === 'crop' ? cropToPreviewAnnotation(c) : sourceAnnotationForCrop(c);
+  if (!c) return [];
+  if (previewModalView.value === 'crop') {
+    return (c.cropAnnotation ?? []).map((shape) => ({
+      points: shape.points,
+      isSubtract: shape.isSubtract,
+      classId: c.classId,
+      label: shape.isSubtract ? 'Hole' : experimentClassName(c.classId),
+    }));
+  }
+  const img = findSourceDatasetImage(c.sourceImageId);
+  if (!img?.regions?.length) return [];
+  const idx = c.instanceIndex;
+  const picked = idx != null && idx >= 0 && idx < img.regions.length ? img.regions[idx] : null;
+  const list = picked ? [picked] : img.regions;
+  return list.map((r) => ({
+    points: r.points,
+    isSubtract: r.isSubtract,
+    classId: r.classId,
+    label: r.isSubtract ? 'Hole' : experimentClassName(r.classId),
+  }));
 });
 
 const previewDisplayUrl = computed(() => {
@@ -143,8 +119,6 @@ const canTraceSource = computed(() => {
 function openCropPreviewModal(crop: CropImage) {
   previewModalCrop.value = crop;
   previewModalView.value = 'crop';
-  showPreviewAnnotations.value = true;
-  previewZoom.value = 1;
 }
 
 function closeCropPreviewModal() {
@@ -183,9 +157,11 @@ async function selectDatasetForTraining(ds: {id: string; name: string}) {
   selectedCategories.value = [];
   selectedCropIds.value = [];
   detailImages.value = [];
+  detailDefectClasses.value = [];
   try {
     const full = await DatasetsApi.get(ds.id);
     detailImages.value = full.images;
+    detailDefectClasses.value = full.defectClasses;
     selectedDataset.value = {
       id: full.id,
       name: full.name,
@@ -211,17 +187,6 @@ function closeExperimentMenu() {
   experimentMenuPos.value = null;
 }
 
-function isSpaceKey(e: KeyboardEvent) {
-  return e.key === ' ' || e.key === 'Space' || e.code === 'Space';
-}
-
-function isTypingLikeTarget(target: EventTarget | null) {
-  const el = target as HTMLElement | null;
-  if (!el) return false;
-  const tag = el.tagName;
-  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable;
-}
-
 void fetchExperiments();
 void fetchAvailableDatasets();
 
@@ -237,63 +202,6 @@ watch(experimentMenuId, (id, _oldId, onCleanup) => {
     window.removeEventListener('scroll', onScrollOrResize, true);
     window.removeEventListener('resize', onScrollOrResize);
   });
-});
-
-watch(
-  previewModalCrop,
-  (crop, _prev, onCleanup) => {
-    if (!crop) return;
-    previewZoom.value = 1;
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') closeCropPreviewModal();
-      if (isSpaceKey(e)) {
-        if (isTypingLikeTarget(e.target)) return;
-        e.preventDefault();
-        if (previewAnnotationModal.value?.labels?.length) {
-          showPreviewAnnotations.value = !showPreviewAnnotations.value;
-        }
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    let removeWheel: (() => void) | undefined;
-    let removeResize: (() => void) | undefined;
-    void nextTick(() => {
-      const el = previewWheelRef.value;
-      if (!el) return;
-      const onWheel = (e: WheelEvent) => {
-        e.preventDefault();
-        previewZoom.value = Math.min(
-          PREVIEW_ZOOM_MAX,
-          Math.max(PREVIEW_ZOOM_MIN, previewZoom.value - e.deltaY * 0.002),
-        );
-      };
-      el.addEventListener('wheel', onWheel, {passive: false});
-      removeWheel = () => el.removeEventListener('wheel', onWheel);
-      measureExperimentsPreviewScroll();
-      const ro = new ResizeObserver(() => measureExperimentsPreviewScroll());
-      ro.observe(el);
-      removeResize = () => ro.disconnect();
-    });
-    onCleanup(() => {
-      window.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prevOverflow;
-      removeWheel?.();
-      removeResize?.();
-      experimentsPreviewCanScroll.value = false;
-    });
-  },
-);
-
-watch(previewZoom, () => {
-  if (!previewModalCrop.value) return;
-  void nextTick(() => measureExperimentsPreviewScroll());
-});
-
-watch(previewModalView, () => {
-  if (!previewModalCrop.value) return;
-  void nextTick(() => measureExperimentsPreviewScroll());
 });
 
 async function fetchAvailableDatasets() {
@@ -771,7 +679,7 @@ function openExperimentMenu(e: MouseEvent, expId: string) {
                     <button
                       type="button"
                       class="absolute inset-0 z-10 cursor-zoom-in"
-                      aria-label="View larger"
+                      aria-label="放大查看"
                       @click="openCropPreviewModal(crop)"
                     />
                     <button
@@ -806,131 +714,19 @@ function openExperimentMenu(e: MouseEvent, expId: string) {
       </div>
     </div>
 
-    <Teleport to="body">
-      <Transition name="fade">
-        <div
-          v-if="previewModalCrop && previewDisplayUrl"
-          class="fixed inset-0 z-[200] flex flex-col bg-black/88 backdrop-blur-sm"
-          @click.self="closeCropPreviewModal"
-        >
-          <div
-            class="flex shrink-0 flex-wrap items-center justify-between gap-3 border-b border-white/10 px-4 py-3 text-white"
-            @click.stop
-          >
-            <span class="text-xs text-white/70">
-              滚轮缩放 · {{ experimentsPreviewCanScroll ? '拖动平移' : '已适配窗口' }} · Esc 关闭 · 空格切换标注显示
-              <span v-if="previewModalView === 'source'" class="text-white/40"> · 当前：原图</span>
-              <span v-else class="text-white/40"> · 当前：裁剪图</span>
-            </span>
-            <div class="flex flex-wrap items-center justify-end gap-2">
-              <button
-                v-if="previewModalView === 'crop' && canTraceSource"
-                type="button"
-                class="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur-sm transition-colors hover:bg-white/20"
-                title="查看生成该裁剪的原始图像与标注"
-                @click="openSourceFromPreview"
-              >
-                <ExternalLink class="h-3.5 w-3.5" />
-                查看原图
-              </button>
-              <button
-                v-if="previewModalView === 'source'"
-                type="button"
-                class="flex items-center gap-1.5 rounded-lg bg-white/10 px-3 py-1.5 text-xs font-medium text-white/90 backdrop-blur-sm transition-colors hover:bg-white/20"
-                @click="backToCropPreview"
-              >
-                <ArrowLeft class="h-3.5 w-3.5" />
-                查看裁剪图
-              </button>
-              <div
-                v-if="previewAnnotationModal?.labels?.length"
-                class="flex items-center gap-1 rounded-lg bg-white/10 px-2 py-1 text-[11px] text-white/80"
-              >
-                <button
-                  type="button"
-                  class="rounded px-1.5 py-0.5 font-medium transition-colors"
-                  :class="showPreviewAnnotations ? 'bg-indigo-500/50 text-indigo-100' : 'text-white/40 hover:text-white'"
-                  @click="showPreviewAnnotations = !showPreviewAnnotations"
-                >
-                  {{ showPreviewAnnotations ? '隐藏' : '显示' }}标注
-                </button>
-              </div>
-              <span class="min-w-[3rem] text-center font-mono text-xs tabular-nums text-white/80">
-                {{ Math.round(previewZoom * 100) }}%
-              </span>
-              <button
-                type="button"
-                class="rounded-md border border-white/20 p-1.5 hover:bg-white/10"
-                aria-label="Zoom out"
-                @click="previewZoom = Math.max(PREVIEW_ZOOM_MIN, Math.round((previewZoom - 0.15) * 100) / 100)"
-              >
-                <Minus class="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                class="rounded-md border border-white/20 p-1.5 hover:bg-white/10"
-                aria-label="Zoom in"
-                @click="previewZoom = Math.min(PREVIEW_ZOOM_MAX, Math.round((previewZoom + 0.15) * 100) / 100)"
-              >
-                <Plus class="h-4 w-4" />
-              </button>
-              <button
-                type="button"
-                class="rounded-md border border-white/20 p-1.5 hover:bg-white/10"
-                aria-label="Close preview"
-                @click="closeCropPreviewModal"
-              >
-                <X class="h-4 w-4" />
-              </button>
-            </div>
-          </div>
-          <div
-            ref="previewWheelRef"
-            :class="[
-              'flex min-h-0 flex-1 px-4 pb-8 pt-2',
-              experimentsPreviewCanScroll
-                ? 'cursor-grab overflow-auto active:cursor-grabbing'
-                : 'cursor-default overflow-hidden',
-            ]"
-            @click.stop
-          >
-            <div class="flex min-h-full w-full items-center justify-center p-4">
-              <div
-                class="relative inline-block leading-none select-none"
-                :style="{
-                  transform: `scale(${previewZoom})`,
-                  transformOrigin: 'center center',
-                }"
-              >
-                <img
-                  :src="previewDisplayUrl"
-                  alt=""
-                  draggable="false"
-                  class="block max-h-[min(82vh,100%)] max-w-full select-none object-contain"
-                  @load="() => void nextTick(() => measureExperimentsPreviewScroll())"
-                />
-                <svg
-                  v-if="previewAnnotationModal?.labels?.length && showPreviewAnnotations"
-                  class="pointer-events-none absolute inset-0 h-full w-full"
-                  viewBox="0 0 1 1"
-                  preserveAspectRatio="none"
-                >
-                  <polygon
-                    v-for="(label, idx) in previewAnnotationModal.labels"
-                    :key="idx"
-                    :points="label.points.map(([x, y]: [number, number]) => `${x},${y}`).join(' ')"
-                    fill="rgba(99, 102, 241, 0.42)"
-                    stroke="rgb(199, 210, 254)"
-                    :stroke-width="0.0045 / previewZoom"
-                    stroke-linejoin="round"
-                  />
-                </svg>
-              </div>
-            </div>
-          </div>
-        </div>
-      </Transition>
-    </Teleport>
+    <ImagePreviewModal
+      :open="!!previewModalCrop && !!previewDisplayUrl"
+      :image-url="previewDisplayUrl"
+      :regions="previewOverlayRegions"
+      :color-for-class="experimentColorForClass"
+      :label-for-class="experimentClassName"
+      :view-mode="previewModalView"
+      :can-trace-source="previewModalView === 'crop' && canTraceSource"
+      :show-back-to-crop="previewModalView === 'source'"
+      @close="closeCropPreviewModal"
+      @trace-source="openSourceFromPreview"
+      @back-to-crop="backToCropPreview"
+    />
   </div>
 
   <div v-else class="flex h-full flex-col gap-6 p-6">

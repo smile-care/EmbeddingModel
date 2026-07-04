@@ -10,6 +10,8 @@ import {
   type DatasetSummary, type DefectClass, type RegionInput,
 } from '@/lib/api';
 import PolygonAnnotator from '@/components/annotation/PolygonAnnotator.vue';
+import ImagePreviewModal from '@/components/annotation/ImagePreviewModal.vue';
+import type {AnnotationOverlayRegion} from '@/components/annotation/overlayUtils';
 
 // ── List state ───────────────────────────────────────────────────────────────
 const datasets = ref<DatasetSummary[]>([]);
@@ -66,12 +68,8 @@ function closeDetail() {
 
 onMounted(() => {
   void fetchDatasets();
-  document.addEventListener('keydown', onKeyDown);
 });
 onUnmounted(() => {
-  document.removeEventListener('keydown', onKeyDown);
-  window.removeEventListener('mousemove', onPanMove);
-  window.removeEventListener('mouseup', onPanEnd);
   stopImportPolling();
   if (listPollTimer) clearInterval(listPollTimer);
 });
@@ -125,6 +123,10 @@ function classNameOf(classId: string | null | undefined): string {
   if (!classId) return 'Unassigned';
   return classMap.value.get(classId)?.name ?? 'Unknown';
 }
+function previewColorForClass(classId: string | null | undefined, isSubtract?: boolean): string {
+  if (isSubtract) return '#94a3b8';
+  return colorForClass(classId);
+}
 
 // ── Upload new dataset ───────────────────────────────────────────────────────
 const uploadOpen = ref(false);
@@ -139,8 +141,113 @@ const importProgress = ref(0);
 const importMessage = ref<string | null>(null);
 const importStage = ref<string | null>(null);
 const activeImportId = ref<string | null>(null);
+const uploadDatasetId = ref<string | null>(null);
+const cancelInFlight = ref(false);
+let uploadAbort: (() => void) | null = null;
 const zipInputRef = ref<HTMLInputElement | null>(null);
 const imagesInputRef = ref<HTMLInputElement | null>(null);
+const zipDragActive = ref(false);
+
+function isZipFile(file: File): boolean {
+  const name = file.name.toLowerCase();
+  return (
+    name.endsWith('.zip')
+    || file.type === 'application/zip'
+    || file.type === 'application/x-zip-compressed'
+  );
+}
+
+function datasetNameFromZip(filename: string): string {
+  const stem = filename.replace(/\.zip$/i, '').trim();
+  return stem || filename;
+}
+
+function assignZipFile(file: File | null) {
+  uploadError.value = null;
+  if (!file) return;
+  if (!isZipFile(file)) {
+    uploadError.value = 'Please choose or drop a .zip file.';
+    return;
+  }
+  zipFile.value = file;
+  if (!uploadName.value.trim()) {
+    uploadName.value = datasetNameFromZip(file.name);
+  }
+}
+
+function onZipDragEnter(e: DragEvent) {
+  e.preventDefault();
+  if (uploading.value) return;
+  zipDragActive.value = true;
+}
+
+function onZipDragOver(e: DragEvent) {
+  e.preventDefault();
+  if (uploading.value) return;
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+}
+
+function onZipDragLeave(e: DragEvent) {
+  e.preventDefault();
+  const related = e.relatedTarget as Node | null;
+  if (related && (e.currentTarget as HTMLElement).contains(related)) return;
+  zipDragActive.value = false;
+}
+
+function onZipDrop(e: DragEvent) {
+  e.preventDefault();
+  zipDragActive.value = false;
+  if (uploading.value) return;
+  assignZipFile(e.dataTransfer?.files?.[0] ?? null);
+}
+
+const imagesDragActive = ref(false);
+
+function isImageFile(file: File): boolean {
+  return file.type.startsWith('image/') || /\.(jpe?g|png|gif|webp|bmp|tiff?|avif|heic)$/i.test(file.name);
+}
+
+function imageFilesFromList(files: FileList | File[] | null | undefined): File[] {
+  if (!files?.length) return [];
+  return Array.from(files).filter(isImageFile);
+}
+
+function assignImageFiles(files: FileList | File[] | null | undefined) {
+  uploadError.value = null;
+  if (!files?.length) return;
+  const list = imageFilesFromList(files);
+  if (!list.length) {
+    uploadError.value = 'Please choose or drop image file(s).';
+    return;
+  }
+  imageFiles.value = list;
+}
+
+function onImagesDragEnter(e: DragEvent) {
+  e.preventDefault();
+  if (uploading.value) return;
+  imagesDragActive.value = true;
+}
+
+function onImagesDragOver(e: DragEvent) {
+  e.preventDefault();
+  if (uploading.value) return;
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+}
+
+function onImagesDragLeave(e: DragEvent) {
+  e.preventDefault();
+  const related = e.relatedTarget as Node | null;
+  if (related && (e.currentTarget as HTMLElement).contains(related)) return;
+  imagesDragActive.value = false;
+}
+
+function onImagesDrop(e: DragEvent) {
+  e.preventDefault();
+  imagesDragActive.value = false;
+  if (uploading.value) return;
+  assignImageFiles(e.dataTransfer?.files ?? null);
+}
 
 const IMPORT_STAGE_LABELS: Record<string, string> = {
   uploading: '上传文件',
@@ -185,17 +292,26 @@ function resetUploadForm() {
   imageFiles.value = [];
   uploadError.value = null;
   uploadMode.value = 'zip';
+  zipDragActive.value = false;
+  imagesDragActive.value = false;
+  uploadDatasetId.value = null;
+  uploadAbort = null;
   resetUploadProgress();
   if (zipInputRef.value) zipInputRef.value.value = '';
   if (imagesInputRef.value) imagesInputRef.value.value = '';
 }
 
 let importPollTimer: ReturnType<typeof setInterval> | null = null;
+let importWaitReject: ((reason?: unknown) => void) | null = null;
 
-function stopImportPolling() {
+function stopImportPolling(rejectPending = false) {
   if (importPollTimer) {
     clearInterval(importPollTimer);
     importPollTimer = null;
+  }
+  if (rejectPending && importWaitReject) {
+    importWaitReject(new Error('import-wait-ended'));
+    importWaitReject = null;
   }
 }
 
@@ -224,7 +340,7 @@ function startImportPolling(datasetId: string, onComplete: () => void) {
       stopImportPolling();
       onComplete();
     } else if (result === 'failed' || result === 'missing') {
-      stopImportPolling();
+      stopImportPolling(true);
       uploadError.value = result === 'failed' ? '导入失败，请查看后端日志。' : '导入中断，数据集可能已被删除。';
       uploading.value = false;
       void fetchDatasets();
@@ -249,6 +365,47 @@ watch(hasProcessingDatasets, (processing) => {
   }, 2000);
 }, {immediate: true});
 
+function isUploadCancelledError(err: unknown): boolean {
+  return err instanceof ApiError && err.message === 'Upload cancelled.';
+}
+
+async function cancelUpload() {
+  if (cancelInFlight.value) return;
+  const busy = uploading.value || uploadDatasetId.value != null || activeImportId.value != null;
+  if (!busy && !uploadOpen.value) return;
+
+  const msg = uploading.value
+    ? '确定要取消上传吗？已上传的不完整数据将被删除。'
+    : '确定要关闭上传窗口吗？';
+  if (!window.confirm(msg)) return;
+
+  cancelInFlight.value = true;
+  stopImportPolling(true);
+  uploadAbort?.();
+  uploadAbort = null;
+
+  const datasetId = uploadDatasetId.value ?? activeImportId.value;
+  if (datasetId) {
+    try {
+      await DatasetsApi.cancelImport(datasetId);
+    } catch (e) {
+      if (!(e instanceof ApiError && (e.status === 404 || e.status === 409))) {
+        try {
+          await DatasetsApi.remove(datasetId);
+        } catch {
+          /* best effort cleanup */
+        }
+      }
+    }
+  }
+
+  uploading.value = false;
+  uploadOpen.value = false;
+  resetUploadForm();
+  await fetchDatasets();
+  cancelInFlight.value = false;
+}
+
 async function handleUploadSubmit(e: Event) {
   e.preventDefault();
   uploadError.value = null;
@@ -271,25 +428,44 @@ async function handleUploadSubmit(e: Event) {
   uploading.value = true;
   resetUploadProgress();
   importStage.value = 'uploading';
+  uploadDatasetId.value = null;
+  const {promise, abort} = DatasetsApi.create(form, (pct) => {
+    uploadBytesProgress.value = pct;
+  });
+  uploadAbort = abort;
   try {
-    const created = await DatasetsApi.create(form, (pct) => {
-      uploadBytesProgress.value = pct;
-    });
+    const created = await promise;
+    uploadAbort = null;
+    uploadDatasetId.value = created.id;
     uploadBytesProgress.value = 100;
     importStage.value = 'extracting';
     importProgress.value = 0;
 
-    await new Promise<void>((resolve) => {
-      startImportPolling(created.id, () => resolve());
+    await new Promise<void>((resolve, reject) => {
+      importWaitReject = reject;
+      startImportPolling(created.id, () => {
+        importWaitReject = null;
+        resolve();
+      });
     });
 
     await fetchDatasets();
     uploadOpen.value = false;
     resetUploadForm();
   } catch (err) {
-    uploadError.value = err instanceof ApiError ? err.message : 'Upload failed.';
+    if (!isUploadCancelledError(err) && !(err instanceof Error && err.message === 'import-wait-ended')) {
+      uploadError.value = err instanceof ApiError ? err.message : 'Upload failed.';
+    }
     stopImportPolling();
+    if (uploadDatasetId.value) {
+      try {
+        await DatasetsApi.cancelImport(uploadDatasetId.value);
+      } catch {
+        /* cancelled path may already have cleaned up */
+      }
+    }
   } finally {
+    uploadAbort = null;
     uploading.value = false;
   }
 }
@@ -313,11 +489,50 @@ const addUploading = ref(false);
 const addError = ref<string | null>(null);
 const addAnnotateAfter = ref(true);
 const addInputRef = ref<HTMLInputElement | null>(null);
+const addDragActive = ref(false);
+
+function assignAddFiles(files: FileList | File[] | null | undefined) {
+  addError.value = null;
+  if (!files?.length) return;
+  const list = imageFilesFromList(files);
+  if (!list.length) {
+    addError.value = 'Please choose or drop image file(s).';
+    return;
+  }
+  addFiles.value = list;
+}
+
+function onAddDragEnter(e: DragEvent) {
+  e.preventDefault();
+  if (addUploading.value) return;
+  addDragActive.value = true;
+}
+
+function onAddDragOver(e: DragEvent) {
+  e.preventDefault();
+  if (addUploading.value) return;
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+}
+
+function onAddDragLeave(e: DragEvent) {
+  e.preventDefault();
+  const related = e.relatedTarget as Node | null;
+  if (related && (e.currentTarget as HTMLElement).contains(related)) return;
+  addDragActive.value = false;
+}
+
+function onAddDrop(e: DragEvent) {
+  e.preventDefault();
+  addDragActive.value = false;
+  if (addUploading.value) return;
+  assignAddFiles(e.dataTransfer?.files ?? null);
+}
 
 function resetAddForm() {
   addFiles.value = [];
   addError.value = null;
   addAnnotateAfter.value = true;
+  addDragActive.value = false;
   if (addInputRef.value) addInputRef.value.value = '';
 }
 
@@ -445,39 +660,32 @@ async function onAnnotatorSave(regions: RegionInput[], advance = false) {
 const annotatorRegions = computed<AnnotationRegion[]>(() => annotatingImage.value?.regions ?? []);
 
 // ── Read-only preview ────────────────────────────────────────────────────────
-interface PreviewRegion {points: number[][]; isSubtract: boolean; classId?: string | null}
 const previewImage = ref<string | null>(null);
-const previewRegions = ref<PreviewRegion[]>([]);
-const showAnnotations = ref(true);
+const previewOverlayRegions = ref<AnnotationOverlayRegion[]>([]);
 const previewTraceCrop = ref<CropImage | null>(null);
-const zoom = ref(1);
-const pan = ref({x: 0, y: 0});
-const isPanning = ref(false);
-let panStart = {x: 0, y: 0, panX: 0, panY: 0};
-
-function resetView() {
-  zoom.value = 1;
-  pan.value = {x: 0, y: 0};
-}
+const previewViewMode = ref<'crop' | 'source'>('crop');
 
 function openImagePreview(img: DatasetImage) {
   previewTraceCrop.value = null;
+  previewViewMode.value = 'source';
   previewImage.value = staticUrl(img.url);
-  previewRegions.value = img.regions.map((r) => ({points: r.points, isSubtract: r.isSubtract, classId: r.classId}));
-  showAnnotations.value = true;
-  resetView();
+  previewOverlayRegions.value = img.regions.map((r) => ({
+    points: r.points,
+    isSubtract: r.isSubtract,
+    classId: r.classId,
+  }));
 }
 
 function openCropPreview(crop: CropImage) {
   previewTraceCrop.value = crop;
+  previewViewMode.value = 'crop';
   previewImage.value = staticUrl(crop.url);
-  previewRegions.value = (crop.cropAnnotation ?? []).map((a) => ({
+  previewOverlayRegions.value = (crop.cropAnnotation ?? []).map((a) => ({
     points: a.points,
     isSubtract: a.isSubtract,
     classId: crop.classId,
+    label: classNameOf(crop.classId),
   }));
-  showAnnotations.value = true;
-  resetView();
 }
 
 function traceToSource() {
@@ -486,54 +694,19 @@ function traceToSource() {
   const src = sourceImageMap.value.get(crop.sourceImageId);
   if (!src) return;
   const region = src.regions[crop.instanceIndex];
+  previewViewMode.value = 'source';
   previewImage.value = staticUrl(src.url);
-  previewRegions.value = region
+  previewOverlayRegions.value = region
     ? [{points: region.points, isSubtract: region.isSubtract, classId: region.classId}]
     : src.regions.map((r) => ({points: r.points, isSubtract: r.isSubtract, classId: r.classId}));
   previewTraceCrop.value = null;
-  resetView();
 }
 
 function closePreview() {
   previewImage.value = null;
-  previewRegions.value = [];
+  previewOverlayRegions.value = [];
   previewTraceCrop.value = null;
-  resetView();
-}
-
-function onKeyDown(e: KeyboardEvent) {
-  if (!previewImage.value) return;
-  if (e.key === 'Escape') closePreview();
-  if (e.key === ' ') {
-    e.preventDefault();
-    if (previewRegions.value.length) showAnnotations.value = !showAnnotations.value;
-  }
-}
-function onPreviewWheel(e: WheelEvent) {
-  e.preventDefault();
-  const next = Math.min(6, Math.max(0.35, zoom.value * (e.deltaY < 0 ? 1.12 : 1 / 1.12)));
-  zoom.value = next;
-  if (next <= 1) pan.value = {x: 0, y: 0};
-}
-
-function onPanStart(e: MouseEvent) {
-  if (e.button !== 0) return;
-  isPanning.value = true;
-  panStart = {x: e.clientX, y: e.clientY, panX: pan.value.x, panY: pan.value.y};
-  window.addEventListener('mousemove', onPanMove);
-  window.addEventListener('mouseup', onPanEnd);
-}
-function onPanMove(e: MouseEvent) {
-  if (!isPanning.value) return;
-  pan.value = {
-    x: panStart.panX + (e.clientX - panStart.x),
-    y: panStart.panY + (e.clientY - panStart.y),
-  };
-}
-function onPanEnd() {
-  isPanning.value = false;
-  window.removeEventListener('mousemove', onPanMove);
-  window.removeEventListener('mouseup', onPanEnd);
+  previewViewMode.value = 'crop';
 }
 </script>
 
@@ -830,11 +1003,24 @@ function onPanEnd() {
           <form class="space-y-4" @submit="handleAddSubmit">
             <input
               ref="addInputRef" type="file" accept="image/*" multiple class="hidden"
-              @change="(e) => (addFiles = (e.target as HTMLInputElement).files ? Array.from((e.target as HTMLInputElement).files!) : [])"
+              @change="(e) => assignAddFiles((e.target as HTMLInputElement).files)"
             />
-            <button type="button" :disabled="addUploading" class="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border py-6 text-sm text-muted-foreground hover:border-primary/50" @click="addInputRef?.click()">
-              <Upload class="h-4 w-4" />
-              {{ addFiles.length ? `${addFiles.length} file(s) selected` : 'Choose image(s)' }}
+            <button
+              type="button"
+              :disabled="addUploading"
+              class="flex w-full flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed py-6 text-sm transition-colors disabled:opacity-50"
+              :class="addDragActive ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/50'"
+              @click="addInputRef?.click()"
+              @dragenter="onAddDragEnter"
+              @dragover="onAddDragOver"
+              @dragleave="onAddDragLeave"
+              @drop="onAddDrop"
+            >
+              <span class="flex items-center gap-2">
+                <Upload class="h-4 w-4" />
+                {{ addFiles.length ? `${addFiles.length} file(s) selected` : 'Choose image(s)' }}
+              </span>
+              <span v-if="!addFiles.length" class="text-[10px] text-muted-foreground/80">or drag and drop images here</span>
             </button>
             <label v-if="addFiles.length === 1" class="flex items-center gap-2 text-xs text-muted-foreground">
               <input v-model="addAnnotateAfter" type="checkbox" class="rounded border-border" />
@@ -854,11 +1040,11 @@ function onPanEnd() {
   <!-- ─────────────── Upload dataset modal ─────────────── -->
   <Teleport to="body">
     <Transition name="fade">
-      <div v-if="uploadOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6 backdrop-blur-sm" @click.self="!uploading && (uploadOpen = false)">
+      <div v-if="uploadOpen" class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-6 backdrop-blur-sm" @click.self="cancelUpload">
         <div class="w-full max-w-md space-y-4 rounded-xl border border-border bg-background p-6 shadow-xl">
           <div class="flex items-center justify-between">
             <h3 class="text-lg font-semibold">Upload dataset</h3>
-            <button :disabled="uploading" class="rounded-md p-1 text-muted-foreground hover:bg-secondary/80" @click="uploadOpen = false"><X class="h-5 w-5" /></button>
+            <button :disabled="cancelInFlight" class="rounded-md p-1 text-muted-foreground hover:bg-secondary/80" @click="cancelUpload"><X class="h-5 w-5" /></button>
           </div>
           <p class="text-xs text-muted-foreground">
             ZIP: one folder per class (<code class="rounded bg-secondary/50 px-1 text-[10px]">cls_a/img.jpg</code>) with optional <code class="rounded bg-secondary/50 px-1 text-[10px]">.json</code> label sidecars. Or upload plain images to annotate later.
@@ -870,15 +1056,43 @@ function onPanEnd() {
               <button type="button" class="flex-1 rounded-md py-1.5 text-xs font-medium" :class="uploadMode === 'images' ? 'bg-background shadow-sm' : 'text-muted-foreground'" :disabled="uploading" @click="uploadMode = 'images'">Images only</button>
             </div>
             <template v-if="uploadMode === 'zip'">
-              <input ref="zipInputRef" type="file" accept=".zip,application/zip" class="hidden" @change="(e) => (zipFile = (e.target as HTMLInputElement).files?.[0] ?? null)" />
-              <button type="button" :disabled="uploading" class="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border py-8 text-sm text-muted-foreground hover:border-primary/50" @click="zipInputRef?.click()">
-                <Upload class="h-4 w-4" /> {{ zipFile ? zipFile.name : 'Choose .zip file' }}
+              <input ref="zipInputRef" type="file" accept=".zip,application/zip" class="hidden" @change="(e) => assignZipFile((e.target as HTMLInputElement).files?.[0] ?? null)" />
+              <button
+                type="button"
+                :disabled="uploading"
+                class="flex w-full flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed py-8 text-sm transition-colors disabled:opacity-50"
+                :class="zipDragActive ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/50'"
+                @click="zipInputRef?.click()"
+                @dragenter="onZipDragEnter"
+                @dragover="onZipDragOver"
+                @dragleave="onZipDragLeave"
+                @drop="onZipDrop"
+              >
+                <span class="flex items-center gap-2">
+                  <Upload class="h-4 w-4" />
+                  {{ zipFile ? zipFile.name : 'Choose .zip file' }}
+                </span>
+                <span v-if="!zipFile" class="text-[10px] text-muted-foreground/80">or drag and drop a .zip here</span>
               </button>
             </template>
             <template v-else>
-              <input ref="imagesInputRef" type="file" accept="image/*" multiple class="hidden" @change="(e) => (imageFiles = (e.target as HTMLInputElement).files ? Array.from((e.target as HTMLInputElement).files!) : [])" />
-              <button type="button" :disabled="uploading" class="flex w-full items-center justify-center gap-2 rounded-lg border-2 border-dashed border-border py-6 text-sm text-muted-foreground hover:border-primary/50" @click="imagesInputRef?.click()">
-                <Upload class="h-4 w-4" /> {{ imageFiles.length ? `${imageFiles.length} file(s) selected` : 'Choose images' }}
+              <input ref="imagesInputRef" type="file" accept="image/*" multiple class="hidden" @change="(e) => assignImageFiles((e.target as HTMLInputElement).files)" />
+              <button
+                type="button"
+                :disabled="uploading"
+                class="flex w-full flex-col items-center justify-center gap-1 rounded-lg border-2 border-dashed py-6 text-sm transition-colors disabled:opacity-50"
+                :class="imagesDragActive ? 'border-primary bg-primary/10 text-primary' : 'border-border text-muted-foreground hover:border-primary/50'"
+                @click="imagesInputRef?.click()"
+                @dragenter="onImagesDragEnter"
+                @dragover="onImagesDragOver"
+                @dragleave="onImagesDragLeave"
+                @drop="onImagesDrop"
+              >
+                <span class="flex items-center gap-2">
+                  <Upload class="h-4 w-4" />
+                  {{ imageFiles.length ? `${imageFiles.length} file(s) selected` : 'Choose images' }}
+                </span>
+                <span v-if="!imageFiles.length" class="text-[10px] text-muted-foreground/80">or drag and drop images here</span>
               </button>
             </template>
             <p v-if="uploadError" class="text-xs text-rose-500">{{ uploadError }}</p>
@@ -895,7 +1109,9 @@ function onPanEnd() {
               </div>
             </div>
             <div class="flex justify-end gap-2 pt-2">
-              <button type="button" :disabled="uploading" class="rounded-md border border-border px-3 py-2 text-sm hover:bg-secondary/50" @click="uploadOpen = false">Cancel</button>
+              <button type="button" :disabled="cancelInFlight" class="rounded-md border border-border px-3 py-2 text-sm hover:bg-secondary/50" @click="cancelUpload">
+                {{ cancelInFlight ? 'Cancelling…' : (uploading ? 'Cancel upload' : 'Cancel') }}
+              </button>
               <button type="submit" :disabled="uploading" class="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50">{{ uploading ? 'Processing…' : 'Upload' }}</button>
             </div>
           </form>
@@ -904,47 +1120,17 @@ function onPanEnd() {
     </Transition>
   </Teleport>
 
-  <!-- ─────────────── Read-only preview ─────────────── -->
-  <Teleport to="body">
-    <Transition name="fade">
-      <div v-if="previewImage" class="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm" @click="closePreview">
-        <div class="pointer-events-none absolute inset-x-0 top-0 z-10 flex items-center justify-between px-4 py-3" @click.stop>
-          <div class="pointer-events-auto rounded-lg bg-black/50 px-3 py-1.5 text-xs text-white/70">{{ Math.round(zoom * 100) }}%</div>
-          <div class="pointer-events-auto flex items-center gap-2">
-            <button v-if="previewTraceCrop" class="rounded-lg bg-black/50 px-3 py-1.5 text-xs font-medium text-white/80 hover:bg-white/20" @click="traceToSource">View original</button>
-            <button v-if="previewRegions.length" class="rounded-lg bg-black/50 px-3 py-1.5 text-xs font-medium hover:bg-white/20" :class="showAnnotations ? 'text-indigo-300' : 'text-white/50'" @click="showAnnotations = !showAnnotations">{{ showAnnotations ? 'Hide' : 'Show' }} labels</button>
-            <button class="flex h-8 w-8 items-center justify-center rounded-full bg-black/50 text-white hover:bg-white/20" @click="closePreview"><X class="h-4 w-4" /></button>
-          </div>
-        </div>
-        <div
-          class="relative flex h-full w-full items-center justify-center overflow-hidden"
-          :class="zoom > 1 ? (isPanning ? 'cursor-grabbing' : 'cursor-grab') : ''"
-          @click.stop
-          @wheel.prevent="onPreviewWheel"
-          @mousedown="onPanStart"
-        >
-          <div
-            class="relative inline-block leading-none"
-            :style="{transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`, transition: isPanning ? 'none' : 'transform 0.15s ease'}"
-          >
-            <img :src="previewImage" alt="Preview" class="block max-h-[calc(100vh-6rem)] w-auto max-w-[calc(100vw-4rem)] rounded-xl shadow-2xl" draggable="false" />
-            <svg v-if="previewRegions.length && showAnnotations" class="pointer-events-none absolute inset-0 h-full w-full rounded-xl" viewBox="0 0 1 1" preserveAspectRatio="none">
-              <polygon
-                v-for="(r, idx) in previewRegions"
-                :key="idx"
-                :points="r.points.map(([x, y]: number[]) => `${x},${y}`).join(' ')"
-                :fill="r.isSubtract ? 'rgba(148,163,184,0.25)' : colorForClass(r.classId) + '55'"
-                :stroke="r.isSubtract ? '#94a3b8' : colorForClass(r.classId)"
-                :stroke-width="0.004 / zoom"
-                stroke-linejoin="round"
-              />
-            </svg>
-          </div>
-        </div>
-        <p class="pointer-events-none absolute bottom-3 left-0 right-0 text-center text-[11px] text-white/25">Scroll to zoom · Drag to pan · Space toggles labels · Esc to close</p>
-      </div>
-    </Transition>
-  </Teleport>
+  <ImagePreviewModal
+    :open="!!previewImage"
+    :image-url="previewImage"
+    :regions="previewOverlayRegions"
+    :color-for-class="previewColorForClass"
+    :label-for-class="classNameOf"
+    :view-mode="previewViewMode"
+    :can-trace-source="previewViewMode === 'crop' && !!previewTraceCrop"
+    @close="closePreview"
+    @trace-source="traceToSource"
+  />
 </template>
 
 <style scoped>

@@ -615,7 +615,7 @@ def run_training_job(experiment_id: str) -> None:
         # 重训进行中/中止/失败都不会清掉上一次成功的 dashboard 与推理可用模型。
         exp.run_status = "Running"
         exp.run_progress = 0.0
-        exp.run_metrics = {"stage": "preparing_dataset"}
+        exp.run_metrics = {"stage": "preparing_dataset", "startedAt": started_at}
         db.commit()
 
         if not exp.samples:
@@ -656,11 +656,16 @@ def run_training_job(experiment_id: str) -> None:
         live_margins: list[float] = []
         live_pos_sims: list[float] = []
         live_neg_sims: list[float] = []
+        training_started_at: float | None = None
 
         def on_progress(payload: dict[str, Any]) -> bool:
             """Called at each training checkpoint (~10 per run). Returns True
             to signal the trainer to stop. Checkpoints are infrequent enough
             that every callback invocation writes straight to the DB."""
+            nonlocal training_started_at
+            if training_started_at is None:
+                training_started_at = time.time()
+
             tm = payload.get("train_metrics") or {}
             vm = normalize_experiment_metrics({"val": payload.get("val_metrics") or {}})["val"]
             step = int(payload.get("step", 0) or 0)
@@ -691,6 +696,8 @@ def run_training_job(experiment_id: str) -> None:
                     "stage": "training",
                     "step": step,
                     "totalSteps": total_steps,
+                    "startedAt": started_at,
+                    "trainingStartedAt": training_started_at,
                     "train": tm,
                     "val": vm,
                     "liveSeries": {

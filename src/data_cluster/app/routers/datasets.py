@@ -20,7 +20,8 @@ from data_cluster.app.schemas.dataset import (AnnotationRegionOut, AnnotationSav
 from data_cluster.dl.crop import generate_crops_for_image
 from data_cluster.app.services.dataset_import_job import (run_images_import_job,
                                                             run_zip_import_job,
-                                                            schedule_dataset_import)
+                                                            schedule_dataset_import,
+                                                            cancel_dataset_import_job)
 from data_cluster.app.services.dataset_import_progress import update_import_progress
 from data_cluster.app.services.storage import (dataset_upload_dir_bytes, delete_dataset_files,
                                                ensure_upload_root, get_or_create_thumbnail,
@@ -198,6 +199,23 @@ async def get_import_status(dataset_id: str, db: Session = Depends(get_db)) -> D
         import_stage=ds.import_stage,
         import_message=ds.import_message,
     )
+
+
+@router.post("/{dataset_id}/cancel-import")
+async def cancel_import(dataset_id: str, db: Session = Depends(get_db)) -> dict[str, bool]:
+    """Cancel an in-flight dataset import and delete partial artifacts."""
+    loop = asyncio.get_event_loop()
+
+    def _cancel():
+        ds = db.get(Dataset, dataset_id)
+        if not ds:
+            raise HTTPException(status_code=404, detail="Dataset not found")
+        if ds.status not in {"Processing", "Failed"}:
+            raise HTTPException(status_code=409, detail="Dataset is not importing")
+        cancel_dataset_import_job(dataset_id)
+
+    await loop.run_in_executor(None, _cancel)
+    return {"success": True}
 
 
 @router.get("/{dataset_id}", response_model=DatasetDetail)

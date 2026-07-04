@@ -67,13 +67,18 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 /** POST multipart with upload byte progress (fetch cannot report upload progress). */
+export type UploadFormDataHandle<T> = {
+  promise: Promise<T>;
+  abort: () => void;
+};
+
 export function uploadFormData<T>(
   path: string,
   form: FormData,
   onUploadProgress?: (percent: number) => void,
-): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
+): UploadFormDataHandle<T> {
+  const xhr = new XMLHttpRequest();
+  const promise = new Promise<T>((resolve, reject) => {
     xhr.open('POST', apiUrl(path));
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onUploadProgress) {
@@ -99,8 +104,13 @@ export function uploadFormData<T>(
       reject(new ApiError(xhr.status, detail));
     };
     xhr.onerror = () => reject(new ApiError(0, '网络错误：无法访问后端。请确认后端已启动。'));
+    xhr.onabort = () => reject(new ApiError(0, 'Upload cancelled.'));
     xhr.send(form);
   });
+  return {
+    promise,
+    abort: () => xhr.abort(),
+  };
 }
 
 function jsonInit(method: string, body: unknown): RequestInit {
@@ -206,6 +216,9 @@ export const DatasetsApi = {
       onUploadProgress,
     ),
 
+  cancelImport: (id: string) =>
+    request<{success: boolean}>(`/api/datasets/${id}/cancel-import`, {method: 'POST'}),
+
   getImportStatus: (id: string) =>
     request<DatasetImportStatus>(`/api/datasets/${id}/import-status`),
 
@@ -296,6 +309,8 @@ export interface ModelInfo {
   id: string;
   name: string;
   type: string;
+  /** Experiment creation time — used to order trained models (earliest first). */
+  createdAt?: string | null;
 }
 
 // ── Category relation analysis ───────────────────────────────────────────────

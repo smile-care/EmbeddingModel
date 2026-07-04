@@ -60,7 +60,7 @@ data_cluster:
   training:
     default_backbone: "convnext_tiny"
     learning_rate: 1e-4
-    use_amp: true
+    use_amp: false
     # 早停：验证 margin 连续 early_stop_patience 次提升不超过
     # early_stop_min_delta 就提前结束训练；设为 0 关闭早停。
     early_stop_patience: 5

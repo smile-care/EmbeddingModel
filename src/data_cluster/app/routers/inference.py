@@ -628,7 +628,7 @@ async def list_models(db: Session = Depends(get_db)) -> list[ModelInfo]:
         None,
         lambda: db.query(Experiment)
         .filter(Experiment.status == "Completed")
-        .order_by(Experiment.created_at.desc())
+        .order_by(Experiment.created_at.asc())
         .all()
     )
     models = [
@@ -638,7 +638,10 @@ async def list_models(db: Session = Depends(get_db)) -> list[ModelInfo]:
     models.append(
         ModelInfo(id=INDUSTRIAL_MODEL_ID, name=INDUSTRIAL_MODEL_NAME, type="Pretrained")
     )
-    models.extend(ModelInfo(id=e.id, name=e.name, type="Trained") for e in rows)
+    models.extend(
+        ModelInfo(id=e.id, name=e.name, type="Trained", created_at=e.created_at)
+        for e in rows
+    )
     return models
 
 

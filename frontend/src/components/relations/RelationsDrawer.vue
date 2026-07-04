@@ -9,6 +9,8 @@ import {
   ANALYSIS_VIEW_LABELS,
   type ViewKey,
 } from '@/components/relations/analysisViews';
+import HoverHelpTip from '@/components/relations/HoverHelpTip.vue';
+import {RELATION_DRAWER_PARAM_HELP} from '@/components/relations/relationViewHelp';
 
 export type {ViewKey};
 
@@ -112,11 +114,27 @@ defineExpose({rootEl: rootRef});
         </div>
 
         <div class="mt-2 space-y-4 rounded-xl border border-border bg-secondary/5 p-3">
-          <p class="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">参数</p>
+          <div class="flex items-center gap-1.5">
+            <p class="text-[10px] font-bold uppercase tracking-wide text-muted-foreground">参数</p>
+            <HoverHelpTip label="参数说明" width-class="w-72" placement="floating-left">
+              <p class="mb-2 font-medium text-foreground/90">{{ RELATION_DRAWER_PARAM_HELP.section.intro }}</p>
+              <dl class="space-y-2">
+                <div v-for="item in RELATION_DRAWER_PARAM_HELP.section.items" :key="item.title">
+                  <dt class="font-semibold text-foreground">{{ item.title }}</dt>
+                  <dd class="text-muted-foreground">{{ item.body }}</dd>
+                </div>
+              </dl>
+            </HoverHelpTip>
+          </div>
 
           <div>
             <div class="mb-1 flex items-center justify-between text-[11px]">
-              <span>邻居数 k</span>
+              <span class="flex items-center gap-1">
+                邻居数 k
+                <HoverHelpTip :label="RELATION_DRAWER_PARAM_HELP.k.label" width-class="w-64" placement="floating-left">
+                  <p class="text-muted-foreground">{{ RELATION_DRAWER_PARAM_HELP.k.body }}</p>
+                </HoverHelpTip>
+              </span>
               <span class="font-mono font-semibold">{{ k }}</span>
             </div>
             <input
@@ -125,12 +143,16 @@ defineExpose({rootEl: rootRef});
               @input="emit('update:k', Number(($event.target as HTMLInputElement).value))"
               @change="emit('reloadK')"
             />
-            <p class="mt-0.5 text-[9px] text-muted-foreground">影响 kNN 混淆矩阵与误标判定（改动后重算）。</p>
           </div>
 
           <div>
             <div class="mb-1 flex items-center justify-between text-[11px]">
-              <span>混淆警告阈值</span>
+              <span class="flex items-center gap-1">
+                混淆警告阈值
+                <HoverHelpTip :label="RELATION_DRAWER_PARAM_HELP.confusionThreshold.label" width-class="w-64" placement="floating-left">
+                  <p class="text-muted-foreground">{{ RELATION_DRAWER_PARAM_HELP.confusionThreshold.body }}</p>
+                </HoverHelpTip>
+              </span>
               <span class="font-mono font-semibold">{{ confPct }}%</span>
             </div>
             <input type="range" min="10" max="90" step="5" v-model.number="confPct" class="w-full accent-rose-500" />
@@ -138,7 +160,12 @@ defineExpose({rootEl: rootRef});
 
           <div>
             <div class="mb-1 flex items-center justify-between text-[11px]">
-              <span>相似度警告阈值</span>
+              <span class="flex items-center gap-1">
+                相似度警告阈值
+                <HoverHelpTip :label="RELATION_DRAWER_PARAM_HELP.simThreshold.label" width-class="w-64" placement="floating-left">
+                  <p class="text-muted-foreground">{{ RELATION_DRAWER_PARAM_HELP.simThreshold.body }}</p>
+                </HoverHelpTip>
+              </span>
               <span class="font-mono font-semibold">{{ simPct }}%</span>
             </div>
             <input type="range" min="50" max="99" step="1" v-model.number="simPct" class="w-full accent-amber-500" />
@@ -146,7 +173,12 @@ defineExpose({rootEl: rootRef});
 
           <div>
             <div class="mb-1 flex items-center justify-between text-[11px]">
-              <span>误标最小跨类占比</span>
+              <span class="flex items-center gap-1">
+                误标最小跨类占比
+                <HoverHelpTip :label="RELATION_DRAWER_PARAM_HELP.mislabelThreshold.label" width-class="w-64" placement="floating-left">
+                  <p class="text-muted-foreground">{{ RELATION_DRAWER_PARAM_HELP.mislabelThreshold.body }}</p>
+                </HoverHelpTip>
+              </span>
               <span class="font-mono font-semibold">{{ mislabelPct }}%</span>
             </div>
             <input type="range" min="30" max="90" step="5" v-model.number="mislabelPct" class="w-full accent-rose-500" />

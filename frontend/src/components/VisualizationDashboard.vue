@@ -62,6 +62,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (pollTimer) clearTimeout(pollTimer);
+  if (etaTickTimer) clearInterval(etaTickTimer);
 });
 
 // ── Result vs. live-run separation ─────────────────────────────────────────────
@@ -202,6 +203,55 @@ const progressPct = computed(() => {
   if (typeof p === 'number' && p > 0) return Math.round(p);
   if (!currentStep.value || !totalSteps.value) return 0;
   return Math.round((currentStep.value / totalSteps.value) * 100);
+});
+
+/** Tick every second so ETA countdown updates between polls. */
+const now = ref(Date.now());
+let etaTickTimer: ReturnType<typeof setInterval> | null = null;
+
+watch(
+  mode,
+  (m) => {
+    if (etaTickTimer) {
+      clearInterval(etaTickTimer);
+      etaTickTimer = null;
+    }
+    if (m === 'live') {
+      now.value = Date.now();
+      etaTickTimer = setInterval(() => {
+        now.value = Date.now();
+      }, 1000);
+    }
+  },
+  {immediate: true},
+);
+
+function formatEtaSeconds(totalSec: number): string {
+  const sec = Math.max(0, Math.round(totalSec));
+  if (sec < 60) return `约 ${sec} 秒`;
+  const min = Math.floor(sec / 60);
+  const rem = sec % 60;
+  if (min < 60) return rem > 0 ? `约 ${min} 分 ${rem} 秒` : `约 ${min} 分钟`;
+  const hr = Math.floor(min / 60);
+  const m = min % 60;
+  return m > 0 ? `约 ${hr} 小时 ${m} 分` : `约 ${hr} 小时`;
+}
+
+const finetuneEtaLabel = computed(() => {
+  if (stage.value === 'preparing_dataset') return 'Finetune 预估：数据准备中…';
+  const step = currentStep.value;
+  const total = totalSteps.value;
+  const trainingStartedAt = runMetrics.value?.trainingStartedAt ?? runMetrics.value?.startedAt;
+  if (!step || !total || trainingStartedAt == null) return null;
+  const startedSec = Number(trainingStartedAt);
+  if (!Number.isFinite(startedSec) || startedSec <= 0) return null;
+
+  const elapsedSec = now.value / 1000 - startedSec;
+  if (elapsedSec < 5 || step < 2) return 'Finetune 预估：计算中…';
+
+  const secPerStep = elapsedSec / step;
+  const remainingSec = Math.max(0, (total - step) * secPerStep);
+  return `Finetune 预估剩余 ${formatEtaSeconds(remainingSec)}`;
 });
 
 // ── Stop training ─────────────────────────────────────────────────────────────
@@ -432,6 +482,10 @@ const marginChartOption = computed(() => ({
           <p v-if="currentStep && totalSteps" class="mt-0.5 text-xs text-muted-foreground">
             Step {{ currentStep }} / {{ totalSteps }}
             <span class="ml-2 text-amber-400/70">{{ progressPct }}%</span>
+            <span v-if="finetuneEtaLabel" class="ml-2 text-white/45">· {{ finetuneEtaLabel }}</span>
+          </p>
+          <p v-else-if="finetuneEtaLabel" class="mt-0.5 text-xs text-muted-foreground">
+            {{ finetuneEtaLabel }}
           </p>
           <p v-else-if="hasResult" class="mt-0.5 text-xs text-muted-foreground">
             若本次训练失败或中止，将自动保留上一次成功的结果。

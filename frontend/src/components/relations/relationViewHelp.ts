@@ -11,6 +11,40 @@ export interface RelationViewHelp {
   footer?: string;
 }
 
+export interface RelationParamHelp {
+  label: string;
+  body: string;
+}
+
+/** Sidebar「参数」区块与各滑块的悬停说明（分析中心抽屉）。 */
+export const RELATION_DRAWER_PARAM_HELP = {
+  section: {
+    intro: '以下参数控制关系分析与警告视图的敏感度；除邻居数 k 外，其余阈值改动后即时生效，无需重算。',
+    items: [
+      {title: '邻居数 k', body: 'kNN 近邻数量，影响混淆矩阵、误标检测等所有基于邻域的指标。'},
+      {title: '混淆警告阈值', body: 'kNN 跨类占比告警线，用于混淆矩阵与警告列表。'},
+      {title: '相似度警告阈值', body: '类心余弦相似度告警线，用于类心矩阵、树状图与关系图。'},
+      {title: '误标最小跨类占比', body: '误标候选清单的最低跨类邻居占比过滤线。'},
+    ],
+  },
+  k: {
+    label: '邻居数 k 说明',
+    body: '每个样本检索 k 个最近邻，用于计算 kNN 混淆矩阵、跨类邻居占比与误标投票。k 越大邻域越广、估计更平滑；k 越小对局部结构更敏感。改动后需重算关系分析。',
+  },
+  confusionThreshold: {
+    label: '混淆警告阈值说明',
+    body: 'kNN 混淆矩阵中，非对角格子（跨类邻居占比）超过该阈值时标红；「相似/混淆警告」列表也据此过滤。阈值越低越容易触发告警。',
+  },
+  simThreshold: {
+    label: '相似度警告阈值说明',
+    body: '两类类心余弦相似度超过该阈值时在类心矩阵中标红；树状图红色分支、关系图高相似边，以及警告列表的类心相似项，也受此阈值影响。',
+  },
+  mislabelThreshold: {
+    label: '误标最小跨类占比说明',
+    body: '「疑似误标」视图仅展示 k 近邻中不属于当前标注类别的占比不低于该值的样本，用于过滤噪声、聚焦高置信误标候选。',
+  },
+} satisfies Record<string, RelationParamHelp | {intro: string; items: {title: string; body: string}[]}>;
+
 export const RELATION_VIEW_HELP: Partial<Record<ViewKey, RelationViewHelp>> = {
   headline: {
     intro: '数据集整体 embedding 质量概览：',

@@ -1,0 +1,3 @@
+export const SCATTER_POINT_SIZE_DEFAULT = 7;
+export const SCATTER_POINT_SIZE_MIN = 2;
+export const SCATTER_POINT_SIZE_MAX = 14;

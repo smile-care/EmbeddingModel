@@ -20,7 +20,13 @@ import VChart from 'vue-echarts';
 import type {ECharts} from 'echarts';
 import {categoryChartColor, staticUrl} from '@/lib/api';
 
-const props = defineProps<{plotData: PlotPoint[]; labelList: string[]; highlightLabels?: string[]}>();
+const props = defineProps<{
+  plotData: PlotPoint[];
+  labelList: string[];
+  highlightLabels?: string[];
+  /** Base scatter symbol size in px; golden/dimmed scale proportionally. */
+  pointSize?: number;
+}>();
 const emit = defineEmits<{preview: [point: PlotPoint]}>();
 
 type ChartPublicApi = {
@@ -44,12 +50,25 @@ const MIN_ZOOM_RATIO = 0.02;
 const MAX_ZOOM_OUT_RATIO = 1;
 const GRID_MARGIN = {left: 40, right: 24, top: 24, bottom: 40};
 const TARGET_SPLITS = 8;
+const LARGE_SCATTER_THRESHOLD = 200;
+
+const AXIS_COMMON = {
+  splitNumber: TARGET_SPLITS,
+  splitLine: {show: true, lineStyle: {color: '#3f3f46', type: 'dashed' as const}},
+  axisLine: {show: false, onZero: false},
+  axisTick: {show: false},
+  axisLabel: {show: false},
+};
+
 let _panActive = false;
 let _didDrag = false;
 let _suppressClick = false;
 let _userZoomed = false;
 let _dragStartClient = {x: 0, y: 0};
 let _dragStartViewport: Viewport | null = null;
+let _pendingViewport: Viewport | null = null;
+let _viewportRaf = 0;
+let _interactionEndTimer: ReturnType<typeof setTimeout> | null = null;
 
 function getChart(): ECharts | null {
   const root = chartRef.value;
@@ -106,19 +125,15 @@ const dataBounds = computed<Viewport>(() => {
   };
 });
 
-// Grid cells should be visually square (equal pixel width/height) without
-// changing the data ranges. Pick a nice interval for X, then derive the Y
-// interval so that one X cell and one Y cell span the same number of pixels.
-const gridIntervals = computed(() => {
-  const vp = viewport.value ?? dataBounds.value;
+function gridIntervalsFor(vp: Viewport) {
   const xRange = vp.xMax - vp.xMin;
   const yRange = vp.yMax - vp.yMin;
   const {width, height} = plotSize.value;
   const intervalX = niceInterval(xRange);
-  const cellPixels = (intervalX / xRange) * width; // px per X cell
-  const intervalY = (cellPixels / height) * yRange; // same px for Y cell
+  const cellPixels = (intervalX / xRange) * width;
+  const intervalY = (cellPixels / height) * yRange;
   return {x: intervalX, y: intervalY};
-});
+}
 
 function clampViewport(next: Viewport): Viewport {
   const bounds = dataBounds.value;
@@ -167,18 +182,93 @@ function clampViewport(next: Viewport): Viewport {
   return {xMin, xMax, yMin, yMax};
 }
 
+function buildAxisOption(vp: Viewport, lite = false) {
+  const intervals = gridIntervalsFor(vp);
+  const splitLine = lite
+    ? {show: false}
+    : AXIS_COMMON.splitLine;
+  return {
+    xAxis: {
+      type: 'value' as const,
+      min: vp.xMin,
+      max: vp.xMax,
+      interval: intervals.x,
+      minInterval: intervals.x,
+      maxInterval: intervals.x,
+      ...AXIS_COMMON,
+      splitLine,
+    },
+    yAxis: {
+      type: 'value' as const,
+      min: vp.yMin,
+      max: vp.yMax,
+      interval: intervals.y,
+      minInterval: intervals.y,
+      maxInterval: intervals.y,
+      ...AXIS_COMMON,
+      splitLine,
+    },
+  };
+}
+
+function applyViewportToChart(vp: Viewport, lite = false) {
+  const chart = getChart();
+  if (!chart) return;
+  chart.setOption(buildAxisOption(vp, lite), {lazyUpdate: true, replaceMerge: ['xAxis', 'yAxis']});
+}
+
+function flushViewportUpdate(lite = false) {
+  if (!_pendingViewport) return;
+  const vp = _pendingViewport;
+  _pendingViewport = null;
+  viewport.value = vp;
+  applyViewportToChart(vp, lite);
+}
+
+function scheduleViewportUpdate(next: Viewport, lite = false) {
+  _pendingViewport = clampViewport(next);
+  if (_viewportRaf) return;
+  _viewportRaf = requestAnimationFrame(() => {
+    _viewportRaf = 0;
+    flushViewportUpdate(lite);
+  });
+}
+
+function markInteractionEnd() {
+  if (_interactionEndTimer) clearTimeout(_interactionEndTimer);
+  _interactionEndTimer = setTimeout(() => {
+    _interactionEndTimer = null;
+    if (viewport.value) applyViewportToChart(viewport.value, false);
+  }, 120);
+}
+
 function resetViewport() {
-  viewport.value = {...dataBounds.value};
+  _userZoomed = false;
+  _pendingViewport = null;
+  const bounds = {...dataBounds.value};
+  viewport.value = bounds;
+  applyViewportToChart(bounds, false);
 }
 
 watch(
-  () => [props.plotData, props.labelList] as const,
+  () => props.plotData,
   () => {
     _userZoomed = false;
     updatePlotSize();
-    viewport.value = {...dataBounds.value};
+    const bounds = {...dataBounds.value};
+    viewport.value = bounds;
+    requestAnimationFrame(() => applyViewportToChart(bounds, false));
   },
-  {immediate: true, deep: true},
+  {immediate: true},
+);
+
+watch(
+  () => [props.highlightLabels, props.pointSize, props.labelList.length] as const,
+  () => {
+    requestAnimationFrame(() => {
+      if (viewport.value) applyViewportToChart(viewport.value, false);
+    });
+  },
 );
 
 let _resizeObserver: ResizeObserver | null = null;
@@ -190,8 +280,12 @@ watch(
     _resizeObserver = null;
     if (!dom) return;
     updatePlotSize();
-    _resizeObserver = new ResizeObserver(() => updatePlotSize());
+    _resizeObserver = new ResizeObserver(() => {
+      updatePlotSize();
+      if (!_userZoomed && viewport.value) applyViewportToChart(viewport.value, false);
+    });
     _resizeObserver.observe(dom);
+    if (viewport.value) applyViewportToChart(viewport.value, false);
     onCleanup(() => {
       _resizeObserver?.disconnect();
       _resizeObserver = null;
@@ -200,13 +294,13 @@ watch(
   {flush: 'post'},
 );
 
-// Re-fit the viewport to the (aspect-corrected) data bounds whenever the plot
-// area changes size, as long as the user hasn't manually zoomed/panned. This
-// also fixes the initial mount where the chart DOM size is not yet known.
 watch(
   dataBounds,
   (bounds) => {
-    if (!_userZoomed) viewport.value = {...bounds};
+    if (!_userZoomed) {
+      viewport.value = {...bounds};
+      applyViewportToChart(bounds, false);
+    }
   },
 );
 
@@ -236,7 +330,7 @@ function onPointerdown(e: PointerEvent) {
   _panActive = true;
   _didDrag = false;
   _dragStartClient = {x: e.clientX, y: e.clientY};
-  _dragStartViewport = {...viewport.value};
+  _dragStartViewport = {...(_pendingViewport ?? viewport.value)};
 
   window.addEventListener('pointermove', onWindowPointermove);
   window.addEventListener('pointerup', onWindowPointerup);
@@ -264,7 +358,6 @@ function onPanPointermove(e: PointerEvent) {
   isOverPoint.value = false;
   setChartCursor('grabbing');
 
-  const dom = chartRef.value?.getDom?.() ?? getChart()?.getDom();
   const w = plotSize.value.width;
   const h = plotSize.value.height;
   const start = _dragStartViewport;
@@ -272,16 +365,20 @@ function onPanPointermove(e: PointerEvent) {
   const yRange = start.yMax - start.yMin;
   const xShift = -(dx / w) * xRange;
   const yShift = (dy / h) * yRange;
-  viewport.value = clampViewport({
-    xMin: start.xMin + xShift,
-    xMax: start.xMax + xShift,
-    yMin: start.yMin + yShift,
-    yMax: start.yMax + yShift,
-  });
+  scheduleViewportUpdate(
+    {
+      xMin: start.xMin + xShift,
+      xMax: start.xMax + xShift,
+      yMin: start.yMin + yShift,
+      yMax: start.yMax + yShift,
+    },
+    true,
+  );
+  markInteractionEnd();
 }
 
 function onWheel(e: WheelEvent) {
-  const current = viewport.value;
+  const current = _pendingViewport ?? viewport.value;
   if (!current) return;
   const factor = e.deltaY < 0 ? ZOOM_IN_FACTOR : ZOOM_OUT_FACTOR;
   const dom = chartRef.value?.getDom?.() ?? getChart()?.getDom();
@@ -293,18 +390,23 @@ function onWheel(e: WheelEvent) {
   const nextXRange = (current.xMax - current.xMin) * factor;
   const nextYRange = (current.yMax - current.yMin) * factor;
   _userZoomed = true;
-  viewport.value = clampViewport({
-    xMin: centerX - px * nextXRange,
-    xMax: centerX + (1 - px) * nextXRange,
-    yMin: centerY - (1 - py) * nextYRange,
-    yMax: centerY + py * nextYRange,
-  });
+  scheduleViewportUpdate(
+    {
+      xMin: centerX - px * nextXRange,
+      xMax: centerX + (1 - px) * nextXRange,
+      yMin: centerY - (1 - py) * nextYRange,
+      yMax: centerY + py * nextYRange,
+    },
+    true,
+  );
+  markInteractionEnd();
 }
 
 function finishPan() {
   if (_didDrag) _suppressClick = true;
   _dragStartViewport = null;
   cleanupPanListeners();
+  markInteractionEnd();
   if (!isOverPoint.value) setChartCursor('grab');
 }
 
@@ -312,13 +414,54 @@ onBeforeUnmount(() => {
   cleanupPanListeners();
   _resizeObserver?.disconnect();
   _resizeObserver = null;
+  if (_viewportRaf) cancelAnimationFrame(_viewportRaf);
+  if (_interactionEndTimer) clearTimeout(_interactionEndTimer);
 });
 
-// ── chart option ───────────────────────────────────────────────────────────
+function tooltipFormatter(params: unknown) {
+  const p = params as {data?: {raw?: PlotPoint}};
+  const d = p.data?.raw;
+  if (!d) return '';
+  const color = categoryChartColor(d.cluster, props.labelList.length || props.plotData.length);
+  const label = d.label || props.labelList[d.cluster] || `Cluster ${d.cluster + 1}`;
+  const score = Number(d.anomalyScore ?? 0);
+  const scoreColor = score > 70 ? '#f43f5e' : '#10b981';
+  const img = d.url
+    ? `<img src="${staticUrl(d.url)}" alt="" style="width:128px;height:128px;object-fit:cover;border-radius:4px;border:1px solid #27272a" />`
+    : '';
+  const goldenBadge = d.isGolden
+    ? '<span style="font-size:8px;font-weight:600;color:#fbbf24;border:1px solid #fbbf24;border-radius:4px;padding:0 4px">◆ GOLDEN</span>'
+    : '';
+  return `
+    <div style="display:flex;flex-direction:column;gap:8px;min-width:150px;padding:4px">
+      <div>${img}</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="width:8px;height:8px;border-radius:9999px;background:${color}"></span>
+        <span style="font-size:10px;font-weight:500">${label}</span>
+        ${goldenBadge}
+      </div>
+      <div style="font-size:8px;color:#a1a1aa;display:flex;justify-content:space-between">
+        <span>Anomaly Score</span>
+        <span style="font-family:monospace;color:${scoreColor}">${score.toFixed(1)}%</span>
+      </div>
+      <div style="height:4px;width:100%;background:rgba(39,39,42,0.3);border-radius:9999px;overflow:hidden">
+        <div style="height:100%;width:${Math.min(100, score)}%;background:${scoreColor}"></div>
+      </div>
+      <p style="font-size:8px;color:#a1a1aa;text-align:center;border-top:1px solid #27272a;padding-top:4px;margin:0">Click to expand image</p>
+    </div>`;
+}
+
+// Series/tooltip rebuild only when data or styling changes — not on zoom/pan.
 const chartOption = computed(() => {
   const clusters = [...new Set(props.plotData.map((p) => p.cluster))].sort((a, b) => a - b);
   const n = props.labelList.length || clusters.length;
-  const hl = props.highlightLabels && props.highlightLabels.length ? new Set(props.highlightLabels) : null;
+  const hl = props.highlightLabels?.length ? new Set(props.highlightLabels) : null;
+  const base = props.pointSize ?? 9;
+  const dimmedSize = Math.max(2, Math.round(base * (6 / 9)));
+  const goldenSize = Math.max(4, Math.round(base * (15 / 9)));
+  const useLarge = props.plotData.length >= LARGE_SCATTER_THRESHOLD;
+  const vp = dataBounds.value;
+
   const series = clusters.map((ci) => {
     const pts = props.plotData.filter((p) => p.cluster === ci);
     const label = pts[0]?.label || props.labelList[ci] || `Cluster ${ci + 1}`;
@@ -327,7 +470,9 @@ const chartOption = computed(() => {
     return {
       name: label,
       type: 'scatter',
-      symbolSize: dimmed ? 6 : 9,
+      large: useLarge,
+      largeThreshold: LARGE_SCATTER_THRESHOLD,
+      symbolSize: dimmed ? dimmedSize : base,
       itemStyle: {color, borderColor: 'transparent', opacity: dimmed ? 0.12 : 1},
       z: dimmed ? 1 : 5,
       data: pts.map((p) => ({
@@ -336,7 +481,7 @@ const chartOption = computed(() => {
         ...(p.isGolden
           ? {
               symbol: 'diamond',
-              symbolSize: 15,
+              symbolSize: goldenSize,
               itemStyle: {color, borderColor: '#fbbf24', borderWidth: 2.5},
             }
           : {}),
@@ -344,57 +489,18 @@ const chartOption = computed(() => {
     };
   });
 
-  const intervals = gridIntervals.value;
-  const axisCommon = {
-    splitNumber: TARGET_SPLITS,
-    splitLine: {show: true, lineStyle: {color: '#3f3f46', type: 'dashed'}},
-    axisLine: {show: false, onZero: false},
-    axisTick: {show: false},
-    axisLabel: {show: false},
-  };
-
   return {
     backgroundColor: 'transparent',
     animation: false,
     grid: {...GRID_MARGIN, containLabel: false},
-    xAxis: {type: 'value', min: viewport.value?.xMin, max: viewport.value?.xMax, interval: intervals.x, minInterval: intervals.x, maxInterval: intervals.x, ...axisCommon},
-    yAxis: {type: 'value', min: viewport.value?.yMin, max: viewport.value?.yMax, interval: intervals.y, minInterval: intervals.y, maxInterval: intervals.y, ...axisCommon},
+    ...buildAxisOption(vp, false),
     tooltip: {
       trigger: 'item',
       backgroundColor: '#09090b',
       borderColor: '#27272a',
       textStyle: {color: '#fafafa', fontSize: 10},
       extraCssText: 'max-width:280px',
-      formatter: (params: unknown) => {
-        const p = params as {data?: {raw?: PlotPoint}};
-        const d = p.data?.raw;
-        if (!d) return '';
-        const color = categoryChartColor(d.cluster, props.labelList.length || props.plotData.length);
-        const label = d.label || props.labelList[d.cluster] || `Cluster ${d.cluster + 1}`;
-        const score = Number(d.anomalyScore ?? 0);
-        const scoreColor = score > 70 ? '#f43f5e' : '#10b981';
-        const img = d.url ? `<img src="${staticUrl(d.url)}" alt="" style="width:128px;height:128px;object-fit:cover;border-radius:4px;border:1px solid #27272a" />` : '';
-        const goldenBadge = d.isGolden
-          ? '<span style="font-size:8px;font-weight:600;color:#fbbf24;border:1px solid #fbbf24;border-radius:4px;padding:0 4px">◆ GOLDEN</span>'
-          : '';
-        return `
-          <div style="display:flex;flex-direction:column;gap:8px;min-width:150px;padding:4px">
-            <div>${img}</div>
-            <div style="display:flex;align-items:center;gap:8px">
-              <span style="width:8px;height:8px;border-radius:9999px;background:${color}"></span>
-              <span style="font-size:10px;font-weight:500">${label}</span>
-              ${goldenBadge}
-            </div>
-            <div style="font-size:8px;color:#a1a1aa;display:flex;justify-content:space-between">
-              <span>Anomaly Score</span>
-              <span style="font-family:monospace;color:${scoreColor}">${score.toFixed(1)}%</span>
-            </div>
-            <div style="height:4px;width:100%;background:rgba(39,39,42,0.3);border-radius:9999px;overflow:hidden">
-              <div style="height:100%;width:${Math.min(100, score)}%;background:${scoreColor}"></div>
-            </div>
-            <p style="font-size:8px;color:#a1a1aa;text-align:center;border-top:1px solid #27272a;padding-top:4px;margin:0">Click to expand image</p>
-          </div>`;
-      },
+      formatter: tooltipFormatter,
     },
     series,
   };
@@ -429,6 +535,7 @@ function onChartClick(params: unknown) {
       ref="chartRef"
       class="h-full w-full"
       :option="chartOption"
+      :update-options="{lazyUpdate: true}"
       autoresize
       @click="onChartClick"
       @mouseover="onChartMouseover"

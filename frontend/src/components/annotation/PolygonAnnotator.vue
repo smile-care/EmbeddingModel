@@ -2,6 +2,9 @@
 import {computed, onBeforeUnmount, onMounted, ref, watch} from 'vue';
 import {Check, ChevronLeft, ChevronRight, Hand, Minus, MousePointer2, Plus, Redo2, RotateCcw, Sparkles, Trash2, Undo2, Wand2, X, ZoomIn, ZoomOut} from 'lucide-vue-next';
 import {classColor, type AnnotationRegion, type DefectClass, type RegionInput} from '../../lib/api';
+import AnnotationOverlay from '@/components/annotation/AnnotationOverlay.vue';
+import type {AnnotationOverlayRegion} from '@/components/annotation/overlayUtils';
+import {combineLegendScale} from '@/components/annotation/overlayUtils';
 import {clientToNorm, clonePoints, dist, toSvgPoints, type Point} from './geometry';
 import {buildWandSource, magicWandPolygon, type WandSource} from './magicWand';
 
@@ -113,6 +116,24 @@ function colorFor(classId: string | null, isSubtract: boolean): string {
   if (!classId) return '#64748b';
   return classColor(classMap.value.get(classId) ?? null);
 }
+function labelForClass(classId: string | null | undefined): string {
+  if (!classId) return 'Unassigned';
+  return classMap.value.get(classId)?.name ?? 'Unknown';
+}
+const overlayRegions = computed((): AnnotationOverlayRegion[] =>
+  regions.value.map((r) => ({
+    points: r.points,
+    isSubtract: r.isSubtract,
+    classId: r.classId,
+  })),
+);
+function overlayColorForClass(classId: string | null | undefined, isSubtract?: boolean): string {
+  return colorFor(classId ?? null, !!isSubtract);
+}
+const annotatorLegendScale = computed(() => {
+  const displayW = nat.value.w * scale.value;
+  return combineLegendScale(scale.value, displayW);
+});
 
 // ── Coordinate / drawing ─────────────────────────────────────────────────────
 function isPanGesture(e: PointerEvent): boolean {
@@ -517,24 +538,21 @@ const markerRy = computed(() =>
               class="block max-w-none select-none"
               @load="onImgLoad"
             />
+            <AnnotationOverlay
+              :regions="overlayRegions"
+              :color-for-class="overlayColorForClass"
+              :label-for-class="labelForClass"
+              :zoom="scale"
+              :legend-scale="annotatorLegendScale"
+              :image-width="nat.w"
+              :image-height="nat.h"
+              :stroke-width="0.004"
+            />
             <svg
               class="pointer-events-none absolute inset-0 h-full w-full"
               viewBox="0 0 100 100"
               preserveAspectRatio="none"
             >
-              <!-- saved regions -->
-              <polygon
-                v-for="r in regions"
-                :key="r.id"
-                :points="toSvgPoints(r.points)"
-                :fill="colorFor(r.classId, r.isSubtract)"
-                :fill-opacity="r.isSubtract ? 0.25 : 0.22"
-                :stroke="colorFor(r.classId, r.isSubtract)"
-                :stroke-dasharray="r.isSubtract ? '2 1.5' : undefined"
-                stroke-width="0.4"
-                vector-effect="non-scaling-stroke"
-                :class="selectedRegionId === r.id ? 'opacity-100' : 'opacity-90'"
-              />
               <!-- draft -->
               <polyline
                 v-if="draftPreview.length > 1"
