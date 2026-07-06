@@ -80,12 +80,29 @@ def main():
     use_wandb = bool(supcon_config['supcon']['output'].get('use_wandb', False))
     if use_wandb and wandb is None:
         raise RuntimeError("use_wandb=true 但当前环境未安装 wandb，请安装 wandb 或关闭 use_wandb")
+
+    resume_wandb_run_id = None
+    if args.resume and is_main and use_wandb:
+        resume_checkpoint = torch.load(args.resume, map_location='cpu')
+        resume_wandb_run_id = resume_checkpoint.get('wandb_run_id')
+        if resume_wandb_run_id:
+            log_info(f"W&B resume run id: {resume_wandb_run_id}")
+
     if is_main and use_wandb:
         raw_project = supcon_config['supcon']['output'].get('wandb_project', 'industrial-supcon')
         wandb_project = sanitize_wandb_project_name(raw_project)
         if wandb_project != raw_project:
             log_info(f"W&B project 名称包含非法字符，已自动清洗: '{raw_project}' -> '{wandb_project}'")
-        wandb.init(project=wandb_project, config=supcon_config['supcon'])
+        wandb_kwargs = {
+            'project': wandb_project,
+            'config': supcon_config['supcon'],
+        }
+        if resume_wandb_run_id:
+            wandb_kwargs.update({
+                'id': resume_wandb_run_id,
+                'resume': 'allow',
+            })
+        wandb.init(**wandb_kwargs)
 
     log_info("加载数据集...")
     log_info(f"数据配置文件: {data_config_path}")
@@ -312,6 +329,8 @@ def main():
             checkpoint_data['val_loss'] = val_metrics['loss']
         if use_moco and moco_queues is not None:
             checkpoint_data['moco_queue_state'] = [queue.state_dict() for queue in moco_queues]
+        if is_main and use_wandb and wandb is not None and wandb.run is not None:
+            checkpoint_data['wandb_run_id'] = wandb.run.id
         return checkpoint_data
 
     def save_current_checkpoint(global_step: int, train_metrics: dict, val_metrics: Optional[dict] = None):
