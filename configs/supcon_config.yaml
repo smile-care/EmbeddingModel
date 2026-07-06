@@ -46,8 +46,8 @@ supcon:
   data:
     data_config_path: "configs/data_config.yaml"
     image_size: [224]           # 支持单值或列表（多尺度随机采样），如 [224, 320, 448]
-    batch_size: 32
-    num_workers: 4
+    batch_size: 64
+    num_workers: 2
     pin_memory: true
     mask_dilation:
       enabled: false
@@ -64,7 +64,7 @@ supcon:
       max_attempts: 10
 
   training:
-    total_steps: 20000
+    total_steps: 15000
     eval_interval: 1000
     current_model_interval_steps: 500
     save_interval_steps: 5000
