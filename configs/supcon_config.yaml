@@ -64,12 +64,12 @@ supcon:
       max_attempts: 10
 
   training:
-    total_steps: 15000
+    total_steps: 10000
     eval_interval: 1000
     current_model_interval_steps: 500
     save_interval_steps: 5000
     log_interval: 50
-    scene_sampling: "size_temperature"
+    scene_sampling: "size"
     scene_sampling_alpha: 0.5
     learning_rate: 1.0e-4
     weight_decay: 0.05

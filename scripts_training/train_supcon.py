@@ -136,14 +136,19 @@ def main():
     ]
     val_scene_names = [s.get('name', s['root']) for s in val_scene_cfgs]
 
-    for name, count, categories in zip(
-        train_dataset.scene_names,
-        train_dataset.scene_sample_counts,
-        train_dataset.scene_categories,
-    ):
-        log_info(f"  [train] {name}: {count} 样本, 类别: {categories}")
-    for name, ds in zip(val_scene_names, val_datasets):
-        log_info(f"  [val]   {name}: {len(ds)} 样本, 类别: {ds.categories}")
+    train_counts = train_dataset.scene_sample_counts
+    total_train_samples = sum(train_counts)
+    log_info(
+        f"训练集: scenes={train_dataset.num_scenes}, samples={total_train_samples}, "
+        f"scene_samples=min/avg/max {min(train_counts)}/{total_train_samples / len(train_counts):.1f}/{max(train_counts)}"
+    )
+    if val_datasets:
+        val_counts = [len(ds) for ds in val_datasets]
+        total_val_samples = sum(val_counts)
+        log_info(
+            f"验证集: scenes={len(val_datasets)}, samples={total_val_samples}, "
+            f"scene_samples=min/avg/max {min(val_counts)}/{total_val_samples / len(val_counts):.1f}/{max(val_counts)}"
+        )
 
     batch_size = data_cfg['batch_size']
     num_workers = data_cfg['num_workers']
@@ -189,7 +194,6 @@ def main():
             DataLoader(ds, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=pin_memory)
             for ds in val_datasets
         ]
-        log_info(f"验证集总样本数: {sum(len(d) for d in val_datasets)}（{len(val_dataloaders)} 个场景）")
 
     moco_config = supcon_config['supcon'].get('moco', {})
     use_moco = moco_config.get('enabled', False)
@@ -229,8 +233,11 @@ def main():
             if queue_on_gpu:
                 queue = queue.to(device)
             moco_queues.append(queue)
-        for name, queue in zip(train_scene_names, moco_queues):
-            log_info(f"  MoCo queue [{name}]: size={queue.queue_size}, device={'gpu' if queue_on_gpu else 'cpu'}")
+        queue_sizes = [queue.queue_size for queue in moco_queues]
+        log_info(
+            f"MoCo queues: scenes={len(moco_queues)}, device={'gpu' if queue_on_gpu else 'cpu'}, "
+            f"size=min/avg/max {min(queue_sizes)}/{sum(queue_sizes) / len(queue_sizes):.1f}/{max(queue_sizes)}"
+        )
     else:
         moco_queues = None
 
@@ -366,9 +373,7 @@ def main():
         val_metrics_per_scene = []
         should_eval = args.use_eval and val_dataloaders and eval_interval > 0 and global_step % eval_interval == 0
         if should_eval:
-            for val_scene_idx, (val_scene_name, val_dl) in enumerate(zip(val_scene_names, val_dataloaders)):
-                if is_main:
-                    log_info(f"验证场景({val_scene_idx + 1}/{len(val_scene_names)}): {val_scene_name}")
+            for val_scene_name, val_dl in zip(val_scene_names, val_dataloaders):
                 metrics = validate(
                     raw_model,
                     val_dl,
@@ -377,7 +382,7 @@ def main():
                     use_moco=use_moco,
                     loss_temperature=loss_config['supcon']['temperature'],
                     embedding_source=embedding_source,
-                    show_progress=is_main,
+                    show_progress=False,
                 )
                 val_metrics_per_scene.append((val_scene_name, metrics))
             if is_main:
