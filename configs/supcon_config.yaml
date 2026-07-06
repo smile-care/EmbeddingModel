@@ -28,11 +28,14 @@ supcon:
       fusion_dim: 768           # FeatureFusion 输出维度 h（应用分析表征空间）
       projection_hidden_dim: 1024
       mask_gating:
-        enabled: true
+        enabled: false
         init_gamma: 0.0
         per_layer: true
       pooling:
-        mode: "fg_only"
+        mode: "fg_context_delta"
+        context_dilation: 2
+        stage_gate:
+          enabled: true
 
     # ----------------------------------------------------------
     # ViT 管线专用参数（backbone 为 vit* 时生效）
@@ -48,12 +51,21 @@ supcon:
     pin_memory: true
     mask_dilation:
       enabled: false
+    copy_paste:
+      enabled: true
+      prob: 0.3
+      max_pastes: 1
+      avoid_mask_dilation: 12
+      different_label_prob: 0.85
+      opacity_range: [0.85, 1.0]
+      scale_range: [0.7, 1.1]
+      max_size_ratio: 0.45
 
   training:
     epochs: 150
     learning_rate: 1.0e-4
     weight_decay: 0.05
-    backbone_lr_ratio: 0.4     # backbone 学习率 = learning_rate × backbone_lr_ratio
+    backbone_lr_ratio: 0.7     # backbone 学习率 = learning_rate × backbone_lr_ratio
     lr_scheduler: "cosine"
     save_interval: 50
 

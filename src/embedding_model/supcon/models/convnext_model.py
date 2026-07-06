@@ -63,6 +63,7 @@ class ConvNeXtModel(nn.Module):
 
         pooling = pooling or {}
         self.pooling_mode = str(pooling.get("mode", "fg_only"))
+        self.pooling_config = dict(pooling)
         # Backbone
         self.backbone = DINOv3ConvNext(
             cfg=backbone_cfg,
@@ -82,6 +83,7 @@ class ConvNeXtModel(nn.Module):
             output_dim=self.fusion_dim,
             use_layers=self.use_layers,
             pooling_mode=self.pooling_mode,
+            pooling_config=self.pooling_config,
         )
 
         # Projection Head

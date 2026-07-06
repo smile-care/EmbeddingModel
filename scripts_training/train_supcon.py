@@ -613,6 +613,24 @@ def build_loss_func(
     return criterion
 
 
+def get_stage_gate_weights(raw_model: nn.Module, use_moco: bool) -> Optional[dict]:
+    """读取 ConvNeXt FeatureFusion 的 stage gate 权重；未启用时返回 None。"""
+    encoder = raw_model.query_encoder if use_moco and hasattr(raw_model, "query_encoder") else raw_model
+    fusion = getattr(encoder, "feature_fusion", None)
+    if fusion is None or not hasattr(fusion, "get_stage_weights"):
+        return None
+
+    weights = fusion.get_stage_weights()
+    if weights is None:
+        return None
+
+    use_layers = getattr(fusion, "use_layers", range(len(weights)))
+    return {
+        f"stage_{layer_idx}": float(weights[i].cpu().item())
+        for i, layer_idx in enumerate(use_layers)
+    }
+
+
 def main():
     # ------------------------------------------------------------------ #
     # 初始化分布式训练
@@ -701,17 +719,32 @@ def main():
     # 读取 mask_dilation 配置
     mask_dilation_config = supcon_config['supcon']['data'].get('mask_dilation', {'enabled': False})
     logger.info(f"Mask软膨胀配置: {mask_dilation_config}")
+    copy_paste_config = supcon_config['supcon']['data'].get('copy_paste', {'enabled': False})
+    logger.info(f"Copy-paste干扰增强配置: {copy_paste_config}")
 
     # 创建 train datasets
     train_datasets_raw = [
-        SupConDataset(root=s['root'], split='train', image_size=image_sizes, name=s.get('name', s['root']), mask_dilation_config=mask_dilation_config)
+        SupConDataset(
+            root=s['root'],
+            split='train',
+            image_size=image_sizes,
+            name=s.get('name', s['root']),
+            mask_dilation_config=mask_dilation_config,
+            copy_paste_config=copy_paste_config,
+        )
         for s in train_scene_cfgs
     ]
     train_scene_names = [s.get('name', s['root']) for s in train_scene_cfgs]
 
     # 创建 val datasets（可选）
     val_datasets_raw = [
-        SupConDataset(root=s['root'], split='val', image_size=val_image_size, name=s.get('name', s['root']), mask_dilation_config=mask_dilation_config)
+        SupConDataset(
+            root=s['root'],
+            split='val',
+            image_size=val_image_size,
+            name=s.get('name', s['root']),
+            mask_dilation_config=mask_dilation_config,
+        )
         for s in val_scene_cfgs
     ]
     val_scene_names = [s.get('name', s['root']) for s in val_scene_cfgs]
@@ -1000,6 +1033,7 @@ def main():
             train_metrics['pos_loss'] = sum(m.get('pos_loss', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene)
             train_metrics['neg_loss'] = sum(m.get('neg_loss', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene)
         train_losses.append(train_metrics['loss'])
+        stage_gate_weights = get_stage_gate_weights(raw_model, use_moco)
 
         # 验证：仅在主进程（rank 0）上运行，使用 raw_model 绕过 DDP
         val_metrics = None
@@ -1042,6 +1076,9 @@ def main():
                 log_msg += f", pos_loss={train_metrics['pos_loss']:.4f}"
             if 'neg_loss' in train_metrics:
                 log_msg += f", neg_loss={train_metrics['neg_loss']:.4f}"
+        if stage_gate_weights is not None:
+            gate_msg = ", ".join(f"{k}={v:.3f}" for k, v in stage_gate_weights.items())
+            log_msg += f", stage_gate=[{gate_msg}]"
         for sn, m in train_metrics_per_scene:
             log_msg += f"\n  [train] {sn}: loss={m['loss']:.4f}"
         if val_metrics is not None:
@@ -1079,6 +1116,9 @@ def main():
                     log_dict['train_pos_loss'] = train_metrics['pos_loss']
                 if 'neg_loss' in train_metrics:
                     log_dict['train_neg_loss'] = train_metrics['neg_loss']
+            if stage_gate_weights is not None:
+                for key, value in stage_gate_weights.items():
+                    log_dict[f'stage_gate/{key}'] = value
             if val_metrics is not None:
                 log_dict['val_loss'] = val_metrics['loss']
                 log_dict['val_margin_pos_sim'] = val_metrics.get('margin_pos_sim', 0)

@@ -1,0 +1,288 @@
+"""Image/mask augmentations for SupCon training."""
+import random
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from PIL import Image
+from scipy import ndimage
+from torchvision import transforms
+
+
+class MaskSoftDilation:
+    """Mask软膨胀处理类"""
+
+    def __init__(self, config: Optional[Dict] = None):
+        if config is None:
+            config = {}
+        self.enabled = config.get('enabled', True)
+
+    def __call__(self, mask_tensor: torch.Tensor) -> torch.Tensor:
+        if not self.enabled:
+            return mask_tensor
+
+        if mask_tensor.shape[0] > 1:
+            mask_tensor = mask_tensor[0:1]
+
+        mask_np = mask_tensor.squeeze(0).cpu().numpy()
+        binary_mask = (mask_np > 0.5).astype(np.float32)
+        if binary_mask.sum() == 0:
+            return mask_tensor
+
+        foreground_area = binary_mask.sum()
+        equivalent_radius = np.sqrt(foreground_area / np.pi)
+        dilation_radius = min(30, max(10, int(equivalent_radius)))
+        distance = ndimage.distance_transform_edt(1 - binary_mask)
+
+        soft_mask = np.zeros_like(binary_mask, dtype=np.float32)
+        dilation_region = (distance > 0) & (distance <= dilation_radius)
+        if dilation_region.any():
+            soft_mask[dilation_region] = 1.0 - distance[dilation_region] / dilation_radius
+        soft_mask[binary_mask > 0.5] = 1.0
+
+        return torch.from_numpy(soft_mask).unsqueeze(0).to(mask_tensor.device)
+
+
+class CopyPasteDistractor:
+    """Paste extra defect regions outside the current mask as background distractors."""
+
+    def __init__(self, config: Optional[Dict], samples: Optional[List[Dict]] = None):
+        config = config or {}
+        self.enabled = bool(config.get('enabled', False))
+        self.samples = samples or []
+        self.prob = float(config.get('prob', 0.0))
+        self.max_pastes = int(config.get('max_pastes', 1))
+        self.avoid_mask_dilation = int(config.get('avoid_mask_dilation', 8))
+        self.max_attempts = int(config.get('max_attempts', 30))
+        self.different_label_prob = float(config.get('different_label_prob', 0.7))
+        self.opacity_range = tuple(config.get('opacity_range', [0.85, 1.0]))
+        self.scale_range = tuple(config.get('scale_range', [0.7, 1.1]))
+        self.max_size_ratio = float(config.get('max_size_ratio', 0.45))
+
+    def __call__(
+        self,
+        image: Image.Image,
+        mask: Image.Image,
+        current_sample: Optional[Dict] = None,
+    ) -> Image.Image:
+        if not self.enabled or not self.samples or random.random() >= self.prob:
+            return image
+
+        out = image.copy()
+        paste_count = random.randint(1, max(1, self.max_pastes))
+        for _ in range(paste_count):
+            donor = self._sample_donor(current_sample)
+            if donor is not None:
+                out = self._paste_one(out, mask, donor)
+        return out
+
+    def _sample_donor(self, current_sample: Optional[Dict]) -> Optional[Dict]:
+        current_path = current_sample.get('image_path') if current_sample else None
+        current_label = current_sample.get('label') if current_sample else None
+
+        candidates = [s for s in self.samples if s.get('image_path') != current_path]
+        if not candidates:
+            return None
+
+        if current_label is not None and random.random() < self.different_label_prob:
+            diff_candidates = [s for s in candidates if s.get('label') != current_label]
+            if diff_candidates:
+                candidates = diff_candidates
+        return random.choice(candidates)
+
+    def _paste_one(self, image: Image.Image, target_mask: Image.Image, donor: Dict) -> Image.Image:
+        try:
+            donor_image = Image.open(donor['image_path']).convert('RGB')
+            donor_mask = Image.open(donor['mask_path']).convert('L')
+        except (OSError, KeyError):
+            return image
+
+        donor_crop = self._extract_donor_crop(donor_image, donor_mask, image.size)
+        if donor_crop is None:
+            return image
+        patch_img, patch_alpha = donor_crop
+
+        protected = self._protected_mask(target_mask, image.size)
+        image_w, image_h = image.size
+        patch_w, patch_h = patch_img.size
+        if patch_w <= 0 or patch_h <= 0 or patch_w > image_w or patch_h > image_h:
+            return image
+
+        alpha_np = np.array(patch_alpha) > 0
+        if not alpha_np.any():
+            return image
+
+        out = image.copy()
+        for _ in range(self.max_attempts):
+            x = random.randint(0, image_w - patch_w)
+            y = random.randint(0, image_h - patch_h)
+            protected_region = protected[y:y + patch_h, x:x + patch_w]
+            if protected_region.shape != alpha_np.shape or np.any(protected_region & alpha_np):
+                continue
+            out.paste(patch_img, (x, y), patch_alpha)
+            return out
+        return image
+
+    def _extract_donor_crop(
+        self,
+        donor_image: Image.Image,
+        donor_mask: Image.Image,
+        target_size: Tuple[int, int],
+    ) -> Optional[Tuple[Image.Image, Image.Image]]:
+        mask_np = np.array(donor_mask) > 127
+        if not mask_np.any():
+            return None
+
+        ys, xs = np.where(mask_np)
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        patch_img = donor_image.crop((x0, y0, x1, y1))
+        patch_mask = donor_mask.crop((x0, y0, x1, y1))
+
+        target_w, target_h = target_size
+        max_w = max(1, int(target_w * self.max_size_ratio))
+        max_h = max(1, int(target_h * self.max_size_ratio))
+        scale = random.uniform(float(self.scale_range[0]), float(self.scale_range[1]))
+        scale = min(scale, max_w / max(1, patch_img.width), max_h / max(1, patch_img.height))
+        if scale <= 0:
+            return None
+
+        new_size = (
+            max(1, int(round(patch_img.width * scale))),
+            max(1, int(round(patch_img.height * scale))),
+        )
+        if new_size != patch_img.size:
+            patch_img = patch_img.resize(new_size, Image.BILINEAR)
+            patch_mask = patch_mask.resize(new_size, Image.NEAREST)
+
+        opacity = random.uniform(float(self.opacity_range[0]), float(self.opacity_range[1]))
+        alpha = np.array(patch_mask).astype(np.float32)
+        alpha = np.clip(alpha * opacity, 0, 255).astype(np.uint8)
+        return patch_img, Image.fromarray(alpha, mode='L')
+
+    def _protected_mask(self, mask: Image.Image, size: Tuple[int, int]) -> np.ndarray:
+        mask_np = np.array(mask.resize(size, Image.NEAREST)) > 127
+        if self.avoid_mask_dilation > 0 and mask_np.any():
+            structure = np.ones(
+                (2 * self.avoid_mask_dilation + 1, 2 * self.avoid_mask_dilation + 1),
+                dtype=bool,
+            )
+            mask_np = ndimage.binary_dilation(mask_np, structure=structure)
+        return mask_np
+
+
+class TwoViewAugmentation:
+    """双视图数据增强（同时处理图像和mask）"""
+
+    def __init__(self, config: Optional[Dict]):
+        config = config or {}
+        self.image_size = config.get('image_size', 224)
+        self.config = config
+        self.transform1 = self._build_transform(config, image_size=self.image_size)
+        self.transform2 = self._build_transform(config, image_size=self.image_size)
+        self.normalize = transforms.Normalize(
+            mean=[0.485, 0.456, 0.406],
+            std=[0.229, 0.224, 0.225],
+        )
+        self.mask_dilation = MaskSoftDilation(config.get('mask_dilation', {}))
+        self.copy_paste = CopyPasteDistractor(
+            config.get('copy_paste', {}),
+            samples=config.get('copy_paste_samples', []),
+        )
+
+    def _build_transform(self, config: Dict, image_size: int) -> transforms.Compose:
+        transform_list = [transforms.Resize((image_size, image_size))]
+
+        if config.get('horizontal_flip', {}).get('enabled', True):
+            prob = config.get('horizontal_flip', {}).get('prob', 0.5)
+            transform_list.append(transforms.RandomHorizontalFlip(p=prob))
+
+        if config.get('affine', {}).get('enabled', False):
+            affine_config = config.get('affine', {})
+            transform_list.append(transforms.RandomAffine(
+                degrees=affine_config.get('degrees', 0),
+                translate=affine_config.get('translate', (0.2, 0.2)),
+                scale=affine_config.get('scale', (0.8, 1.2)),
+                shear=affine_config.get('shear', 15),
+                fill=affine_config.get('fill', 0),
+            ))
+
+        if config.get('color_jitter', {}).get('enabled', False):
+            color_jitter_config = config.get('color_jitter', {})
+            transform_list.append(transforms.ColorJitter(
+                brightness=color_jitter_config.get('brightness', 0.1),
+                contrast=color_jitter_config.get('contrast', 0.1),
+                saturation=color_jitter_config.get('saturation', 0.1),
+                hue=color_jitter_config.get('hue', 0.05),
+            ))
+
+        transform_list.append(transforms.ToTensor())
+        return transforms.Compose(transform_list)
+
+    def __call__(
+        self,
+        image: Image.Image,
+        mask: Image.Image,
+        image_size: Optional[int] = None,
+        current_sample: Optional[Dict] = None,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        current_image_size = image_size if image_size is not None else self.image_size
+        if image_size is not None and image_size != self.image_size:
+            transform1 = self._build_transform(self.config, image_size=current_image_size)
+            transform2 = self._build_transform(self.config, image_size=current_image_size)
+        else:
+            transform1 = self.transform1
+            transform2 = self.transform2
+
+        view1_source = self.copy_paste(image, mask, current_sample=current_sample)
+        view2_source = self.copy_paste(image, mask, current_sample=current_sample)
+
+        view1_image, view1_mask = self._apply_augmentation_with_mask(view1_source, mask, transform1)
+        view2_image, view2_mask = self._apply_augmentation_with_mask(view2_source, mask, transform2)
+
+        return (
+            self.normalize(view1_image),
+            view1_mask,
+            self.normalize(view2_image),
+            view2_mask,
+        )
+
+    def _apply_augmentation_with_mask(
+        self,
+        image: Image.Image,
+        mask: Image.Image,
+        transform: transforms.Compose,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        random_state = random.getstate()
+        torch_state = torch.get_rng_state()
+
+        transformed_image = image
+        for t in transform.transforms:
+            if isinstance(t, transforms.ToTensor):
+                break
+            transformed_image = t(transformed_image)
+
+        random.setstate(random_state)
+        torch.set_rng_state(torch_state)
+
+        transformed_mask = mask
+        for t in transform.transforms:
+            if isinstance(t, transforms.ToTensor):
+                break
+            if isinstance(t, transforms.ColorJitter):
+                continue
+            transformed_mask = t(transformed_mask)
+
+        image_tensor = transforms.ToTensor()(transformed_image)
+        mask_tensor = transforms.ToTensor()(transformed_mask)
+
+        if mask_tensor.shape[1:] != image_tensor.shape[1:]:
+            mask_tensor = F.interpolate(
+                mask_tensor.unsqueeze(0),
+                size=image_tensor.shape[1:],
+                mode='nearest',
+            ).squeeze(0)
+
+        mask_tensor = (mask_tensor[:1] > 0.5).float()
+        return image_tensor, self.mask_dilation(mask_tensor)
