@@ -11,7 +11,7 @@ import os
 import random
 import re
 import sys
-from collections import defaultdict
+from collections import defaultdict, deque
 from pathlib import Path
 from typing import Optional
 
@@ -22,8 +22,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader, Sampler
-from torch.utils.data.distributed import DistributedSampler
+from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 try:
@@ -34,8 +33,12 @@ except ImportError:
 # 添加src到路径
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from src.embedding_model.supcon.datasets.supcon_dataset import (MultiScaleBatchSampler, SupConDataset,
-                                                             multi_scale_collate_fn)
+from src.embedding_model.supcon.datasets.supcon_dataset import (
+    MultiSceneSupConDataset,
+    SceneBatchSampler,
+    SupConDataset,
+    multi_scale_collate_fn,
+)
 from src.embedding_model.supcon.models.backbone.dinov3_convnext import DINOv3ConvNextConfig
 from src.embedding_model.supcon.models.backbone.dinov3_vit import DINOv3ViTConfig
 from src.embedding_model.supcon.models.convnext_model import ConvNeXtModel
@@ -308,6 +311,113 @@ def train_epoch(
     return result
 
 
+def train_one_batch(
+    model: nn.Module,
+    batch: dict,
+    criterion: nn.Module,
+    optimizer: optim.Optimizer,
+    device: torch.device,
+    global_step: int,
+    use_moco: bool = False,
+    moco_queue: Optional[MoCoQueue] = None,
+) -> dict:
+    """训练一个 step；MoCo queue 由调用方按当前 scene 传入。"""
+    model.train()
+    raw_model = model.module if isinstance(model, DDP) else model
+
+    view1_images = batch['view1_image'].to(device, non_blocking=True)
+    view1_masks = batch['view1_mask'].to(device, non_blocking=True)
+    view2_images = batch['view2_image'].to(device, non_blocking=True)
+    view2_masks = batch['view2_mask'].to(device, non_blocking=True)
+    labels = batch['label'].to(device, non_blocking=True)
+
+    skipped_batches = 0
+    nan_embedding_count = 0
+    nan_loss_count = 0
+
+    if use_moco:
+        if moco_queue is None:
+            raise ValueError("use_moco=True 时必须传入当前 scene 的 moco_queue")
+
+        query_outputs = model(view1_images, view1_masks, mode='query', return_features=False)
+        query_embeddings = query_outputs['projections']
+        with torch.no_grad():
+            key_outputs = model(view2_images, view2_masks, mode='key', return_features=False)
+            key_embeddings = key_outputs['projections']
+
+        queue_embeddings, queue_labels = moco_queue.get_queue(device=device)
+        if not torch.isfinite(query_embeddings).all() or not torch.isfinite(key_embeddings).all():
+            nan_embedding_count = 1
+            skipped_batches = 1
+            query_embeddings = torch.nan_to_num(query_embeddings, nan=0.0, posinf=1.0, neginf=-1.0)
+            key_embeddings = torch.nan_to_num(key_embeddings, nan=0.0, posinf=1.0, neginf=-1.0)
+
+        contrastive_loss = criterion(
+            query_embeddings=query_embeddings,
+            key_embeddings=key_embeddings,
+            query_labels=labels,
+            queue_embeddings=queue_embeddings,
+            queue_labels=queue_labels,
+        )
+        loss = contrastive_loss
+        if not torch.isfinite(loss):
+            nan_loss_count = 1
+            skipped_batches = 1
+            loss = query_embeddings.sum() * 0.0
+
+        optimizer.zero_grad()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(raw_model.query_encoder.parameters(), max_norm=2.0)
+        optimizer.step()
+
+        with torch.no_grad():
+            moco_queue.enqueue(key_embeddings, labels)
+            raw_model.momentum_update()
+
+        metrics = {
+            'loss': float(loss.item()),
+            'contrastive_loss': float(contrastive_loss.item()),
+            'skipped_batches': skipped_batches,
+            'nan_embedding_count': nan_embedding_count,
+            'nan_loss_count': nan_loss_count,
+        }
+        if hasattr(criterion, 'last_pos_loss') and criterion.last_pos_loss is not None:
+            metrics['pos_loss'] = float(criterion.last_pos_loss)
+        if hasattr(criterion, 'last_neg_loss') and criterion.last_neg_loss is not None:
+            metrics['neg_loss'] = float(criterion.last_neg_loss)
+        return metrics
+
+    outputs1 = model(view1_images, view1_masks, return_features=False)
+    outputs2 = model(view2_images, view2_masks, return_features=False)
+    embeddings = torch.cat([outputs1['projections'], outputs2['projections']], dim=0)
+    labels_duplicated = torch.cat([labels, labels], dim=0)
+
+    if not torch.isfinite(embeddings).all():
+        nan_embedding_count = 1
+        skipped_batches = 1
+        embeddings = torch.nan_to_num(embeddings, nan=0.0, posinf=1.0, neginf=-1.0)
+
+    contrastive_loss = criterion(embeddings, labels_duplicated)
+    loss = contrastive_loss
+    if not torch.isfinite(loss):
+        nan_loss_count = 1
+        skipped_batches = 1
+        loss = embeddings.sum() * 0.0
+
+    optimizer.zero_grad()
+    loss.backward()
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
+    optimizer.step()
+
+    return {
+        'loss': float(loss.item()),
+        'contrastive_loss': float(contrastive_loss.item()),
+        'skipped_batches': skipped_batches,
+        'nan_embedding_count': nan_embedding_count,
+        'nan_loss_count': nan_loss_count,
+    }
+
+
 def validate(
     model: nn.Module,
     dataloader: DataLoader,
@@ -537,15 +647,7 @@ def build_model(
         momentum = moco_config.get('momentum', 0.999)
         logger.info(f"MoCo 动量对比学习，momentum={momentum}")
         model = MoCoModel(**common_kwargs, momentum=momentum).to(device)
-
-        # 创建MoCo队列
-        queue_size_config = moco_config.get('queue_size', 16384)
-        _, queue_size = parse_queue_size_config(queue_size_config)
-        logger.info(f"MoCo队列大小: {queue_size_config}")
-        moco_queue = MoCoQueue(
-            queue_size=queue_size,
-            embedding_dim=model_config['embedding_dim'],
-        ).to(device)
+        moco_queue = None
     else:
         model_cls = ViTModel if is_vit else ConvNeXtModel
         logger.info(f"标准 SupCon 模型: {model_cls.__name__}")
@@ -722,19 +824,14 @@ def main():
     copy_paste_config = supcon_config['supcon']['data'].get('copy_paste', {'enabled': False})
     logger.info(f"Copy-paste干扰增强配置: {copy_paste_config}")
 
-    # 创建 train datasets
-    train_datasets_raw = [
-        SupConDataset(
-            root=s['root'],
-            split='train',
-            image_size=image_sizes,
-            name=s.get('name', s['root']),
-            mask_dilation_config=mask_dilation_config,
-            copy_paste_config=copy_paste_config,
-        )
-        for s in train_scene_cfgs
-    ]
-    train_scene_names = [s.get('name', s['root']) for s in train_scene_cfgs]
+    train_dataset = MultiSceneSupConDataset(
+        scene_cfgs=train_scene_cfgs,
+        split='train',
+        image_size=image_sizes,
+        mask_dilation_config=mask_dilation_config,
+        copy_paste_config=copy_paste_config,
+    )
+    train_scene_names = train_dataset.scene_names
 
     # 创建 val datasets（可选）
     val_datasets_raw = [
@@ -750,74 +847,54 @@ def main():
     val_scene_names = [s.get('name', s['root']) for s in val_scene_cfgs]
 
     # 每个场景类别独立，label idx 在场景内自洽，无需全局映射
-    for name, ds in zip(train_scene_names, train_datasets_raw):
-        logger.info(f"  [train] {name}: {len(ds)} 样本, 类别: {ds.categories}")
+    for name, count, categories in zip(
+        train_dataset.scene_names,
+        train_dataset.scene_sample_counts,
+        train_dataset.scene_categories,
+    ):
+        logger.info(f"  [train] {name}: {count} 样本, 类别: {categories}")
     for name, ds in zip(val_scene_names, val_datasets_raw):
         logger.info(f"  [val]   {name}: {len(ds)} 样本, 类别: {ds.categories}")
 
-    # 创建每个场景的 DataLoader 列表
     # batch_size 为每张卡的 batch 大小，effective total = batch_size * world_size
     batch_size = supcon_config['supcon']['data']['batch_size']
-
-    # 过滤掉样本数不足 batch_size 的子数据集（不足则每卡 0 个 batch，训练无意义）
-    min_samples = batch_size * world_size
-    filtered = [(n, ds) for n, ds in zip(train_scene_names, train_datasets_raw) if len(ds) >= min_samples]
-    dropped = [n for n, ds in zip(train_scene_names, train_datasets_raw) if len(ds) < min_samples]
-    if dropped and rank == 0:
-        logger.warning(f"以下子数据集样本数 < {min_samples}（batch_size×world_size），已跳过: {dropped}")
-        logger.warning(f"共有 {len(filtered)} 个子数据集参与训练，{len(dropped)} 个子数据集被跳过")
-    if not filtered:
-        raise ValueError(
-            f"没有可训练的数据集：所有 train 子数据集样本数都小于 {min_samples}（batch_size×world_size）。"
-        )
-    train_scene_names = [n for n, _ in filtered]
-    train_datasets    = [ds for _, ds in filtered]
-
     val_datasets = val_datasets_raw
     num_workers = supcon_config['supcon']['data']['num_workers']
     pin_memory = supcon_config['supcon']['data']['pin_memory']
     if rank == 0:
         logger.info(f"batch_size per GPU: {batch_size}, effective total batch_size: {batch_size * world_size} (world_size={world_size})")
 
-    # train_samplers 统一收集所有需要 set_epoch 的采样器（DistributedSampler 或 MultiScaleBatchSampler）
-    train_samplers = []
-    train_dataloaders = []
-    for ds in train_datasets:
-        if use_multiscale:
-            # 多尺度模式：rank/world_size 直接传入 MultiScaleBatchSampler，
-            # 由它负责按 rank 间隔分配 batch，避免 Subset 破坏 IndexWithScale 索引
-            batch_sampler = MultiScaleBatchSampler(
-                dataset=ds,
-                batch_size=batch_size,
-                image_sizes=image_sizes,
-                shuffle=True,
-                drop_last=True,
-                rank=rank,
-                world_size=world_size,
-            )
-            train_dataloaders.append(DataLoader(
-                ds,
-                batch_sampler=batch_sampler,
-                collate_fn=multi_scale_collate_fn,
-                num_workers=num_workers,
-                pin_memory=pin_memory,
-            ))
-            train_samplers.append(batch_sampler)  # 需要 set_epoch
-        else:
-            if is_ddp:
-                sampler = DistributedSampler(ds, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True)
-            else:
-                sampler = None
-            train_samplers.append(sampler)
-            train_dataloaders.append(DataLoader(
-                ds,
-                batch_size=batch_size,
-                sampler=sampler,
-                shuffle=(sampler is None),
-                drop_last=True,
-                num_workers=num_workers,
-                pin_memory=pin_memory,
-            ))
+    training_config = supcon_config['supcon']['training']
+    total_steps = int(training_config.get('total_steps', 0))
+    if total_steps <= 0:
+        raise ValueError("training.total_steps 必须配置且 > 0；当前训练脚本不再支持 epochs")
+
+    scene_sampling = training_config.get('scene_sampling', 'size_temperature')
+    scene_sampling_alpha = float(training_config.get('scene_sampling_alpha', 0.5))
+    train_sampler = SceneBatchSampler(
+        dataset=train_dataset,
+        batch_size=batch_size,
+        image_sizes=image_sizes,
+        total_steps=total_steps,
+        scene_sampling=scene_sampling,
+        scene_sampling_alpha=scene_sampling_alpha,
+        seed=int(training_config.get('seed', 0)),
+        rank=rank,
+        world_size=world_size,
+    )
+    train_dataloader = DataLoader(
+        train_dataset,
+        batch_sampler=train_sampler,
+        collate_fn=multi_scale_collate_fn,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+        persistent_workers=num_workers > 0,
+        prefetch_factor=supcon_config['supcon']['data'].get('prefetch_factor', 2) if num_workers > 0 else None,
+    )
+    logger.info(
+        f"训练采样: total_steps={total_steps}, scene_sampling={scene_sampling}, "
+        f"alpha={scene_sampling_alpha}, 单 DataLoader scenes={train_dataset.num_scenes}"
+    )
 
     val_dataloaders = []
     if args.use_eval:
@@ -846,7 +923,7 @@ def main():
     # 创建模型
     logger.info("创建模型...")
     model_config = supcon_config['supcon']['model']
-    freeze_backbone = supcon_config['supcon']['training_strategy'].get('freeze_backbone_epochs', 0) > 0
+    freeze_backbone = bool(training_config.get('freeze_backbone', False))
 
     model, moco_queue = build_model(
         model_config=model_config,
@@ -878,24 +955,21 @@ def main():
     # queue_device: "cpu" 表示队列常驻CPU，训练时搬到GPU（显存友好）；"gpu" 表示常驻GPU（速度更快）
     # queue_size 按场景样本数自适应：min(num_samples * 2, config_max)，并对齐到 batch_size
     queue_on_gpu = moco_config.get('queue_device', 'cpu').lower() == 'gpu'
-    if use_moco and moco_queue is not None:
+    if use_moco:
         _queue_size_cfg = moco_config.get('queue_size', 16384)
         min_queue_size, max_queue_size = parse_queue_size_config(_queue_size_cfg)
         emb_dim = model_config['embedding_dim']
-        if len(train_scene_names) > 1:
-            moco_queues = []
-            for ds in train_datasets:
-                adaptive_size = min(len(ds) * 2, max_queue_size)
-                adaptive_size = max(adaptive_size, min_queue_size)
-                adaptive_size = max((adaptive_size // batch_size) * batch_size, batch_size)
-                q = MoCoQueue(queue_size=adaptive_size, embedding_dim=emb_dim)
-                if queue_on_gpu:
-                    q = q.to(device)
-                moco_queues.append(q)
-            for name, q in zip(train_scene_names, moco_queues):
-                logger.info(f"  MoCo queue [{name}]: size={q.queue_size}, device={'gpu' if queue_on_gpu else 'cpu'}")
-        else:
-            moco_queues = [moco_queue.to(device) if queue_on_gpu else moco_queue]
+        moco_queues = []
+        for count in train_dataset.scene_sample_counts:
+            adaptive_size = min(count * 2, max_queue_size)
+            adaptive_size = max(adaptive_size, min_queue_size)
+            adaptive_size = max((adaptive_size // batch_size) * batch_size, batch_size)
+            q = MoCoQueue(queue_size=adaptive_size, embedding_dim=emb_dim)
+            if queue_on_gpu:
+                q = q.to(device)
+            moco_queues.append(q)
+        for name, q in zip(train_scene_names, moco_queues):
+            logger.info(f"  MoCo queue [{name}]: size={q.queue_size}, device={'gpu' if queue_on_gpu else 'cpu'}")
     else:
         moco_queues = None
 
@@ -911,7 +985,6 @@ def main():
 
     # 创建优化器（backbone和projection head使用不同学习率）
     # 使用 raw_model 提取参数，确保与 DDP 内部参数一致
-    training_config = supcon_config['supcon']['training']
     backbone_lr_ratio = training_config.get('backbone_lr_ratio', 0.1)
 
     # 分离backbone和projection head的参数
@@ -941,192 +1014,203 @@ def main():
     if training_config['lr_scheduler'] == 'cosine':
         scheduler = optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=training_config['epochs'],
+            T_max=total_steps,
             eta_min=1e-6
         )
     else:
         scheduler = optim.lr_scheduler.StepLR(
             optimizer,
-            step_size=training_config['epochs'] // 3,
+            step_size=max(1, total_steps // 3),
             gamma=0.1
         )
 
-    # 训练策略：逐步解冻backbone
-    training_strategy = supcon_config['supcon']['training_strategy']
-    freeze_epochs = training_strategy.get('freeze_backbone_epochs', 0)
-
-    # 恢复训练
-    start_epoch = 1
+    # 恢复训练：只支持 total_steps checkpoint。
+    start_step = 1
     best_margin = float('inf')
+    last_train_metrics = {'loss': 0.0, 'contrastive_loss': 0.0}
     if args.resume:
         logger.info(f"从checkpoint恢复: {args.resume}")
         checkpoint = torch.load(args.resume, map_location=device)
+        if 'global_step' not in checkpoint:
+            raise ValueError("当前脚本只支持包含 global_step 的 step-only checkpoint")
         raw_model.load_state_dict(checkpoint['model_state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-        start_epoch = checkpoint['epoch'] + 1
+        start_step = int(checkpoint['global_step']) + 1
         best_margin = checkpoint.get('best_margin', float('inf'))
+        last_train_metrics['loss'] = float(checkpoint.get('train_loss', 0.0))
 
-        # 如果使用MoCo，恢复队列状态（如果checkpoint中有）；支持单队列或 per-scene 队列列表
         if use_moco and moco_queues is not None and 'moco_queue_state' in checkpoint:
-            st = checkpoint['moco_queue_state']
-            if isinstance(st, list):
-                for i, q in enumerate(moco_queues):
-                    if i < len(st):
-                        q.load_state_dict(st[i])
-                logger.info("MoCo队列状态已恢复（多场景）")
-            else:
-                moco_queues[0].load_state_dict(st)
-                logger.info("MoCo队列状态已恢复（单队列）")
+            for queue, state in zip(moco_queues, checkpoint['moco_queue_state']):
+                queue.load_state_dict(state)
+            logger.info("MoCo队列状态已恢复（per-scene）")
+
+    if start_step > total_steps:
+        logger.info(f"checkpoint 已到达 total_steps: start_step={start_step}, total_steps={total_steps}")
+
+    train_sampler.set_start_step(start_step)
+
+    def save_checkpoint(global_step: int, train_metrics: dict, val_metrics: Optional[dict] = None):
+        if not is_main:
+            return
+        checkpoint_data = {
+            'global_step': global_step,
+            'model_state_dict': raw_model.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'scheduler_state_dict': scheduler.state_dict(),
+            'train_loss': train_metrics.get('loss', 0.0),
+            'best_margin': best_margin,
+            'config': supcon_config,
+        }
+        if val_metrics is not None:
+            checkpoint_data['val_loss'] = val_metrics['loss']
+        if use_moco and moco_queues is not None:
+            checkpoint_data['moco_queue_state'] = [q.state_dict() for q in moco_queues]
+        torch.save(checkpoint_data, checkpoint_dir / "current_model.pth")
+        torch.save(checkpoint_data, checkpoint_dir / f"checkpoint_step_{global_step}.pth")
 
     # 训练循环
-    logger.info("开始训练...")
+    logger.info("开始 step-only 训练...")
     train_losses = []
     val_losses = []
+    log_interval = int(training_config.get('log_interval', 50))
+    eval_interval = int(training_config.get('eval_interval', 1000))
+    save_interval_steps = int(training_config.get('save_interval_steps', 1000))
+    recent_losses = deque(maxlen=max(1, log_interval))
+    scene_step_counts = defaultdict(int)
+    train_iter = iter(train_dataloader)
+    pbar = tqdm(range(start_step, total_steps + 1), desc="Training", disable=not is_main)
 
-    for epoch in range(start_epoch, training_config['epochs']+1):
-        # 通知 DistributedSampler 当前 epoch（保证每个 epoch 乱序不同）
-        for sampler in train_samplers:
-            if sampler is not None:
-                sampler.set_epoch(epoch)
+    for global_step in pbar:
+        batch = next(train_iter)
+        scene_idx = int(batch['scene_idx'][0].item())
+        scene_name = train_scene_names[scene_idx]
+        scene_step_counts[scene_idx] += 1
 
-        # 解冻backbone（如果需要）
-        if epoch == freeze_epochs + 1 and freeze_epochs > 0:
-            logger.info("解冻backbone参数...")
-            raw_model.unfreeze_all()
+        scene_queue = None
+        if moco_queues is not None:
+            scene_queue = moco_queues[scene_idx] if queue_on_gpu else moco_queues[scene_idx].to(device)
 
-        # 每 epoch 依次训练所有场景（每个场景使用自己的 MoCo 队列）
-        train_metrics_per_scene = []
-        for scene_idx, (scene_name, train_dl) in enumerate(zip(train_scene_names, train_dataloaders)):
-            logger.info(f"训练场景({scene_idx+1}/{len(train_scene_names)}): {scene_name}")
-            scene_queue = None
-            if moco_queues is not None:
-                if queue_on_gpu:
-                    scene_queue = moco_queues[scene_idx]          # 已在 GPU，无需搬运
-                else:
-                    scene_queue = moco_queues[scene_idx].to(device)  # CPU → GPU
-            metrics = train_epoch(
-                model, train_dl, criterion, optimizer, device, epoch,
-                use_moco=use_moco,
-                moco_queue=scene_queue,
-                is_main=is_main,
-            )
-            if scene_queue is not None and not queue_on_gpu:
-                moco_queues[scene_idx] = scene_queue.cpu()        # GPU → CPU
-            train_metrics_per_scene.append((scene_name, metrics))
+        train_metrics = train_one_batch(
+            model=model,
+            batch=batch,
+            criterion=criterion,
+            optimizer=optimizer,
+            device=device,
+            global_step=global_step,
+            use_moco=use_moco,
+            moco_queue=scene_queue,
+        )
+        last_train_metrics = train_metrics
 
-        # 多GPU时聚合各进程的训练loss
+        if scene_queue is not None and not queue_on_gpu:
+            moco_queues[scene_idx] = scene_queue.cpu()
+
         if is_ddp:
-            for _, metrics in train_metrics_per_scene:
-                for key in ('loss', 'contrastive_loss'):
-                    if key in metrics:
-                        t = torch.tensor(metrics[key], device=device)
-                        dist.all_reduce(t, op=dist.ReduceOp.SUM)
-                        metrics[key] = (t / world_size).item()
+            for key in ('loss', 'contrastive_loss', 'pos_loss', 'neg_loss'):
+                if key in train_metrics:
+                    value = torch.tensor(train_metrics[key], device=device)
+                    dist.all_reduce(value, op=dist.ReduceOp.SUM)
+                    train_metrics[key] = (value / world_size).item()
 
-        train_metrics = {
-            'loss': sum(m['loss'] for _, m in train_metrics_per_scene) / len(train_metrics_per_scene),
-            'contrastive_loss': sum(m.get('contrastive_loss', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene),
-            'skipped_batches': sum(m.get('skipped_batches', 0) for _, m in train_metrics_per_scene),
-        }
-        if use_moco and train_metrics_per_scene[0][1].get('pos_loss') is not None:
-            train_metrics['pos_loss'] = sum(m.get('pos_loss', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene)
-            train_metrics['neg_loss'] = sum(m.get('neg_loss', 0) for _, m in train_metrics_per_scene) / len(train_metrics_per_scene)
-        train_losses.append(train_metrics['loss'])
+        scheduler.step()
+        recent_losses.append(train_metrics['loss'])
+        window_loss = sum(recent_losses) / len(recent_losses)
         stage_gate_weights = get_stage_gate_weights(raw_model, use_moco)
 
-        # 验证：仅在主进程（rank 0）上运行，使用 raw_model 绕过 DDP
+        if is_main:
+            pbar.set_postfix({
+                'loss': f"{train_metrics['loss']:.4f}",
+                'scene': scene_idx,
+                'lr': f"{scheduler.get_last_lr()[0]:.2e}",
+            })
+
+        should_log = global_step == start_step or global_step % log_interval == 0
+        if should_log and is_main:
+            train_losses.append(window_loss)
+            log_msg = (
+                f"Step {global_step}/{total_steps}: scene={scene_name}, "
+                f"loss={train_metrics['loss']:.4f}, window_loss={window_loss:.4f}, "
+                f"lr={scheduler.get_last_lr()[0]:.6f}"
+            )
+            if use_moco:
+                if 'pos_loss' in train_metrics:
+                    log_msg += f", pos_loss={train_metrics['pos_loss']:.4f}"
+                if 'neg_loss' in train_metrics:
+                    log_msg += f", neg_loss={train_metrics['neg_loss']:.4f}"
+                if moco_queues is not None:
+                    q = moco_queues[scene_idx]
+                    log_msg += f", moco_queue_full={q.is_full()}"
+            if stage_gate_weights is not None:
+                gate_msg = ", ".join(f"{k}={v:.3f}" for k, v in stage_gate_weights.items())
+                log_msg += f", stage_gate=[{gate_msg}]"
+            scene_stats = ", ".join(
+                f"{train_scene_names[i]}={scene_step_counts[i]}"
+                for i in range(len(train_scene_names))
+                if scene_step_counts[i] > 0
+            )
+            log_msg += f"\n  scene_steps: {scene_stats}"
+            logger.info(log_msg)
+
         val_metrics = None
         val_metrics_per_scene = []
-        if args.use_eval and val_dataloaders and is_main:
-            for scene_idx, (scene_name, val_dl) in enumerate(zip(val_scene_names, val_dataloaders)):
-                logger.info(f"验证场景({scene_idx+1}/{len(val_scene_names)}): {scene_name}")
+        should_eval = args.use_eval and val_dataloaders and eval_interval > 0 and global_step % eval_interval == 0
+        if should_eval and is_main:
+            for val_scene_idx, (val_scene_name, val_dl) in enumerate(zip(val_scene_names, val_dataloaders)):
+                logger.info(f"验证场景({val_scene_idx + 1}/{len(val_scene_names)}): {val_scene_name}")
                 vm = validate(
-                    raw_model, val_dl, criterion, device,
+                    raw_model,
+                    val_dl,
+                    criterion,
+                    device,
                     use_moco=use_moco,
                     loss_temperature=loss_config['supcon']['temperature'],
                     embedding_source=embedding_source,
                 )
-                val_metrics_per_scene.append((scene_name, vm))
-            # 整体验证指标取各场景均值（用于 best_margin / 日志汇总）
+                val_metrics_per_scene.append((val_scene_name, vm))
             val_metrics = {
                 'loss': sum(m['loss'] for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                 'margin_pos_sim': sum(m.get('margin_pos_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                 'margin_neg_sim': sum(m.get('margin_neg_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                 'margin': sum(m.get('margin', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                 'knn_accuracy': sum(m.get('knn_accuracy', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
-                'projection_margin_pos_sim': sum(m.get('projection_margin_pos_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
-                'projection_margin_neg_sim': sum(m.get('projection_margin_neg_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                 'projection_margin': sum(m.get('projection_margin', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                 'projection_knn_accuracy': sum(m.get('projection_knn_accuracy', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
             }
             val_losses.append(val_metrics['loss'])
-
-        # 更新学习率
-        scheduler.step()
-
-        # 记录日志（含每场景训练/验证）
-        log_msg = (
-            f"Epoch {epoch}: "
-            f"train_loss={train_metrics['loss']:.4f}, "
-            f"lr={scheduler.get_last_lr()[0]:.6f}"
-        )
-        if use_moco:
-            if 'pos_loss' in train_metrics:
-                log_msg += f", pos_loss={train_metrics['pos_loss']:.4f}"
-            if 'neg_loss' in train_metrics:
-                log_msg += f", neg_loss={train_metrics['neg_loss']:.4f}"
-        if stage_gate_weights is not None:
-            gate_msg = ", ".join(f"{k}={v:.3f}" for k, v in stage_gate_weights.items())
-            log_msg += f", stage_gate=[{gate_msg}]"
-        for sn, m in train_metrics_per_scene:
-            log_msg += f"\n  [train] {sn}: loss={m['loss']:.4f}"
-        if val_metrics is not None:
-            log_msg += (
-                f"\n  [val] 汇总: loss={val_metrics['loss']:.4f}, "
-                f"PosSim={val_metrics.get('margin_pos_sim', 0):.4f}, "
-                f"NegSim={val_metrics.get('margin_neg_sim', 0):.4f}, "
+            logger.info(
+                f"Step {global_step} val: loss={val_metrics['loss']:.4f}, "
                 f"Margin={val_metrics.get('margin', 0):.4f}, kNN={val_metrics.get('knn_accuracy', 0):.4f}, "
                 f"ProjMargin={val_metrics.get('projection_margin', 0):.4f}, "
                 f"ProjKNN={val_metrics.get('projection_knn_accuracy', 0):.4f}"
             )
-            if moco_queues is not None:
-                for sn, q in zip(train_scene_names, moco_queues):
-                    log_msg += f"\n  moco_queue {sn} full: {q.is_full()}"
-            for sn, vm in val_metrics_per_scene:
-                log_msg += (
-                    f"\n  [val] {sn}: loss={vm['loss']:.4f}, "
-                    f"Margin={vm.get('margin', 0):.4f}, kNN={vm.get('knn_accuracy', 0):.4f}, "
-                    f"ProjMargin={vm.get('projection_margin', 0):.4f}, "
-                    f"ProjKNN={vm.get('projection_knn_accuracy', 0):.4f}"
-                )
-        logger.info(log_msg)
 
-        # Wandb：按场景记录验证指标（仅主进程）
         if is_main and supcon_config['supcon']['output'].get('use_wandb', False) and wandb is not None:
             log_dict = {
-                'epoch': epoch,
+                'global_step': global_step,
                 'train_loss': train_metrics['loss'],
+                'train_window_loss': window_loss,
+                'train_contrastive_loss': train_metrics.get('contrastive_loss', 0.0),
                 'learning_rate': scheduler.get_last_lr()[0],
+                'scene_idx': scene_idx,
+                'scene_steps/current': scene_step_counts[scene_idx],
             }
-            if 'contrastive_loss' in train_metrics:
-                log_dict['train_contrastive_loss'] = train_metrics['contrastive_loss']
             if use_moco:
                 if 'pos_loss' in train_metrics:
                     log_dict['train_pos_loss'] = train_metrics['pos_loss']
                 if 'neg_loss' in train_metrics:
                     log_dict['train_neg_loss'] = train_metrics['neg_loss']
+                if moco_queues is not None:
+                    log_dict[f'moco_queue_full/{scene_name}'] = float(moco_queues[scene_idx].is_full())
+            for i, count in scene_step_counts.items():
+                log_dict[f'scene_steps/{train_scene_names[i]}'] = count
             if stage_gate_weights is not None:
                 for key, value in stage_gate_weights.items():
                     log_dict[f'stage_gate/{key}'] = value
             if val_metrics is not None:
                 log_dict['val_loss'] = val_metrics['loss']
-                log_dict['val_margin_pos_sim'] = val_metrics.get('margin_pos_sim', 0)
-                log_dict['val_margin_neg_sim'] = val_metrics.get('margin_neg_sim', 0)
                 log_dict['val_margin'] = val_metrics.get('margin', 0)
                 log_dict['val_knn_accuracy'] = val_metrics.get('knn_accuracy', 0)
-                log_dict['val_projection_margin_pos_sim'] = val_metrics.get('projection_margin_pos_sim', 0)
-                log_dict['val_projection_margin_neg_sim'] = val_metrics.get('projection_margin_neg_sim', 0)
                 log_dict['val_projection_margin'] = val_metrics.get('projection_margin', 0)
                 log_dict['val_projection_knn_accuracy'] = val_metrics.get('projection_knn_accuracy', 0)
                 for sn, vm in val_metrics_per_scene:
@@ -1135,41 +1219,15 @@ def main():
                     log_dict[f'val_knn_accuracy/{sn}'] = vm.get('knn_accuracy', 0)
                     log_dict[f'val_projection_margin/{sn}'] = vm.get('projection_margin', 0)
                     log_dict[f'val_projection_knn_accuracy/{sn}'] = vm.get('projection_knn_accuracy', 0)
-            wandb.log(log_dict)
+            wandb.log(log_dict, step=global_step)
 
-        # 保存 checkpoint（仅主进程）
-        if is_main:
-            if epoch % training_config.get('save_interval', 5) == 0:
-                checkpoint = {
-                    'epoch': epoch,
-                    'model_state_dict': raw_model.state_dict(),
-                    'optimizer_state_dict': optimizer.state_dict(),
-                    'scheduler_state_dict': scheduler.state_dict(),
-                    'train_loss': train_metrics['loss'],
-                    'best_margin': best_margin,
-                    'config': supcon_config,
-                }
-                if val_metrics is not None:
-                    checkpoint['val_loss'] = val_metrics['loss']
-                if use_moco and moco_queues is not None:
-                    checkpoint['moco_queue_state'] = [q.state_dict() for q in moco_queues]
-                torch.save(checkpoint, checkpoint_dir / f"checkpoint_epoch_{epoch}.pth")
-
-            checkpoint_data = {
-                'epoch': epoch,
-                'model_state_dict': raw_model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict(),
-                'train_loss': train_metrics['loss'],
-                'best_margin': best_margin,
-                'config': supcon_config,
-            }
-            if use_moco and moco_queues is not None:
-                checkpoint_data['moco_queue_state'] = [q.state_dict() for q in moco_queues]
-            torch.save(checkpoint_data, checkpoint_dir / "current_model.pth")
+        if save_interval_steps > 0 and global_step % save_interval_steps == 0:
+            save_checkpoint(global_step, train_metrics, val_metrics)
 
     # 绘制损失曲线（仅主进程）
     if is_main:
+        if total_steps >= start_step:
+            save_checkpoint(total_steps, last_train_metrics)
         plot_loss_curve(
             train_losses,
             val_losses if args.use_eval else [],

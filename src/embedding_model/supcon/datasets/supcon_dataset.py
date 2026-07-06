@@ -9,14 +9,16 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 
 from .augmentations import MaskSoftDilation, TwoViewAugmentation
-from .samplers import IndexWithScale, MultiScaleBatchSampler, multi_scale_collate_fn
+from .samplers import IndexWithScale, MultiScaleBatchSampler, SceneBatchSampler, multi_scale_collate_fn
 
 __all__ = [
     'SupConDataset',
+    'MultiSceneSupConDataset',
     'MaskSoftDilation',
     'TwoViewAugmentation',
     'IndexWithScale',
     'MultiScaleBatchSampler',
+    'SceneBatchSampler',
     'multi_scale_collate_fn',
 ]
 
@@ -206,3 +208,84 @@ class SupConDataset(Dataset):
         image_tensor = val_transform(image)
         mask_tensor = (val_mask_transform(mask) > 0.5).float()
         return image_tensor, self.mask_dilation(mask_tensor)
+
+
+class MultiSceneSupConDataset(Dataset):
+    """
+    单 DataLoader 多 scene 训练数据集。
+
+    每个 scene 内部仍是独立的 ``SupConDataset``，因此 label_idx 保持
+    scene-local，copy-paste donor 也默认只来自当前 scene。
+    """
+
+    def __init__(
+        self,
+        scene_cfgs: List[Dict],
+        split: str = 'train',
+        image_size: Union[int, List[int]] = 224,
+        mask_dilation_config: Optional[Dict] = None,
+        copy_paste_config: Optional[Dict] = None,
+    ):
+        if split != 'train':
+            raise ValueError("MultiSceneSupConDataset 仅用于 train split")
+
+        self.split = split
+        self.image_sizes = SupConDataset._normalize_image_sizes(image_size)
+        self.scene_datasets: List[SupConDataset] = []
+        self.scene_names: List[str] = []
+        self.scene_categories: List[List[str]] = []
+        self.scene_sample_counts: List[int] = []
+        self.scene_global_indices: List[List[int]] = []
+        self.global_to_local: List[tuple[int, int]] = []
+
+        for scene_cfg in scene_cfgs:
+            scene_name = scene_cfg.get('name', scene_cfg['root'])
+            dataset = SupConDataset(
+                root=scene_cfg['root'],
+                split=split,
+                image_size=image_size,
+                name=scene_name,
+                mask_dilation_config=mask_dilation_config,
+                copy_paste_config=copy_paste_config,
+            )
+            if len(dataset) == 0:
+                continue
+
+            scene_idx = len(self.scene_datasets)
+            scene_indices = []
+            for local_idx in range(len(dataset)):
+                global_idx = len(self.global_to_local)
+                self.global_to_local.append((scene_idx, local_idx))
+                scene_indices.append(global_idx)
+
+            self.scene_datasets.append(dataset)
+            self.scene_names.append(scene_name)
+            self.scene_categories.append(dataset.categories)
+            self.scene_sample_counts.append(len(dataset))
+            self.scene_global_indices.append(scene_indices)
+
+        if not self.scene_datasets:
+            raise ValueError("没有可用的 train scene：所有 scene 都为空或路径无效")
+
+    def __len__(self):
+        return len(self.global_to_local)
+
+    @property
+    def num_scenes(self) -> int:
+        return len(self.scene_datasets)
+
+    def __getitem__(self, idx):
+        actual_idx, image_size = self._resolve_index_and_size(idx)
+        scene_idx, local_idx = self.global_to_local[actual_idx]
+        item = self.scene_datasets[scene_idx].__getitem__(IndexWithScale(local_idx, image_size))
+        item['scene_idx'] = scene_idx
+        item['scene_name'] = self.scene_names[scene_idx]
+        item['global_idx'] = actual_idx
+        return item
+
+    def _resolve_index_and_size(self, idx) -> tuple[int, int]:
+        if isinstance(idx, IndexWithScale):
+            return idx.idx, idx.image_size
+        if len(self.image_sizes) == 1:
+            return idx, self.image_sizes[0]
+        return idx, random.choice(self.image_sizes)

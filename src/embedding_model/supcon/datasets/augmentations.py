@@ -1,5 +1,6 @@
 """Image/mask augmentations for SupCon training."""
 import random
+from collections import OrderedDict, defaultdict
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
@@ -54,11 +55,33 @@ class CopyPasteDistractor:
         self.prob = float(config.get('prob', 0.0))
         self.max_pastes = int(config.get('max_pastes', 1))
         self.avoid_mask_dilation = int(config.get('avoid_mask_dilation', 8))
-        self.max_attempts = int(config.get('max_attempts', 30))
+        self.max_attempts = int(config.get('max_attempts', 10))
+        self.cache_size = int(config.get('cache_size', 0))
         self.different_label_prob = float(config.get('different_label_prob', 0.7))
         self.opacity_range = tuple(config.get('opacity_range', [0.85, 1.0]))
         self.scale_range = tuple(config.get('scale_range', [0.7, 1.1]))
         self.max_size_ratio = float(config.get('max_size_ratio', 0.45))
+        self.indices_by_label = self._build_label_index(self.samples)
+        self.all_indices = list(range(len(self.samples)))
+        self.indices_except_label = self._build_except_label_index()
+        self._image_cache = OrderedDict()
+        self._mask_cache = OrderedDict()
+
+    @staticmethod
+    def _build_label_index(samples: List[Dict]) -> Dict[str, List[int]]:
+        indices_by_label = defaultdict(list)
+        for idx, sample in enumerate(samples):
+            indices_by_label[sample.get('label')].append(idx)
+        return dict(indices_by_label)
+
+    def _build_except_label_index(self) -> Dict[str, List[int]]:
+        indices_except_label = {}
+        for label, indices in self.indices_by_label.items():
+            same_label_indices = set(indices)
+            indices_except_label[label] = [
+                idx for idx in self.all_indices if idx not in same_label_indices
+            ]
+        return indices_except_label
 
     def __call__(
         self,
@@ -81,20 +104,25 @@ class CopyPasteDistractor:
         current_path = current_sample.get('image_path') if current_sample else None
         current_label = current_sample.get('label') if current_sample else None
 
-        candidates = [s for s in self.samples if s.get('image_path') != current_path]
-        if not candidates:
+        if not self.all_indices:
             return None
 
+        candidate_indices = self.all_indices
         if current_label is not None and random.random() < self.different_label_prob:
-            diff_candidates = [s for s in candidates if s.get('label') != current_label]
-            if diff_candidates:
-                candidates = diff_candidates
-        return random.choice(candidates)
+            diff_indices = self.indices_except_label.get(current_label, [])
+            if diff_indices:
+                candidate_indices = diff_indices
+
+        for _ in range(self.max_attempts):
+            donor = self.samples[random.choice(candidate_indices)]
+            if donor.get('image_path') != current_path:
+                return donor
+        return None
 
     def _paste_one(self, image: Image.Image, target_mask: Image.Image, donor: Dict) -> Image.Image:
         try:
-            donor_image = Image.open(donor['image_path']).convert('RGB')
-            donor_mask = Image.open(donor['mask_path']).convert('L')
+            donor_image = self._load_cached(donor['image_path'], 'RGB', self._image_cache)
+            donor_mask = self._load_cached(donor['mask_path'], 'L', self._mask_cache)
         except (OSError, KeyError):
             return image
 
@@ -122,6 +150,22 @@ class CopyPasteDistractor:
                 continue
             out.paste(patch_img, (x, y), patch_alpha)
             return out
+        return image
+
+    def _load_cached(self, path: str, mode: str, cache: OrderedDict) -> Image.Image:
+        if self.cache_size <= 0:
+            return Image.open(path).convert(mode)
+
+        cached = cache.get(path)
+        if cached is not None:
+            cache.move_to_end(path)
+            return cached.copy()
+
+        image = Image.open(path).convert(mode)
+        cache[path] = image.copy()
+        cache.move_to_end(path)
+        while len(cache) > self.cache_size:
+            cache.popitem(last=False)
         return image
 
     def _extract_donor_crop(
