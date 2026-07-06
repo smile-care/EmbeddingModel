@@ -467,6 +467,7 @@ def _build_data_config(exp: Experiment, manifest_path: Path, supcon_config: dict
         "dataset_type": "data_cluster_triplets",
         "manifest_path": str(manifest_path.resolve()),
         "mask_dilation": mask_dilation,
+        "copy_paste": {"enabled": False},
     }
 
 
@@ -495,6 +496,9 @@ def _build_supcon_config(exp: Experiment, run_dir: Path) -> dict[str, Any]:
     if image_size is not None:
         sup["data"]["image_size"] = image_size
     sup["data"]["batch_size"] = _coerce_int(config, "batchSize", "batch_size", default=sup["data"].get("batch_size", 16))
+    # Web finetune 通常是小样本训练。standalone SupCon 可以开启 copy-paste
+    # 做困难背景增强，但 web 训练这里显式关闭，避免小数据分布被增强样本放大扰动。
+    sup["data"]["copy_paste"] = {"enabled": False}
 
     # --- 训练参数覆盖 ---
     # 默认训练总量按「类别对共现覆盖」理论估算（见 step_budget.py），而不是
