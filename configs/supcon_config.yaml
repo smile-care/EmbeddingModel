@@ -57,7 +57,7 @@ supcon:
       max_pastes: 1
       avoid_mask_dilation: 12
       different_label_prob: 0.85
-      opacity_range: [0.85, 1.0]
+      opacity_range: [0.7, 1.0]
       scale_range: [0.7, 1.1]
       max_size_ratio: 0.45
 
