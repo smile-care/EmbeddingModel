@@ -73,7 +73,7 @@ supcon:
     scene_sampling_alpha: 0.5
     learning_rate: 1.0e-4
     weight_decay: 0.05
-    backbone_lr_ratio: 0.7     # backbone 学习率 = learning_rate × backbone_lr_ratio
+    backbone_lr_ratio: 0.3     # backbone 学习率 = learning_rate × backbone_lr_ratio
     lr_scheduler: "cosine"
 
   loss:
