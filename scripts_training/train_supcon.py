@@ -411,6 +411,8 @@ def main():
                     'margin_neg_sim': sum(m.get('margin_neg_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                     'margin': sum(m.get('margin', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                     'knn_accuracy': sum(m.get('knn_accuracy', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                    'projection_margin_pos_sim': sum(m.get('projection_margin_pos_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                    'projection_margin_neg_sim': sum(m.get('projection_margin_neg_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                     'projection_margin': sum(m.get('projection_margin', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                     'projection_knn_accuracy': sum(m.get('projection_knn_accuracy', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
                 }
@@ -452,16 +454,14 @@ def main():
                     log_dict[f'stage_gate/{key}'] = value
             if val_metrics is not None:
                 log_dict['val_loss'] = val_metrics['loss']
+                log_dict['val_margin_pos_sim'] = val_metrics.get('margin_pos_sim', 0)
+                log_dict['val_margin_neg_sim'] = val_metrics.get('margin_neg_sim', 0)
                 log_dict['val_margin'] = val_metrics.get('margin', 0)
                 log_dict['val_knn_accuracy'] = val_metrics.get('knn_accuracy', 0)
+                log_dict['val_projection_margin_pos_sim'] = val_metrics.get('projection_margin_pos_sim', 0)
+                log_dict['val_projection_margin_neg_sim'] = val_metrics.get('projection_margin_neg_sim', 0)
                 log_dict['val_projection_margin'] = val_metrics.get('projection_margin', 0)
                 log_dict['val_projection_knn_accuracy'] = val_metrics.get('projection_knn_accuracy', 0)
-                for scene_name_val, metrics in val_metrics_per_scene:
-                    log_dict[f'val_loss/{scene_name_val}'] = metrics['loss']
-                    log_dict[f'val_margin/{scene_name_val}'] = metrics.get('margin', 0)
-                    log_dict[f'val_knn_accuracy/{scene_name_val}'] = metrics.get('knn_accuracy', 0)
-                    log_dict[f'val_projection_margin/{scene_name_val}'] = metrics.get('projection_margin', 0)
-                    log_dict[f'val_projection_knn_accuracy/{scene_name_val}'] = metrics.get('projection_knn_accuracy', 0)
             wandb.log(log_dict, step=global_step)
 
         should_save_current = (
