@@ -351,29 +351,6 @@ def main():
             })
 
         should_log = global_step == start_step or global_step % log_interval == 0
-        if should_log and is_main:
-            log_msg = (
-                f"Step {global_step}/{total_steps}: scene={scene_name}, "
-                f"loss={train_metrics['loss']:.4f}, window_loss={window_loss:.4f}, "
-                f"lr={scheduler.get_last_lr()[0]:.6f}"
-            )
-            if use_moco:
-                if 'pos_loss' in train_metrics:
-                    log_msg += f", pos_loss={train_metrics['pos_loss']:.4f}"
-                if 'neg_loss' in train_metrics:
-                    log_msg += f", neg_loss={train_metrics['neg_loss']:.4f}"
-                if moco_queues is not None:
-                    log_msg += f", moco_queue_full={moco_queues[scene_idx].is_full()}"
-            if stage_gate_weights is not None:
-                gate_msg = ", ".join(f"{k}={v:.3f}" for k, v in stage_gate_weights.items())
-                log_msg += f", stage_gate=[{gate_msg}]"
-            scene_stats = ", ".join(
-                f"{train_scene_names[i]}={scene_step_counts[i]}"
-                for i in range(len(train_scene_names))
-                if scene_step_counts[i] > 0
-            )
-            log_msg += f"\n  scene_steps: {scene_stats}"
-            log_info(log_msg)
 
         val_metrics = None
         val_metrics_per_scene = []
