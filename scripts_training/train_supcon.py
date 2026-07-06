@@ -291,9 +291,7 @@ def main():
 
     train_sampler.set_start_step(start_step)
 
-    def save_checkpoint(global_step: int, train_metrics: dict, val_metrics: Optional[dict] = None):
-        if not is_main:
-            return
+    def build_checkpoint_data(global_step: int, train_metrics: dict, val_metrics: Optional[dict] = None) -> dict:
         checkpoint_data = {
             'global_step': global_step,
             'model_state_dict': raw_model.state_dict(),
@@ -307,12 +305,24 @@ def main():
             checkpoint_data['val_loss'] = val_metrics['loss']
         if use_moco and moco_queues is not None:
             checkpoint_data['moco_queue_state'] = [queue.state_dict() for queue in moco_queues]
+        return checkpoint_data
+
+    def save_current_checkpoint(global_step: int, train_metrics: dict, val_metrics: Optional[dict] = None):
+        if not is_main:
+            return
+        checkpoint_data = build_checkpoint_data(global_step, train_metrics, val_metrics)
         torch.save(checkpoint_data, checkpoint_dir / "current_model.pth")
+
+    def save_archive_checkpoint(global_step: int, train_metrics: dict, val_metrics: Optional[dict] = None):
+        if not is_main:
+            return
+        checkpoint_data = build_checkpoint_data(global_step, train_metrics, val_metrics)
         torch.save(checkpoint_data, checkpoint_dir / f"checkpoint_step_{global_step}.pth")
 
     log_info("开始 step-only 训练...")
     log_interval = int(training_config.get('log_interval', 50))
     eval_interval = int(training_config.get('eval_interval', 1000))
+    current_model_interval_steps = int(training_config.get('current_model_interval_steps', 500))
     save_interval_steps = int(training_config.get('save_interval_steps', 1000))
     recent_losses = deque(maxlen=max(1, log_interval))
     scene_step_counts = defaultdict(int)
@@ -430,10 +440,21 @@ def main():
                     log_dict[f'val_projection_knn_accuracy/{scene_name_val}'] = metrics.get('projection_knn_accuracy', 0)
             wandb.log(log_dict, step=global_step)
 
-        if save_interval_steps > 0 and global_step % save_interval_steps == 0:
+        should_save_current = (
+            current_model_interval_steps > 0
+            and global_step % current_model_interval_steps == 0
+        )
+        should_save_archive = (
+            save_interval_steps > 0
+            and global_step % save_interval_steps == 0
+        )
+        if should_save_current or should_save_archive:
             if is_ddp:
                 dist.barrier()
-            save_checkpoint(global_step, train_metrics, val_metrics)
+            if should_save_current:
+                save_current_checkpoint(global_step, train_metrics, val_metrics)
+            if should_save_archive:
+                save_archive_checkpoint(global_step, train_metrics, val_metrics)
             if is_ddp:
                 dist.barrier()
 
@@ -441,7 +462,8 @@ def main():
         dist.barrier()
     if is_main:
         if total_steps >= start_step:
-            save_checkpoint(total_steps, last_train_metrics)
+            save_current_checkpoint(total_steps, last_train_metrics)
+            save_archive_checkpoint(total_steps, last_train_metrics)
         final_model_path = checkpoint_dir / "final_model.pth"
         torch.save({'model_state_dict': raw_model.state_dict()}, final_model_path)
         log_info(f"最终模型已保存: {final_model_path}")

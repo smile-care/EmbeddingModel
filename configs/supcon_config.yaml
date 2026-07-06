@@ -66,6 +66,7 @@ supcon:
   training:
     total_steps: 20000
     eval_interval: 1000
+    current_model_interval_steps: 500
     save_interval_steps: 5000
     log_interval: 50
     scene_sampling: "size_temperature"
