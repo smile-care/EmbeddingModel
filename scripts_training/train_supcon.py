@@ -116,201 +116,6 @@ def init_distributed():
     return 0, 0, 1
 
 
-def train_epoch(
-    model: nn.Module,
-    dataloader: DataLoader,
-    criterion: nn.Module,
-    optimizer: optim.Optimizer,
-    device: torch.device,
-    epoch: int,
-    use_moco: bool = False,
-    moco_queue: Optional[MoCoQueue] = None,
-    is_main: bool = True,
-) -> dict:
-    """
-    训练一个epoch
-
-    Args:
-        model: 模型（SupConModel或MoCoModel，可能已包装为DDP）
-        dataloader: 数据加载器
-        criterion: 对比损失函数
-        optimizer: 优化器
-        device: 设备
-        epoch: 当前epoch
-        use_moco: 是否使用MoCo
-        moco_queue: MoCo队列（如果使用MoCo）
-        is_main: 是否为主进程（rank 0）
-    """
-    model.train()
-    # 通过 .module 访问 DDP 内部模型的属性/方法
-    raw_model = model.module if isinstance(model, DDP) else model
-
-    total_loss = 0.0
-    total_contrastive_loss = 0.0
-    total_pos_loss = 0.0
-    total_neg_loss = 0.0
-    num_batches = 0
-    skipped_batches = 0
-    nan_embedding_count = 0
-    nan_loss_count = 0
-
-    pbar = tqdm(dataloader, desc=f"Epoch {epoch}", disable=not is_main)
-    for batch in pbar:
-        # 获取数据（同时使用view1和view2）
-        view1_images = batch['view1_image'].to(device)
-        view1_masks = batch['view1_mask'].to(device)
-        view2_images = batch['view2_image'].to(device)
-        view2_masks = batch['view2_mask'].to(device)
-        labels = batch['label'].to(device)
-
-        if use_moco:
-            # MoCo训练流程
-            # 1. 使用query_encoder计算view1的query embeddings
-            query_outputs1 = model(view1_images, view1_masks, mode='query', return_features=False)
-            query_embeddings1 = query_outputs1['projections']
-
-            # 2. 使用momentum_encoder计算view2的key embeddings（用于positive pairs和更新队列）
-            with torch.no_grad():
-                key_outputs2 = model(view2_images, view2_masks, mode='key', return_features=False)
-                key_embeddings2 = key_outputs2['projections']
-
-            # 3. 获取队列中的负样本
-            queue_embeddings, queue_labels = moco_queue.get_queue(device=device)
-
-            # 4. 检查并清理 embeddings 中的 NaN/Inf（DDP 下避免提前 continue 导致各 rank 步数不一致）
-            if (not torch.isfinite(query_embeddings1).all() or
-                not torch.isfinite(key_embeddings2).all()):
-                nan_embedding_count += 1
-                skipped_batches += 1
-                if nan_embedding_count <= 5:
-                    print(f"警告：Epoch {epoch}, Batch {num_batches}: embeddings包含NaN或Inf，已自动清理")
-                query_embeddings1 = torch.nan_to_num(query_embeddings1, nan=0.0, posinf=1.0, neginf=-1.0)
-                key_embeddings2 = torch.nan_to_num(key_embeddings2, nan=0.0, posinf=1.0, neginf=-1.0)
-
-            # 5. 计算MoCo loss（结合当前batch和队列中的负样本）
-            contrastive_loss = criterion(
-                query_embeddings=query_embeddings1,
-                key_embeddings=key_embeddings2,
-                query_labels=labels,
-                queue_embeddings=queue_embeddings,
-                queue_labels=queue_labels
-            )
-
-            loss = contrastive_loss
-
-            # 6. 检查loss是否为NaN或Inf（DDP 下不提前 continue，改为零损失保持图连通）
-            if not torch.isfinite(loss):
-                nan_loss_count += 1
-                skipped_batches += 1
-                if nan_loss_count <= 5:
-                    print(f"警告：Epoch {epoch}, Batch {num_batches}: loss为NaN或Inf，使用零损失继续")
-                loss = query_embeddings1.sum() * 0.0
-
-            # 7. 反向传播
-            optimizer.zero_grad()
-            loss.backward()
-
-            # 梯度裁剪，防止梯度爆炸
-            torch.nn.utils.clip_grad_norm_(raw_model.query_encoder.parameters(), max_norm=2.0)
-
-            optimizer.step()
-
-            # 8. 更新队列（FIFO）
-            with torch.no_grad():
-                moco_queue.enqueue(key_embeddings2, labels)
-
-            # 9. 动量更新momentum_encoder
-            with torch.no_grad():
-                raw_model.momentum_update()
-        else:
-            # 标准SupCon训练流程
-            # 前向传播：分别计算view1和view2的embedding
-            outputs1 = model(view1_images, view1_masks, return_features=False)
-            embeddings1 = outputs1['projections']
-
-            outputs2 = model(view2_images, view2_masks, return_features=False)
-            embeddings2 = outputs2['projections']
-
-            # 拼接view1和view2的embedding，形成2B大小的batch
-            # embeddings: [view1_0, view1_1, ..., view1_B-1, view2_0, view2_1, ..., view2_B-1]
-            # labels_duplicated: [label_0, label_1, ..., label_B-1, label_0, label_1, ..., label_B-1]
-            # 这样同一个样本的view1和view2（索引i和i+B）有相同的label，会被视为positive pair
-            embeddings = torch.cat([embeddings1, embeddings2], dim=0)  # (2B, D)
-            labels_duplicated = torch.cat([labels, labels], dim=0)  # (2B,)
-
-            # 检查并清理 embeddings 中的 NaN/Inf（DDP 下避免提前 continue 导致各 rank 步数不一致）
-            if not torch.isfinite(embeddings).all():
-                nan_embedding_count += 1
-                skipped_batches += 1
-                if nan_embedding_count <= 5:  # 只打印前5次警告
-                    print(f"警告：Epoch {epoch}, Batch {num_batches}: embeddings包含NaN或Inf，已自动清理")
-                embeddings = torch.nan_to_num(embeddings, nan=0.0, posinf=1.0, neginf=-1.0)
-
-
-            # 计算SupCon loss
-            # 在loss计算中：
-            # - 同一个样本的view1和view2（相同label）会被视为positive pair，它们的embedding会被拉近
-            # - 不同样本之间根据相似度矩阵判断是否为positive pair
-
-            contrastive_loss = criterion(embeddings, labels_duplicated)
-
-            loss = contrastive_loss
-
-            # 检查loss是否为NaN或Inf（DDP 下不提前 continue，改为零损失保持图连通）
-            if not torch.isfinite(loss):
-                nan_loss_count += 1
-                skipped_batches += 1
-                if nan_loss_count <= 5:  # 只打印前5次警告
-                    print(f"警告：Epoch {epoch}, Batch {num_batches}: loss为NaN或Inf，使用零损失继续")
-                loss = embeddings.sum() * 0.0
-
-            # 反向传播
-            optimizer.zero_grad()
-            loss.backward()
-
-            # 梯度裁剪，防止梯度爆炸
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=2.0)
-
-            optimizer.step()
-
-        total_loss += loss.item()
-        if use_moco:
-            total_contrastive_loss += contrastive_loss.item()
-        else:
-            total_contrastive_loss += contrastive_loss.item()
-        # 收集pos_loss和neg_loss（仅MoCo）
-        if use_moco and hasattr(criterion, 'last_pos_loss') and criterion.last_pos_loss is not None:
-            total_pos_loss += criterion.last_pos_loss
-        if use_moco and hasattr(criterion, 'last_neg_loss') and criterion.last_neg_loss is not None:
-            total_neg_loss += criterion.last_neg_loss
-
-        num_batches += 1
-
-        postfix_dict = {'loss': loss.item()}
-        pbar.set_postfix(postfix_dict)
-
-    # 打印统计信息
-    if skipped_batches > 0 and is_main:
-        print(f"Epoch {epoch}统计: 跳过{skipped_batches}个batch (NaN embedding: {nan_embedding_count}, NaN loss: {nan_loss_count})")
-
-    result = {
-        'loss': total_loss / num_batches if num_batches > 0 else 0.0,
-        'contrastive_loss': total_contrastive_loss / num_batches if num_batches > 0 else 0.0,
-        'skipped_batches': skipped_batches,
-    }
-
-    # 添加pos_loss和neg_loss（仅MoCo）
-    if use_moco:
-        if num_batches > 0:
-            result['pos_loss'] = total_pos_loss / num_batches
-            result['neg_loss'] = total_neg_loss / num_batches if total_neg_loss > 0 else 0.0
-        else:
-            result['pos_loss'] = 0.0
-            result['neg_loss'] = 0.0
-
-    return result
-
-
 def train_one_batch(
     model: nn.Module,
     batch: dict,
@@ -426,6 +231,7 @@ def validate(
     use_moco: bool = False,
     loss_temperature: float = 0.07,
     embedding_source: str = "representations",
+    show_progress: bool = True,
 ) -> dict:
     """
     验证函数，使用相似度分布分析作为评估指标
@@ -453,9 +259,12 @@ def validate(
     all_projections = []
     all_app_embeddings = []
     all_labels = []
+    temp_criterion = None
+    if use_moco:
+        temp_criterion = SupervisedContrastiveLoss(temperature=loss_temperature).to(device)
 
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Validating"):
+        for batch in tqdm(dataloader, desc="Validating", disable=not show_progress):
             # 验证时只使用view1（不需要数据增强）
             view1_images = batch['view1_image'].to(device)
             view1_masks = batch['view1_mask'].to(device)
@@ -486,11 +295,6 @@ def validate(
             # 对于MoCo，验证时使用标准SupCon loss（因为不需要队列）
             # 对于标准SupCon，使用原有的loss
             if use_moco:
-                # MoCo验证时，使用标准SupCon loss
-                # 创建一个临时的SupervisedContrastiveLoss用于验证
-                temp_criterion = SupervisedContrastiveLoss(
-                    temperature=loss_temperature,
-                ).to(device)
                 loss = temp_criterion(projections1, labels)
             else:
                 loss = criterion(projections1, labels)
@@ -1026,7 +830,7 @@ def main():
 
     # 恢复训练：只支持 total_steps checkpoint。
     start_step = 1
-    best_margin = float('inf')
+    best_margin = float('-inf')
     last_train_metrics = {'loss': 0.0, 'contrastive_loss': 0.0}
     if args.resume:
         logger.info(f"从checkpoint恢复: {args.resume}")
@@ -1037,7 +841,7 @@ def main():
         optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
         scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
         start_step = int(checkpoint['global_step']) + 1
-        best_margin = checkpoint.get('best_margin', float('inf'))
+        best_margin = checkpoint.get('best_margin', float('-inf'))
         last_train_metrics['loss'] = float(checkpoint.get('train_loss', 0.0))
 
         if use_moco and moco_queues is not None and 'moco_queue_state' in checkpoint:
@@ -1145,9 +949,10 @@ def main():
         val_metrics = None
         val_metrics_per_scene = []
         should_eval = args.use_eval and val_dataloaders and eval_interval > 0 and global_step % eval_interval == 0
-        if should_eval and is_main:
+        if should_eval:
             for val_scene_idx, (val_scene_name, val_dl) in enumerate(zip(val_scene_names, val_dataloaders)):
-                logger.info(f"验证场景({val_scene_idx + 1}/{len(val_scene_names)}): {val_scene_name}")
+                if is_main:
+                    logger.info(f"验证场景({val_scene_idx + 1}/{len(val_scene_names)}): {val_scene_name}")
                 vm = validate(
                     raw_model,
                     val_dl,
@@ -1156,24 +961,27 @@ def main():
                     use_moco=use_moco,
                     loss_temperature=loss_config['supcon']['temperature'],
                     embedding_source=embedding_source,
+                    show_progress=is_main,
                 )
                 val_metrics_per_scene.append((val_scene_name, vm))
-            val_metrics = {
-                'loss': sum(m['loss'] for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
-                'margin_pos_sim': sum(m.get('margin_pos_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
-                'margin_neg_sim': sum(m.get('margin_neg_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
-                'margin': sum(m.get('margin', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
-                'knn_accuracy': sum(m.get('knn_accuracy', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
-                'projection_margin': sum(m.get('projection_margin', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
-                'projection_knn_accuracy': sum(m.get('projection_knn_accuracy', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
-            }
-            val_losses.append(val_metrics['loss'])
-            logger.info(
-                f"Step {global_step} val: loss={val_metrics['loss']:.4f}, "
-                f"Margin={val_metrics.get('margin', 0):.4f}, kNN={val_metrics.get('knn_accuracy', 0):.4f}, "
-                f"ProjMargin={val_metrics.get('projection_margin', 0):.4f}, "
-                f"ProjKNN={val_metrics.get('projection_knn_accuracy', 0):.4f}"
-            )
+            if is_main:
+                val_metrics = {
+                    'loss': sum(m['loss'] for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                    'margin_pos_sim': sum(m.get('margin_pos_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                    'margin_neg_sim': sum(m.get('margin_neg_sim', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                    'margin': sum(m.get('margin', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                    'knn_accuracy': sum(m.get('knn_accuracy', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                    'projection_margin': sum(m.get('projection_margin', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                    'projection_knn_accuracy': sum(m.get('projection_knn_accuracy', 0) for _, m in val_metrics_per_scene) / len(val_metrics_per_scene),
+                }
+                best_margin = max(best_margin, val_metrics.get('margin', float('-inf')))
+                val_losses.append(val_metrics['loss'])
+                logger.info(
+                    f"Step {global_step} val: loss={val_metrics['loss']:.4f}, "
+                    f"Margin={val_metrics.get('margin', 0):.4f}, kNN={val_metrics.get('knn_accuracy', 0):.4f}, "
+                    f"ProjMargin={val_metrics.get('projection_margin', 0):.4f}, "
+                    f"ProjKNN={val_metrics.get('projection_knn_accuracy', 0):.4f}"
+                )
 
         if is_main and supcon_config['supcon']['output'].get('use_wandb', False) and wandb is not None:
             log_dict = {
@@ -1212,9 +1020,15 @@ def main():
             wandb.log(log_dict, step=global_step)
 
         if save_interval_steps > 0 and global_step % save_interval_steps == 0:
+            if is_ddp:
+                dist.barrier()
             save_checkpoint(global_step, train_metrics, val_metrics)
+            if is_ddp:
+                dist.barrier()
 
     # 绘制损失曲线（仅主进程）
+    if is_ddp:
+        dist.barrier()
     if is_main:
         if total_steps >= start_step:
             save_checkpoint(total_steps, last_train_metrics)
@@ -1227,6 +1041,8 @@ def main():
         final_model_path = checkpoint_dir / "final_model.pth"
         torch.save({'model_state_dict': raw_model.state_dict()}, final_model_path)
         logger.info(f"最终模型已保存: {final_model_path}")
+    if is_ddp:
+        dist.barrier()
 
     logger.info("训练完成！")
     if is_main and supcon_config['supcon']['output'].get('use_wandb', False) and wandb is not None:

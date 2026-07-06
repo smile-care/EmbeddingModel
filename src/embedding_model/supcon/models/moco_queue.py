@@ -70,15 +70,15 @@ class MoCoQueue(nn.Module):
         # 确保embeddings已归一化
         embeddings = torch.nn.functional.normalize(embeddings, dim=1, p=2, eps=1e-8)
 
-        # 将embeddings和labels移到CPU（如果当前在GPU上）
-        embeddings = embeddings.cpu()
-        labels = labels.cpu()
+        queue_device = self.queue.device
+        embeddings = embeddings.to(queue_device)
+        labels = labels.to(queue_device)
 
         if scene_id is not None:
             if isinstance(scene_id, int):
-                scene_ids = torch.full((batch_size,), scene_id, dtype=torch.long, device=embeddings.device)
+                scene_ids = torch.full((batch_size,), scene_id, dtype=torch.long, device=queue_device)
             else:
-                scene_ids = scene_id.cpu() if scene_id.is_cuda else scene_id
+                scene_ids = scene_id.to(queue_device)
         else:
             scene_ids = None
 
@@ -183,4 +183,3 @@ class MoCoQueue(nn.Module):
         self.scene_ids.fill_(-1)
         self.ptr[0] = 0
         self.is_filled[0] = False
-
