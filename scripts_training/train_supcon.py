@@ -1089,7 +1089,7 @@ def main():
 
         scene_queue = None
         if moco_queues is not None:
-            scene_queue = moco_queues[scene_idx] if queue_on_gpu else moco_queues[scene_idx].to(device)
+            scene_queue = moco_queues[scene_idx]
 
         train_metrics = train_one_batch(
             model=model,
@@ -1102,16 +1102,6 @@ def main():
             moco_queue=scene_queue,
         )
         last_train_metrics = train_metrics
-
-        if scene_queue is not None and not queue_on_gpu:
-            moco_queues[scene_idx] = scene_queue.cpu()
-
-        if is_ddp:
-            for key in ('loss', 'contrastive_loss', 'pos_loss', 'neg_loss'):
-                if key in train_metrics:
-                    value = torch.tensor(train_metrics[key], device=device)
-                    dist.all_reduce(value, op=dist.ReduceOp.SUM)
-                    train_metrics[key] = (value / world_size).item()
 
         scheduler.step()
         recent_losses.append(train_metrics['loss'])

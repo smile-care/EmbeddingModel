@@ -67,7 +67,7 @@ supcon:
     total_steps: 20000
     eval_interval: 1000
     save_interval_steps: 1000
-    log_interval: 50
+    log_interval: 1000
     scene_sampling: "size_temperature"
     scene_sampling_alpha: 0.5
     learning_rate: 1.0e-4
@@ -93,7 +93,7 @@ supcon:
   
   # 输出配置
   output:
-    checkpoint_dir: "checkpoints/supcon_models/0701_convnext_tiny"
-    log_dir: "logs/supcon_logs/0701_convnext_tiny"
-    use_wandb: true
-    wandb_project: "supcon_logs-0701_convnext_tiny"
+    checkpoint_dir: "checkpoints/supcon_models/0706_convnext_tiny"
+    log_dir: "logs/supcon_logs/0706_convnext_tiny"
+    use_wandb: false
+    wandb_project: "supcon_logs_convnext_tiny"
