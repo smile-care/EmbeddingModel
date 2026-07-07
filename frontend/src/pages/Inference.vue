@@ -82,6 +82,17 @@ const rawVariantPanelPos = ref({top: 0, left: 0});
 const selectedDataset = ref('');
 const selectedClassIds = ref<string[]>([]);
 const classFilterExpanded = ref(true);
+// 已折叠的异常网格类别集合（默认全部展开；仅记录被折叠的类别）
+const collapsedAnomalyCategories = ref<Set<string>>(new Set());
+function toggleAnomalyCategory(cat: string): void {
+  const next = new Set(collapsedAnomalyCategories.value);
+  if (next.has(cat)) {
+    next.delete(cat);
+  } else {
+    next.add(cat);
+  }
+  collapsedAnomalyCategories.value = next;
+}
 const analysisLabels = ref<string[]>([]);
 const algorithm = ref<AlgoKey>('TSNE');
 const viewMode = ref<'distribution' | 'anomaly'>('distribution');
@@ -1552,8 +1563,15 @@ onUnmounted(() => {
             <template v-if="plotData.length > 0">
               <div v-for="(cat, catIdx) in labelList" :key="cat" class="mb-8 space-y-3">
                 <template v-if="plotData.filter((p) => (p.label || labelList[p.cluster]) === cat).length > 0">
-                  <div class="flex items-center justify-between border-b border-border pb-2">
+                  <div
+                    class="flex cursor-pointer select-none items-center justify-between border-b border-border pb-2"
+                    @click="toggleAnomalyCategory(cat)"
+                  >
                     <div class="flex items-center gap-2">
+                      <ChevronDown
+                        class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform duration-200"
+                        :class="collapsedAnomalyCategories.has(cat) ? '-rotate-90' : ''"
+                      />
                       <div class="h-3 w-3 rounded-full ring-1 ring-black/15 dark:ring-white/35" :style="{backgroundColor: categoryChartColor(catIdx, labelList.length)}" />
                       <h3 class="text-sm font-semibold">{{ cat }}</h3>
                       <span class="rounded bg-secondary/20 px-1.5 py-0.5 text-[10px] text-muted-foreground">{{ plotData.filter((p) => (p.label || labelList[p.cluster]) === cat).length }} 项</span>
@@ -1562,7 +1580,7 @@ onUnmounted(() => {
                       <AlertTriangle class="h-3 w-3 text-rose-500" />按异常得分排序
                     </div>
                   </div>
-                  <div class="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-7">
+                  <div v-show="!collapsedAnomalyCategories.has(cat)" class="grid grid-cols-3 gap-3 sm:grid-cols-4 md:grid-cols-5 xl:grid-cols-7">
                     <div
                       v-for="point in [...plotData.filter((p) => (p.label || labelList[p.cluster]) === cat)].sort((a, b) => (b.anomalyScore ?? 0) - (a.anomalyScore ?? 0))"
                       :key="point.id"

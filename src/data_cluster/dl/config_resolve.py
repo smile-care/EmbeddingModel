@@ -212,6 +212,10 @@ def build_platform_supcon_base() -> dict[str, Any]:
         for key in (
             "image_size",
             "batch_size",
+            "num_workers",
+            "pin_memory",
+            "persistent_workers",
+            "prefetch_factor",
         ):
             if key in dc_data:
                 merged["data"][key] = copy.deepcopy(dc_data[key])
@@ -236,6 +240,8 @@ def build_platform_supcon_base() -> dict[str, Any]:
             "freeze_backbone",
             "use_eval",
             "device",
+            "lr_batch_scaling",
+            "lr_reference_batch_size",
         ):
             if key in dc_training:
                 merged["training"][key] = dc_training[key]

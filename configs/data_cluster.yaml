@@ -66,13 +66,17 @@ data_cluster:
   training:
     default_backbone: "convnext_tiny"
     learning_rate: 1e-4
-    use_amp: false
+    use_amp: true
     # 早停：验证 margin 连续 early_stop_patience 次提升不超过
     # early_stop_min_delta 就提前结束训练；设为 0 关闭早停。
     early_stop_patience: 5
     early_stop_min_delta: 0.005
     lr_scheduler: "cosine"   # 'cosine' | 'step'
     freeze_backbone: true
+    # lr 按「实际生效 batch_size」线性缩放（batch 越大 lr 越大，clamp 到 [0.25,4]×）。
+    # lr_reference_batch_size 是 learning_rate 对应的基准 batch；设 false 关闭缩放。
+    lr_batch_scaling: true
+    lr_reference_batch_size: 64
     # 训练设备：cpu 或 gpu
     device: gpu
     # 训练过程中是否做验证：true=每个检查点都 eval（约 10 次，含早停）；
@@ -80,10 +84,12 @@ data_cluster:
     use_eval: true
 
   # ---------- 数据默认参数（Web 平台） ----------
-  # batch_size 影响 step 预算估算与对比学习 batch 共现；其余 DataLoader /
-  # mask 参数由代码与 supcon_config 默认值处理（小数据集会自动 num_workers=0）。
+  # batch_size 影响 step 预算估算与对比学习 batch 共现；运行时 clamp 到
+  # min(batch_size, 数据集样本数)。num_workers 为数据加载/增强并行进程数
+  # （验证集 batch 数过少时仍会自动降级为 0）。
   data:
-    batch_size: 32
+    batch_size: 128
+    num_workers: 8
 
   # ---------- 输出默认 ----------
   output:

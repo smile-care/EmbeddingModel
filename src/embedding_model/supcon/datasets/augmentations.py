@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from PIL import Image
 from scipy import ndimage
 from torchvision import transforms
+import torchvision.transforms.functional as TF
 
 
 DEFAULT_TRAIN_AUGMENTATION: dict[str, Any] = {
@@ -281,8 +282,32 @@ class TwoViewAugmentation:
         config = config or {}
         self.image_size = config.get('image_size', 224)
         self.config = config
-        self.transform1 = self._build_transform(config, image_size=self.image_size)
-        self.transform2 = self._build_transform(config, image_size=self.image_size)
+
+        hflip_cfg = config.get('horizontal_flip', {}) or {}
+        self.flip_enabled = bool(hflip_cfg.get('enabled', True))
+        self.flip_prob = float(hflip_cfg.get('prob', 0.5))
+
+        affine_cfg = config.get('affine', {}) or {}
+        self.affine_enabled = bool(affine_cfg.get('enabled', False))
+        self.affine_degrees = self._as_symmetric_range(affine_cfg.get('degrees', 0))
+        translate = affine_cfg.get('translate', (0.2, 0.2))
+        self.affine_translate = tuple(float(t) for t in translate) if translate else None
+        scale = affine_cfg.get('scale', (0.8, 1.2))
+        self.affine_scale = tuple(float(s) for s in scale) if scale else None
+        self.affine_shear = self._as_symmetric_range(affine_cfg.get('shear', 0))
+        self.affine_fill = affine_cfg.get('fill', 0)
+
+        color_jitter_cfg = config.get('color_jitter', {}) or {}
+        if color_jitter_cfg.get('enabled', False):
+            self.color_jitter = transforms.ColorJitter(
+                brightness=color_jitter_cfg.get('brightness', 0.1),
+                contrast=color_jitter_cfg.get('contrast', 0.1),
+                saturation=color_jitter_cfg.get('saturation', 0.1),
+                hue=color_jitter_cfg.get('hue', 0.05),
+            )
+        else:
+            self.color_jitter = None
+
         self.normalize = transforms.Normalize(
             mean=[0.485, 0.456, 0.406],
             std=[0.229, 0.224, 0.225],
@@ -293,34 +318,17 @@ class TwoViewAugmentation:
             samples=config.get('copy_paste_samples', []),
         )
 
-    def _build_transform(self, config: Dict, image_size: int) -> transforms.Compose:
-        transform_list = [transforms.Resize((image_size, image_size))]
-
-        if config.get('horizontal_flip', {}).get('enabled', True):
-            prob = config.get('horizontal_flip', {}).get('prob', 0.5)
-            transform_list.append(transforms.RandomHorizontalFlip(p=prob))
-
-        if config.get('affine', {}).get('enabled', False):
-            affine_config = config.get('affine', {})
-            transform_list.append(transforms.RandomAffine(
-                degrees=affine_config.get('degrees', 0),
-                translate=affine_config.get('translate', (0.2, 0.2)),
-                scale=affine_config.get('scale', (0.8, 1.2)),
-                shear=affine_config.get('shear', 15),
-                fill=affine_config.get('fill', 0),
-            ))
-
-        if config.get('color_jitter', {}).get('enabled', False):
-            color_jitter_config = config.get('color_jitter', {})
-            transform_list.append(transforms.ColorJitter(
-                brightness=color_jitter_config.get('brightness', 0.1),
-                contrast=color_jitter_config.get('contrast', 0.1),
-                saturation=color_jitter_config.get('saturation', 0.1),
-                hue=color_jitter_config.get('hue', 0.05),
-            ))
-
-        transform_list.append(transforms.ToTensor())
-        return transforms.Compose(transform_list)
+    @staticmethod
+    def _as_symmetric_range(value) -> Optional[Tuple[float, float]]:
+        """把标量 v 转成 (-v, v)；已是区间则原样返回；0/None 表示禁用该项。"""
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)):
+            return tuple(float(x) for x in value)
+        v = float(value)
+        if v == 0.0:
+            return None
+        return (-v, v)
 
     def __call__(
         self,
@@ -329,19 +337,13 @@ class TwoViewAugmentation:
         image_size: Optional[int] = None,
         current_sample: Optional[Dict] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-        current_image_size = image_size if image_size is not None else self.image_size
-        if image_size is not None and image_size != self.image_size:
-            transform1 = self._build_transform(self.config, image_size=current_image_size)
-            transform2 = self._build_transform(self.config, image_size=current_image_size)
-        else:
-            transform1 = self.transform1
-            transform2 = self.transform2
+        size = image_size if image_size is not None else self.image_size
 
         view1_source = self.copy_paste(image, mask, current_sample=current_sample)
         view2_source = self.copy_paste(image, mask, current_sample=current_sample)
 
-        view1_image, view1_mask = self._apply_augmentation_with_mask(view1_source, mask, transform1)
-        view2_image, view2_mask = self._apply_augmentation_with_mask(view2_source, mask, transform2)
+        view1_image, view1_mask = self._apply_augmentation_with_mask(view1_source, mask, size)
+        view2_image, view2_mask = self._apply_augmentation_with_mask(view2_source, mask, size)
 
         return (
             self.normalize(view1_image),
@@ -354,30 +356,46 @@ class TwoViewAugmentation:
         self,
         image: Image.Image,
         mask: Image.Image,
-        transform: transforms.Compose,
+        size: int,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        random_state = random.getstate()
-        torch_state = torch.get_rng_state()
+        """对 image/mask 施加同一套几何增强（几何参数只采样一次）。
 
-        transformed_image = image
-        for t in transform.transforms:
-            if isinstance(t, transforms.ToTensor):
-                break
-            transformed_image = t(transformed_image)
+        与旧实现语义保持一致：resize 用双线性、仿射用最近邻，颜色抖动仅作用于
+        image，mask 最终二值化 (>0.5) 后再做软膨胀。
+        """
+        # 几何：resize（image/mask 均双线性，沿用旧默认行为）
+        image = TF.resize(image, [size, size], interpolation=TF.InterpolationMode.BILINEAR)
+        mask = TF.resize(mask, [size, size], interpolation=TF.InterpolationMode.BILINEAR)
 
-        random.setstate(random_state)
-        torch.set_rng_state(torch_state)
+        # 几何：水平翻转（采样一次，image/mask 同步）
+        if self.flip_enabled and random.random() < self.flip_prob:
+            image = TF.hflip(image)
+            mask = TF.hflip(mask)
 
-        transformed_mask = mask
-        for t in transform.transforms:
-            if isinstance(t, transforms.ToTensor):
-                break
-            if isinstance(t, transforms.ColorJitter):
-                continue
-            transformed_mask = t(transformed_mask)
+        # 几何：仿射（参数只采样一次，image/mask 用同一参数，均最近邻）
+        if self.affine_enabled:
+            angle, translations, scale, shear = transforms.RandomAffine.get_params(
+                self.affine_degrees if self.affine_degrees is not None else (0.0, 0.0),
+                self.affine_translate,
+                self.affine_scale,
+                self.affine_shear,
+                [size, size],
+            )
+            image = TF.affine(
+                image, angle=angle, translate=translations, scale=scale, shear=shear,
+                interpolation=TF.InterpolationMode.NEAREST, fill=self.affine_fill,
+            )
+            mask = TF.affine(
+                mask, angle=angle, translate=translations, scale=scale, shear=shear,
+                interpolation=TF.InterpolationMode.NEAREST, fill=0,
+            )
 
-        image_tensor = transforms.ToTensor()(transformed_image)
-        mask_tensor = transforms.ToTensor()(transformed_mask)
+        # 颜色：仅作用于 image
+        if self.color_jitter is not None:
+            image = self.color_jitter(image)
+
+        image_tensor = TF.to_tensor(image)
+        mask_tensor = TF.to_tensor(mask)
 
         if mask_tensor.shape[1:] != image_tensor.shape[1:]:
             mask_tensor = F.interpolate(

@@ -274,6 +274,21 @@ class SupconTrainer:
         training_config = self.training_config
         base_lr = float(training_config["learning_rate"])
 
+        # 按「实际生效 batch_size」线性缩放 lr：batch 越大梯度估计越稳，可用更大
+        # lr（linear scaling rule）。self.batch_size 已在 _setup_data 中按数据集
+        # 大小 clamp，因此小数据集 batch 被限小时 lr 也会相应降低，避免过冲。
+        # 缩放因子 clamp 到 [0.25, 4] 防止极端值。设 lr_batch_scaling=false 可关闭。
+        if bool(training_config.get("lr_batch_scaling", True)):
+            reference_bs = max(1, int(training_config.get("lr_reference_batch_size", 64)))
+            scale = max(0.25, min(4.0, self.batch_size / reference_bs))
+            scaled_lr = base_lr * scale
+            if abs(scaled_lr - base_lr) > 1e-12:
+                self.logger.info(
+                    f"lr 按 batch 线性缩放: {base_lr:.2e} × (batch {self.batch_size}/"
+                    f"{reference_bs}, clamp[0.25,4] -> ×{scale:.3f}) = {scaled_lr:.2e}"
+                )
+            base_lr = scaled_lr
+
         # 冻结的 backbone 参数 requires_grad=False，不进入优化器（避免
         # AdamW 为不更新的参数无谓地维护动量状态）。未冻结时 backbone 与
         # 其余参数使用同一个全局 learning_rate，不再单独设置 LR ratio。
@@ -296,8 +311,13 @@ class SupconTrainer:
             )
 
     # ----------------------------------------------------------------- train
-    def _train_step(self, batch: dict) -> float:
-        """单步双视图监督对比损失训练，返回该 step 的 loss 值。"""
+    def _train_step(self, batch: dict) -> torch.Tensor:
+        """单步双视图监督对比损失训练，返回该 step 的 loss（detach 的 GPU 标量）。
+
+        刻意返回 GPU tensor 而非 ``.item()``：避免每步强制 CPU-GPU 同步。调用方
+        在 GPU 上累加，仅在检查点处才 ``.item()`` 取值，显著减少小 step 场景下
+        同步 stall 造成的 GPU 空转。
+        """
         v1_img = batch["view1_image"].to(self.device, non_blocking=self.non_blocking)
         v1_mask = batch["view1_mask"].to(self.device, non_blocking=self.non_blocking)
         v2_img = batch["view2_image"].to(self.device, non_blocking=self.non_blocking)
@@ -318,7 +338,7 @@ class SupconTrainer:
         self.optimizer.step()
         self.scheduler.step()
 
-        return loss.item()
+        return loss.detach()
 
     @torch.no_grad()
     def validate(self) -> dict:
@@ -409,25 +429,30 @@ class SupconTrainer:
         no_improve_evals = 0
 
         self.model.train()
-        window_loss_sum = 0.0
+        # 在 GPU 上累加窗口 loss，避免每步 .item() 触发 CPU-GPU 同步；仅在
+        # 检查点处取值（以及按 display_interval 降频刷新进度条）。
+        window_loss_sum = torch.zeros((), device=self.device)
         window_batches = 0
+        display_interval = max(1, self.total_steps // 100)
 
-        pbar = tqdm(self.train_dataloader, total=self.total_steps, desc="Training")
+        pbar = tqdm(self.train_dataloader, total=self.total_steps, desc="Training", mininterval=0.5)
         for global_step, batch in enumerate(pbar, start=1):
-            loss_value = self._train_step(batch)
-            window_loss_sum += loss_value
+            loss_tensor = self._train_step(batch)
+            window_loss_sum += loss_tensor
             window_batches += 1
-            pbar.set_postfix({"loss": loss_value, "step": global_step})
+            if global_step % display_interval == 0 or global_step in checkpoint_steps:
+                pbar.set_postfix({"loss": f"{loss_tensor.item():.4f}", "step": global_step})
 
             if global_step not in checkpoint_steps:
                 continue
 
-            train_metrics = {"loss": window_loss_sum / window_batches if window_batches else 0.0}
+            window_loss = float((window_loss_sum / window_batches).item()) if window_batches else 0.0
+            train_metrics = {"loss": window_loss}
             steps.append(global_step)
             train_losses.append(train_metrics["loss"])
             last_train_metrics = train_metrics
             last_step = global_step
-            window_loss_sum = 0.0
+            window_loss_sum = torch.zeros((), device=self.device)
             window_batches = 0
 
             val_metrics = None
