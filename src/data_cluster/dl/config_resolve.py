@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from embedding_model.utils.config_loader import load_config
+from embedding_model.supcon.datasets.augmentations import deep_merge_dict
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 DC_CONFIG_PATH = _REPO_ROOT / "configs" / "data_cluster.yaml"
@@ -214,6 +215,15 @@ def build_platform_supcon_base() -> dict[str, Any]:
         ):
             if key in dc_data:
                 merged["data"][key] = copy.deepcopy(dc_data[key])
+        if isinstance(dc_data.get("train_augmentation"), dict):
+            base_aug = merged["data"].get("train_augmentation")
+            if isinstance(base_aug, dict):
+                merged["data"]["train_augmentation"] = deep_merge_dict(
+                    base_aug,
+                    dc_data["train_augmentation"],
+                )
+            else:
+                merged["data"]["train_augmentation"] = copy.deepcopy(dc_data["train_augmentation"])
 
     dc_training = dc.get("training", {})
     if isinstance(dc_training, dict):

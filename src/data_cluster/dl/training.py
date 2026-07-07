@@ -468,6 +468,7 @@ def _build_data_config(exp: Experiment, manifest_path: Path, supcon_config: dict
         "manifest_path": str(manifest_path.resolve()),
         "mask_dilation": mask_dilation,
         "copy_paste": {"enabled": False},
+        "train_augmentation": copy.deepcopy(sup_data.get("train_augmentation", {})),
     }
 
 

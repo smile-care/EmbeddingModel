@@ -18,7 +18,7 @@ data_cluster:
   # representations = FeatureFusion 输出 h，适合 Data Cluster 特征分析（默认）
   # projections      = ProjectionHead 输出 z，适合观察对比学习监督空间
   inference:
-    embedding_source: "representations"
+    embedding_source: "projections"
 
   # ---------- 预训练 Embedding 模型配置 ----------
   # key：与实验 config 的 backbone 字段一致（架构标识，如 convnext_tiny），不是「仅 backbone 权重」。
@@ -37,7 +37,7 @@ data_cluster:
   pretrained_models:
     convnext_tiny:
       backbone_config: "configs/backbone/convnext_tiny.yaml"
-      pretrained_path: "checkpoints/supcon_models/0701_convnext_tiny/final_model.pth"
+      pretrained_path: "checkpoints/supcon_models/0707_convnext_tiny/current_model.pth"
 
 
   # ---------- DINOv3 RAW 推理模型（推理页下拉选项） ----------

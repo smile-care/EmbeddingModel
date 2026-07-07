@@ -51,6 +51,23 @@ supcon:
     pin_memory: true
     mask_dilation:
       enabled: false
+    train_augmentation:
+      horizontal_flip:
+        enabled: true
+        prob: 0.5
+      affine:
+        enabled: true
+        degrees: 15
+        translate: [0.2, 0.2]
+        scale: [0.8, 1.2]
+        shear: 15
+        fill: 0
+      color_jitter:
+        enabled: true
+        brightness: 0.08
+        contrast: 0.08
+        saturation: 0.05
+        hue: 0.02
     copy_paste:
       enabled: false
       prob: 0.2

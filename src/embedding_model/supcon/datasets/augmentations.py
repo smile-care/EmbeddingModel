@@ -1,7 +1,8 @@
 """Image/mask augmentations for SupCon training."""
+import copy
 import random
 from collections import OrderedDict, defaultdict
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -9,6 +10,63 @@ import torch.nn.functional as F
 from PIL import Image
 from scipy import ndimage
 from torchvision import transforms
+
+
+DEFAULT_TRAIN_AUGMENTATION: dict[str, Any] = {
+    "horizontal_flip": {"enabled": True, "prob": 0.5},
+    "affine": {
+        "enabled": True,
+        "degrees": 15,
+        "translate": (0.2, 0.2),
+        "scale": (0.8, 1.2),
+        "shear": 15,
+        "fill": 0,
+    },
+    "color_jitter": {
+        "enabled": True,
+        "brightness": 0.05,
+        "contrast": 0.05,
+        "saturation": 0.02,
+        "hue": 0.0,
+    },
+}
+
+
+def deep_merge_dict(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
+    """Recursively merge override into a copy of base."""
+    result = copy.deepcopy(base)
+    for key, value in override.items():
+        if isinstance(value, dict) and isinstance(result.get(key), dict):
+            result[key] = deep_merge_dict(result[key], value)
+        else:
+            result[key] = copy.deepcopy(value)
+    return result
+
+
+def resolve_train_augmentation_config(
+    train_augmentation: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    if not train_augmentation:
+        return copy.deepcopy(DEFAULT_TRAIN_AUGMENTATION)
+    return deep_merge_dict(DEFAULT_TRAIN_AUGMENTATION, train_augmentation)
+
+
+def build_two_view_augmentation_config(
+    *,
+    image_size: int,
+    train_augmentation: Optional[dict[str, Any]] = None,
+    mask_dilation_config: Optional[dict[str, Any]] = None,
+    copy_paste_config: Optional[dict[str, Any]] = None,
+    copy_paste_samples: Optional[list] = None,
+) -> dict[str, Any]:
+    aug = resolve_train_augmentation_config(train_augmentation)
+    return {
+        "image_size": image_size,
+        **aug,
+        "mask_dilation": mask_dilation_config or {"enabled": False},
+        "copy_paste": copy_paste_config or {"enabled": False},
+        "copy_paste_samples": copy_paste_samples or [],
+    }
 
 
 class MaskSoftDilation:

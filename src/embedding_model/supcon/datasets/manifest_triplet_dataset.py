@@ -17,8 +17,12 @@ import torch
 from PIL import Image
 from torchvision import transforms
 
-from embedding_model.supcon.datasets.supcon_dataset import (IndexWithScale, MaskSoftDilation,
-                                                            TwoViewAugmentation)
+from embedding_model.supcon.datasets.augmentations import (
+    MaskSoftDilation,
+    TwoViewAugmentation,
+    build_two_view_augmentation_config,
+)
+from embedding_model.supcon.datasets.samplers import IndexWithScale
 
 
 class ManifestTripletDataset(torch.utils.data.Dataset):
@@ -57,29 +61,22 @@ class ManifestTripletDataset(torch.utils.data.Dataset):
         mask_dilation_cfg = self.config.get("mask_dilation")
         if not isinstance(mask_dilation_cfg, dict):
             mask_dilation_cfg = {"enabled": True, "method": "fast_pool", "fast_gamma": 0.8}
+        copy_paste_cfg = self.config.get("copy_paste")
+        if not isinstance(copy_paste_cfg, dict):
+            copy_paste_cfg = {"enabled": False}
+        train_augmentation_cfg = self.config.get("train_augmentation")
+        if train_augmentation_cfg is not None and not isinstance(train_augmentation_cfg, dict):
+            raise ValueError("train_augmentation 必须是 dict")
 
         self.augmentation = (
             TwoViewAugmentation(
-                {
-                    "image_size": self.image_size,
-                    "horizontal_flip": {"enabled": True, "prob": 0.5},
-                    "affine": {
-                        "enabled": True,
-                        "degrees": 15,
-                        "translate": (0.2, 0.2),
-                        "scale": (0.8, 1.2),
-                        "shear": 15,
-                        "fill": 0,
-                    },
-                    "color_jitter": {
-                        "enabled": True,
-                        "brightness": 0.2,
-                        "contrast": 0.2,
-                        "saturation": 0.1,
-                        "hue": 0.05,
-                    },
-                    "mask_dilation": mask_dilation_cfg,
-                }
+                build_two_view_augmentation_config(
+                    image_size=self.image_size,
+                    train_augmentation=train_augmentation_cfg,
+                    mask_dilation_config=mask_dilation_cfg,
+                    copy_paste_config=copy_paste_cfg,
+                    copy_paste_samples=self.samples,
+                )
             )
             if split == "train"
             else None

@@ -129,8 +129,10 @@ def main():
     data_cfg = supcon_config['supcon']['data']
     mask_dilation_config = data_cfg.get('mask_dilation', {'enabled': False})
     copy_paste_config = data_cfg.get('copy_paste', {'enabled': False})
+    train_augmentation_config = data_cfg.get('train_augmentation', {})
     log_info(f"Mask软膨胀配置: {mask_dilation_config}")
     log_info(f"Copy-paste干扰增强配置: {copy_paste_config}")
+    log_info(f"训练增强配置: {train_augmentation_config}")
 
     train_dataset = MultiSceneSupConDataset(
         scene_cfgs=train_scene_cfgs,
@@ -138,6 +140,7 @@ def main():
         image_size=image_sizes,
         mask_dilation_config=mask_dilation_config,
         copy_paste_config=copy_paste_config,
+        train_augmentation_config=train_augmentation_config,
     )
     train_scene_names = train_dataset.scene_names
 

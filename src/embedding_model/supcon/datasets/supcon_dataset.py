@@ -8,7 +8,11 @@ from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
 
-from .augmentations import MaskSoftDilation, TwoViewAugmentation
+from .augmentations import (
+    MaskSoftDilation,
+    TwoViewAugmentation,
+    build_two_view_augmentation_config,
+)
 from .samplers import IndexWithScale, MultiScaleBatchSampler, SceneBatchSampler, multi_scale_collate_fn
 
 __all__ = [
@@ -34,6 +38,7 @@ class SupConDataset(Dataset):
         name: str = '',
         mask_dilation_config: Optional[Dict] = None,
         copy_paste_config: Optional[Dict] = None,
+        train_augmentation_config: Optional[Dict] = None,
     ):
         """
         Args:
@@ -43,6 +48,7 @@ class SupConDataset(Dataset):
             name: 数据集名称，仅用于日志
             mask_dilation_config: mask软膨胀配置
             copy_paste_config: mask 外缺陷干扰 copy-paste 增强配置
+            train_augmentation_config: 训练增强配置（horizontal_flip / affine / color_jitter）
         """
         self.root = Path(root)
         self.split = split
@@ -57,6 +63,7 @@ class SupConDataset(Dataset):
         self.augmentation = self._build_train_augmentation(
             mask_dilation_config,
             copy_paste_config,
+            train_augmentation_config,
         ) if split == 'train' else None
 
         if split == 'val':
@@ -75,29 +82,16 @@ class SupConDataset(Dataset):
         self,
         mask_dilation_config: Dict,
         copy_paste_config: Dict,
+        train_augmentation_config: Optional[Dict] = None,
     ) -> TwoViewAugmentation:
-        return TwoViewAugmentation({
-            'image_size': self.image_size,
-            'horizontal_flip': {'enabled': True, 'prob': 0.5},
-            'affine': {
-                'enabled': True,
-                'degrees': 15,
-                'translate': (0.2, 0.2),
-                'scale': (0.8, 1.2),
-                'shear': 15,
-                'fill': 0,
-            },
-            'color_jitter': {
-                'enabled': True,
-                'brightness': 0.2,
-                'contrast': 0.2,
-                'saturation': 0.1,
-                'hue': 0.05,
-            },
-            'mask_dilation': mask_dilation_config,
-            'copy_paste': copy_paste_config,
-            'copy_paste_samples': self.samples,
-        })
+        config = build_two_view_augmentation_config(
+            image_size=self.image_size,
+            train_augmentation=train_augmentation_config,
+            mask_dilation_config=mask_dilation_config,
+            copy_paste_config=copy_paste_config,
+            copy_paste_samples=self.samples,
+        )
+        return TwoViewAugmentation(config)
 
     @staticmethod
     def _build_val_image_transform(image_size: int) -> transforms.Compose:
@@ -225,6 +219,7 @@ class MultiSceneSupConDataset(Dataset):
         image_size: Union[int, List[int]] = 224,
         mask_dilation_config: Optional[Dict] = None,
         copy_paste_config: Optional[Dict] = None,
+        train_augmentation_config: Optional[Dict] = None,
     ):
         if split != 'train':
             raise ValueError("MultiSceneSupConDataset 仅用于 train split")
@@ -247,6 +242,7 @@ class MultiSceneSupConDataset(Dataset):
                 name=scene_name,
                 mask_dilation_config=mask_dilation_config,
                 copy_paste_config=copy_paste_config,
+                train_augmentation_config=train_augmentation_config,
             )
             if len(dataset) == 0:
                 continue

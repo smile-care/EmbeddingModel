@@ -22,7 +22,7 @@ from collections.abc import Sequence
 # 数值越大，学到的边界通常越稳，但训练预算也越大——配合早停使用时可以
 # 设置得宽松一些，交给早停机制决定真正何时停止。
 DEFAULT_TARGET_PAIR_REPEATS = 60
-DEFAULT_MIN_STEPS = 150
+DEFAULT_MIN_STEPS = 120
 DEFAULT_MAX_STEPS = 500
 
 # 训练/验证不再按 epoch 上报，而是把 [1, total_steps] 均匀切成这么多个

@@ -141,7 +141,14 @@ def show_grid(window_name: str, grid: Image.Image) -> int:
     return cv2.waitKey(0) & 0xFF
 
 
-def build_dataset(scene: dict, split: str, image_size: int, mask_dilation: dict, copy_paste: dict) -> SupConDataset:
+def build_dataset(
+    scene: dict,
+    split: str,
+    image_size: int,
+    mask_dilation: dict,
+    copy_paste: dict,
+    train_augmentation: dict | None = None,
+) -> SupConDataset:
     return SupConDataset(
         root=scene["root"],
         split=split,
@@ -149,6 +156,7 @@ def build_dataset(scene: dict, split: str, image_size: int, mask_dilation: dict,
         name=scene.get("name", scene["root"]),
         mask_dilation_config=mask_dilation,
         copy_paste_config=copy_paste if split == "train" else {"enabled": False},
+        train_augmentation_config=train_augmentation if split == "train" else None,
     )
 
 
@@ -167,6 +175,7 @@ def main() -> None:
         supcon_config["data"].get("copy_paste", {"enabled": False}),
         args.copy_paste_prob,
     )
+    train_augmentation = supcon_config["data"].get("train_augmentation", {})
 
     scenes = data_config["scenes"].get(args.split, [])
     if args.scene:
@@ -186,7 +195,7 @@ def main() -> None:
             break
         scene_name = scene.get("name", scene["root"])
         try:
-            dataset = build_dataset(scene, args.split, image_size, mask_dilation, copy_paste)
+            dataset = build_dataset(scene, args.split, image_size, mask_dilation, copy_paste, train_augmentation)
         except (FileNotFoundError, ValueError) as exc:
             print(f"[skip] {scene_name}: {exc}")
             continue
