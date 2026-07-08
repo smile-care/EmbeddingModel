@@ -4,7 +4,7 @@ Vue 3 + Vite + TypeScript UI for the Data Cluster platform (dataset management,
 single-image mask annotation, contrastive training, and inference visualization).
 
 It talks to the FastAPI backend in `src/data_cluster` over `/api` and `/static`,
-which Vite proxies to `http://127.0.0.1:8000` during development.
+which Vite proxies to `http://127.0.0.1:8001` during development.
 
 ## Run locally
 

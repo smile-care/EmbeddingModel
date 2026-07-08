@@ -111,7 +111,7 @@ if __name__ == "__main__":
     import uvicorn
 
     host = os.getenv("DATA_CLUSTER_HOST", "0.0.0.0")
-    port = int(os.getenv("DATA_CLUSTER_PORT", "8000"))
+    port = int(os.getenv("DATA_CLUSTER_PORT", "8001"))
     workers = int(os.getenv("DATA_CLUSTER_WORKERS", "1"))
     log_level = os.getenv("DATA_CLUSTER_LOG_LEVEL", "info")
     access_log = os.getenv("DATA_CLUSTER_ACCESS_LOG", "true").strip().lower() in {"1", "true", "yes", "y", "on"}

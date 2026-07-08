@@ -26,4 +26,4 @@ if ! command -v uvicorn >/dev/null 2>&1; then
   exit 1
 fi
 
-exec uvicorn data_cluster.app.main:app --reload --host 0.0.0.0 --port 8000 "$@"
+exec uvicorn data_cluster.app.main:app --reload --host 0.0.0.0 --port 8001 "$@"

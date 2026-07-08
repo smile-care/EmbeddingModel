@@ -37,7 +37,7 @@ data_cluster:
   pretrained_models:
     convnext_tiny:
       backbone_config: "configs/backbone/convnext_tiny.yaml"
-      pretrained_path: "checkpoints/supcon_models/0707_convnext_tiny/current_model.pth"
+      pretrained_path: "checkpoints/supcon_models/0707_convnext_tiny/current_model_inference.pth"
 
 
   # ---------- DINOv3 RAW 推理模型（推理页下拉选项） ----------

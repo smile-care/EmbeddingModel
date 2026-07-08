@@ -106,14 +106,14 @@ PYTHONPATH=src python src/data_cluster/app/main.py
 ./run_backend.sh
 ```
 
-默认监听 `http://0.0.0.0:8000`，API 文档见 `http://127.0.0.1:8000/docs`。
+默认监听 `http://0.0.0.0:8001`，API 文档见 `http://127.0.0.1:8001/docs`。
 
 环境变量（可选，前缀 `DATA_CLUSTER_`）：
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `DATA_CLUSTER_HOST` | `0.0.0.0` | 监听地址 |
-| `DATA_CLUSTER_PORT` | `8000` | 端口 |
+| `DATA_CLUSTER_PORT` | `8001` | 端口 |
 | `DATA_CLUSTER_DATABASE_URL` | `sqlite:///./data/data_cluster/app.db` | 数据库 |
 
 ### 2. 启动前端
@@ -123,7 +123,7 @@ cd frontend
 yarn dev
 ```
 
-访问 `http://localhost:3000`。开发模式下 Vite 会将 `/api` 与 `/static` 代理到后端 `8000` 端口。
+访问 `http://localhost:3000`。开发模式下 Vite 会将 `/api` 与 `/static` 代理到后端 `8001` 端口。
 
 ### 3. 生成测试数据（可选）
 

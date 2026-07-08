@@ -2,7 +2,7 @@
  * Typed API client for the Data Cluster backend.
  *
  * API base URL (no trailing slash). Empty => same-origin (Vite proxies /api and
- * /static to the FastAPI backend on :8000). Override with VITE_API_BASE_URL.
+ * /static to the FastAPI backend on :8001). Override with VITE_API_BASE_URL.
  */
 export function apiBase(): string {
   const raw = import.meta.env.VITE_API_BASE_URL as string | undefined;
