@@ -1,0 +1,94 @@
+# ============================================================
+# Mask-aware 自监督训练配置
+# method 切换:
+#   vicreg - 无 teacher、无负样本，使用方差/协方差防坍缩（首轮推荐）
+#   dino   - EMA teacher + prototype 分布自蒸馏，无 queue、无负样本
+#
+# 该配置与 supcon_config.yaml 完全独立；label_name/source 不进入 loss。
+# ============================================================
+
+selfsup:
+  method: vicreg  # vicreg | dino
+
+  model:
+    backbone: convnext_tiny  # convnext_base | vitb16
+    # 默认自动加载 pretrain_ckpts/<backbone>.pth；仅特殊实验才设置 pretrained_path。
+    representation_dim: 768
+    projection_hidden_dim: 2048
+    projection_dim: 1024
+
+    convnext:
+      use_layers: [1, 2, 3]
+      pooling:
+        mode: fg_context_delta  # fg_only | fg_context_delta
+        context_dilation: 2
+        stage_gate: true
+
+    vit:
+      # ViT-B/16 的 patch mask 是 14x14；首轮不混入更容易泄漏全局信息的 CLS。
+      cls_weight: 0.0
+
+  data:
+    data_config_path: configs/data_config.yaml
+    image_size: 224
+    batch_size: 64
+    num_workers: 4
+    pin_memory: true
+    prefetch_factor: 2
+
+    # 不做 scene/class 平衡：所有合法 crop 合并后按样本均匀采样。
+    sampling: uniform
+    augmentation:
+      horizontal_flip_prob: 0.5
+      degrees: 10
+      translate: [0.1, 0.1]
+      scale: [0.9, 1.1]
+      shear: 5
+      min_mask_pixels: 4
+      max_geometry_attempts: 5
+      gaussian_blur_prob: 0.1
+      gaussian_blur_kernel_size: 5
+      color_jitter:
+        brightness: 0.08
+        contrast: 0.08
+        saturation: 0.05
+        hue: 0.02
+
+  training:
+    total_steps: 120000
+    backbone_freeze_steps: 5000
+    warmup_steps: 5000
+    learning_rate: 1.0e-4
+    backbone_lr_ratio: 0.05
+    weight_decay: 0.05
+    min_lr_ratio: 0.01
+    gradient_clip: 2.0
+    amp: true
+    seed: 42
+    log_interval: 500
+    current_model_interval_steps: 1000
+    save_interval_steps: 20000
+
+  vicreg:
+    invariance_weight: 25.0
+    variance_weight: 25.0
+    covariance_weight: 1.0
+    variance_target: 1.0
+    eps: 1.0e-4
+
+  dino:
+    num_prototypes: 4096
+    bottleneck_dim: 256
+    student_temperature: 0.1
+    teacher_temperature_start: 0.04
+    teacher_temperature_end: 0.07
+    teacher_temperature_warmup_steps: 10000
+    teacher_momentum_start: 0.996
+    teacher_momentum_end: 1.0
+    center_momentum: 0.9
+
+  output:
+    checkpoint_dir: checkpoints/selfsup/{backbone}_{method}
+    use_wandb: false
+    wandb_project: industrial-defect-selfsup
+    wandb_run_name: "{backbone}-{method}"

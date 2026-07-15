@@ -1,5 +1,6 @@
 data/
-docs/
+docs/*
+!docs/selfsup_training_plan.md
 checkpoints/
 logs/
 wandb/
